@@ -1,9 +1,25 @@
 <template>
   <div>
-    <ParamEditor title="Fractal Explorer Parameters" @apply="apply" />
+    <ParamEditor
+      title="Fractal Explorer Parameters"
+      :iterations="iterations"
+      :color-map="colorMap"
+      :center-re="centerRe"
+      :center-im="centerIm"
+      :scale="scale"
+      @style-change="onStyleChange"
+      @apply-viewport="onApplyViewport"
+    />
     <FormulaPanel />
     <section class="view-card">
       <h3>{{ t('explorerMap') }}</h3>
+      <p>
+        Render Source:
+        <select v-model="renderSource" @change="onRenderSourceChange">
+          <option value="map">Map Variants</option>
+          <option value="hs">HS Families Images</option>
+        </select>
+      </p>
       <p>Center: {{ centerRe }} + {{ centerIm }}i</p>
       <p>Scale: {{ scale }}</p>
       <p>Iterations: {{ iterations }}</p>
@@ -15,6 +31,12 @@
         </select>
       </p>
       <p>Drag: pan. Wheel: zoom. Click: recenter.</p>
+      <p v-if="renderSource === 'hs'">
+        HS Stage:
+        <select v-model="hsSelectedArtifactId" @change="onHsImageChange">
+          <option v-for="item in hsItems" :key="item.artifactId" :value="item.artifactId">{{ item.name }}</option>
+        </select>
+      </p>
       <div
         ref="mapCanvasRef"
         class="map-canvas"
@@ -50,7 +72,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { artifactContentUrl, postMapRender } from '../api'
+import { artifactContentUrl, getArtifacts, invokeModule, postMapRender, type ArtifactItem } from '../api'
 import { t } from '../i18n'
 import ParamEditor from '../components/ParamEditor.vue'
 import FormulaPanel from '../components/FormulaPanel.vue'
@@ -75,8 +97,11 @@ const centerRe = ref(0)
 const centerIm = ref(0)
 const scale = ref(4)
 const iterations = ref(1024)
-const colorMap = ref('classic')
+const colorMap = ref('classic_cos')
 const variety = ref(0)
+const renderSource = ref<'map' | 'hs'>('map')
+const hsItems = ref<ArtifactItem[]>([])
+const hsSelectedArtifactId = ref('')
 
 const dragging = ref(false)
 const lastX = ref(0)
@@ -110,6 +135,8 @@ const syncQuery = () => {
       iterations: String(iterations.value),
       colorMap: colorMap.value,
       variety: String(variety.value),
+      source: renderSource.value,
+      hsArtifactId: hsSelectedArtifactId.value,
     },
   })
 }
@@ -161,11 +188,32 @@ const pointerToComplex = (clientX: number, clientY: number) => {
   return { re, im, nx, ny }
 }
 
+const loadHsImages = async () => {
+  if (hsItems.value.length > 0) return
+  await invokeModule('hidden-structure-family')
+  const list = await getArtifacts({ kind: 'image' })
+  hsItems.value = list.items.filter((item) => /^HS-.*\.out\.png$/i.test(item.name) || /^HS-.*\.png$/i.test(item.name))
+  if (hsItems.value.length > 0) {
+    hsSelectedArtifactId.value = hsItems.value[0].artifactId
+  }
+}
+
 const renderMap = async () => {
   const seq = ++requestSeq
   loading.value = true
   errorMessage.value = ''
   try {
+    if (renderSource.value === 'hs') {
+      await loadHsImages()
+      if (seq !== requestSeq) return
+      imageUrl.value = hsSelectedArtifactId.value.length > 0 ? artifactContentUrl(hsSelectedArtifactId.value) : ''
+      if (hsItems.value.length > 0) {
+        effectiveWidth.value = 1600
+        effectiveHeight.value = 1000
+      }
+      return
+    }
+
     const { width, height } = getRenderSize()
     const res = await postMapRender({
       centerRe: centerRe.value,
@@ -200,9 +248,14 @@ const requestRenderDebounced = () => {
   }, 180)
 }
 
-const apply = (payload: { iterations: number; colorMap: string; centerRe: number; centerIm: number; scale: number }) => {
+const onStyleChange = (payload: { iterations: number; colorMap: string }) => {
   iterations.value = payload.iterations
   colorMap.value = payload.colorMap
+  syncQuery()
+  requestRenderDebounced()
+}
+
+const onApplyViewport = (payload: { centerRe: number; centerIm: number; scale: number }) => {
   centerRe.value = payload.centerRe
   centerIm.value = payload.centerIm
   scale.value = payload.scale
@@ -211,8 +264,20 @@ const apply = (payload: { iterations: number; colorMap: string; centerRe: number
 }
 
 const onVariantChange = () => {
+  centerRe.value = 0
+  centerIm.value = 0
+  scale.value = 4
   syncQuery()
   void renderMap()
+}
+
+const onRenderSourceChange = () => {
+  syncQuery()
+  void renderMap()
+}
+
+const onHsImageChange = () => {
+  imageUrl.value = hsSelectedArtifactId.value.length > 0 ? artifactContentUrl(hsSelectedArtifactId.value) : ''
 }
 
 const startDrag = (e: MouseEvent) => {
@@ -230,6 +295,7 @@ const stopDrag = () => {
 }
 
 const onDrag = (e: MouseEvent) => {
+  if (renderSource.value !== 'map') return
   if (!dragging.value) return
   const imageRect = getImageRect()
   if (!imageRect) return
@@ -262,6 +328,7 @@ const onMouseLeave = () => {
 }
 
 const onWheel = (e: WheelEvent) => {
+  if (renderSource.value !== 'map') return
   if (e.deltaY < 0) {
     scale.value *= 0.9
   } else {
@@ -272,6 +339,7 @@ const onWheel = (e: WheelEvent) => {
 }
 
 const onClick = (e: MouseEvent) => {
+  if (renderSource.value !== 'map') return
   const c = pointerToComplex(e.clientX, e.clientY)
   if (!c) return
   centerRe.value = c.re
@@ -310,6 +378,12 @@ onMounted(async () => {
     const parsed = Number(q.variety)
     variety.value = Number.isFinite(parsed) ? parsed : 0
   }
+  if (q.source === 'hs' || q.source === 'map') {
+    renderSource.value = q.source
+  }
+  if (typeof q.hsArtifactId === 'string') {
+    hsSelectedArtifactId.value = q.hsArtifactId
+  }
   await renderMap()
 })
 
@@ -324,6 +398,13 @@ watch(
     if (typeof q.variety === 'string') {
       const parsed = Number(q.variety)
       variety.value = Number.isFinite(parsed) ? parsed : 0
+    }
+    if (q.source === 'hs' || q.source === 'map') {
+      renderSource.value = q.source
+    }
+    if (typeof q.hsArtifactId === 'string') {
+      hsSelectedArtifactId.value = q.hsArtifactId
+      imageUrl.value = hsSelectedArtifactId.value.length > 0 ? artifactContentUrl(hsSelectedArtifactId.value) : imageUrl.value
     }
   },
 )

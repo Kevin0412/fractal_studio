@@ -4,7 +4,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -25,19 +27,125 @@ std::string managedMapRendererSource() {
 #include <omp.h>
 #include "svpng/svpng.inc"
 
+static int clamp255(int v) {
+    if (v < 0) return 0;
+    if (v > 255) return 255;
+    return v;
+}
+
 static int color_r(double n) {
-    double a = 128.0 - 128.0 * cos(53.0 * n * 3.141592653589793);
-    return a < 256.0 ? (int)a : 255;
+    const double a = 128.0 - 128.0 * cos(53.0 * n * 3.141592653589793);
+    return clamp255((int)a);
 }
 
 static int color_g(double n) {
-    double a = 128.0 - 128.0 * cos(27.0 * n * 3.141592653589793);
-    return a < 256.0 ? (int)a : 255;
+    const double a = 128.0 - 128.0 * cos(27.0 * n * 3.141592653589793);
+    return clamp255((int)a);
 }
 
 static int color_b(double n) {
-    double a = 128.0 - 128.0 * cos(139.0 * n * 3.141592653589793);
-    return a < 256.0 ? (int)a : 255;
+    const double a = 128.0 - 128.0 * cos(139.0 * n * 3.141592653589793);
+    return clamp255((int)a);
+}
+
+static void hsv_to_rgb(double h, double s, double v, int* r, int* g, int* b) {
+    const double c = v * s;
+    const double hh = h / 60.0;
+    const double x = c * (1.0 - fabs(fmod(hh, 2.0) - 1.0));
+
+    double rr = 0.0;
+    double gg = 0.0;
+    double bb = 0.0;
+
+    if (hh >= 0.0 && hh < 1.0) {
+        rr = c; gg = x; bb = 0.0;
+    } else if (hh < 2.0) {
+        rr = x; gg = c; bb = 0.0;
+    } else if (hh < 3.0) {
+        rr = 0.0; gg = c; bb = x;
+    } else if (hh < 4.0) {
+        rr = 0.0; gg = x; bb = c;
+    } else if (hh < 5.0) {
+        rr = x; gg = 0.0; bb = c;
+    } else {
+        rr = c; gg = 0.0; bb = x;
+    }
+
+    const double m = v - c;
+    *r = clamp255((int)((rr + m) * 255.0));
+    *g = clamp255((int)((gg + m) * 255.0));
+    *b = clamp255((int)((bb + m) * 255.0));
+}
+
+static void colorize(int iter, int max_iter, int palette, unsigned char* r, unsigned char* g, unsigned char* b) {
+    if (iter >= max_iter) {
+        *r = 255;
+        *g = 255;
+        *b = 255;
+        return;
+    }
+
+    const double n = ((double)iter + 1.0) / ((double)max_iter + 2.0);
+
+    if (palette == 1) {
+        const int rr = iter % 256;
+        const int gg = iter / 256;
+        const int bb = (iter % 17) * 17;
+        *r = (unsigned char)clamp255(rr);
+        *g = (unsigned char)clamp255(gg);
+        *b = (unsigned char)clamp255(bb);
+        return;
+    }
+
+    if (palette == 2) {
+        const double h = (double)(iter % 360);
+        int rr = 0;
+        int gg = 0;
+        int bb = 0;
+        hsv_to_rgb(h, 1.0, 1.0, &rr, &gg, &bb);
+        *r = (unsigned char)rr;
+        *g = (unsigned char)gg;
+        *b = (unsigned char)bb;
+        return;
+    }
+
+    if (palette == 3) {
+        const int m = (int)((long long)iter * 765LL / (long long)max_iter);
+        const int band = (m % 765) / 255;
+        const int d = m % 255;
+        int rr = 255;
+        int gg = 255;
+        int bb = 255;
+        if (band == 0) {
+            rr = 255 - d;
+            gg = d;
+            bb = 255;
+        } else if (band == 1) {
+            rr = d;
+            gg = 255;
+            bb = 255 - d;
+        } else {
+            rr = 255;
+            gg = 255 - d;
+            bb = d;
+        }
+        *r = (unsigned char)clamp255(rr);
+        *g = (unsigned char)clamp255(gg);
+        *b = (unsigned char)clamp255(bb);
+        return;
+    }
+
+    if (palette == 4) {
+        const int v = clamp255((int)(n * 255.0));
+        *r = (unsigned char)v;
+        *g = (unsigned char)v;
+        *b = (unsigned char)v;
+        return;
+    }
+
+    *r = (unsigned char)color_r(n);
+    *g = (unsigned char)color_g(n);
+    *b = (unsigned char)color_b(n);
 }
 
 static int mandelbrot(complex double c, int max) {
@@ -162,7 +270,7 @@ static int iterate_point(complex double c, int max_iter, int variety) {
 }
 
 int main(int argc, char** argv) {
-    if (argc != 9) {
+    if (argc != 10) {
         return 1;
     }
 
@@ -174,6 +282,7 @@ int main(int argc, char** argv) {
     const int h = atoi(argv[6]);
     const int variety = atoi(argv[7]);
     const int max_iter = atoi(argv[8]);
+    const int palette = atoi(argv[9]);
 
     if (w <= 0 || h <= 0 || scale <= 0.0 || max_iter <= 0) {
         return 2;
@@ -204,12 +313,8 @@ int main(int argc, char** argv) {
             const double im = im_max - ((double)y + 0.5) / (double)h * span_im;
             const complex double c = re + im * I;
             const int iter = iterate_point(c, max_iter, variety);
-            const double n = ((double)iter + 1.0) / ((double)max_iter + 2.0);
-
             const size_t idx = ((size_t)y * (size_t)w + (size_t)x) * 3;
-            rgb[idx + 0] = (unsigned char)color_r(n);
-            rgb[idx + 1] = (unsigned char)color_g(n);
-            rgb[idx + 2] = (unsigned char)color_b(n);
+            colorize(iter, max_iter, palette, &rgb[idx + 0], &rgb[idx + 1], &rgb[idx + 2]);
         }
     }
 
@@ -262,17 +367,36 @@ Artifact runManagedMapRender(const fs::path& repoRoot, const std::string& runDir
     const int width = std::max(256, std::min(2048, params.width));
     const int height = std::max(256, std::min(2048, params.height));
     const int variety = std::max(0, std::min(9, params.variety));
-    const int iterations = std::max(64, std::min(65535, params.iterations));
+    const int iterations = std::max(1, std::min(65535, params.iterations));
+
+    int palette = 0;
+    if (params.colorMap == "mod17") {
+        palette = 1;
+    } else if (params.colorMap == "hsv_wheel") {
+        palette = 2;
+    } else if (params.colorMap == "tri765") {
+        palette = 3;
+    } else if (params.colorMap == "grayscale") {
+        palette = 4;
+    }
+
+    std::ostringstream scaleSs;
+    scaleSs << std::setprecision(17) << safeScale;
+    std::ostringstream reSs;
+    reSs << std::setprecision(17) << params.centerRe;
+    std::ostringstream imSs;
+    imSs << std::setprecision(17) << params.centerIm;
 
     const std::string runCmd =
         "\"" + exePath.string() + "\" " +
-        std::to_string(safeScale) + " " +
-        std::to_string(params.centerRe) + " " +
-        std::to_string(params.centerIm) + " \"" + imagePath.string() + "\" " +
+        scaleSs.str() + " " +
+        reSs.str() + " " +
+        imSs.str() + " \"" + imagePath.string() + "\" " +
         std::to_string(width) + " " +
         std::to_string(height) + " " +
         std::to_string(variety) + " " +
-        std::to_string(iterations);
+        std::to_string(iterations) + " " +
+        std::to_string(palette);
 
     if (std::system(runCmd.c_str()) != 0) {
         throw std::runtime_error("managed map execution failed");

@@ -30,6 +30,15 @@ std::optional<double> getNumberField(const std::string& body, const std::string&
     return std::nullopt;
 }
 
+std::optional<std::string> getStringField(const std::string& body, const std::string& key) {
+    const std::regex re("\"" + key + "\"\\s*:\\s*\"([^\"]*)\"");
+    std::smatch m;
+    if (std::regex_search(body, m, re)) {
+        return m[1].str();
+    }
+    return std::nullopt;
+}
+
 void validate(const MapRenderParams& p) {
     if (!(p.scale > 0.0) || !std::isfinite(p.scale)) {
         throw std::runtime_error("invalid scale: must be > 0");
@@ -59,7 +68,7 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
     params.height = getIntField(body, "height").value_or(768);
     params.variety = getIntField(body, "variety").value_or(0);
     params.iterations = getIntField(body, "iterations").value_or(1024);
-    params.colorMap = "classic";
+    params.colorMap = getStringField(body, "colorMap").value_or("classic_cos");
 
     validate(params);
 
@@ -92,7 +101,7 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
        << "\"height\":" << params.height << ","
        << "\"variety\":" << params.variety
        << "},"
-       << "\"notes\":{\"iterationsApplied\":false,\"colorMapApplied\":false}"
+       << "\"notes\":{\"iterationsApplied\":true,\"colorMapApplied\":true}"
        << "}";
     return ss.str();
 }
