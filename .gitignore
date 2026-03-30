@@ -1,0 +1,11 @@
+# Build outputs
+/runtime/build/
+
+# Runtime outputs
+/runtime/runs/
+/runtime/*.sha
+/runtime/manifest.json
+
+# Frontend deps/build
+/frontend/node_modules/
+/frontend/dist/

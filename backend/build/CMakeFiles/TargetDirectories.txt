@@ -1,0 +1,3 @@
+/media/kevin0412/Data/mandelbrot/fractal_studio/backend/build/CMakeFiles/fractal_studio_backend.dir
+/media/kevin0412/Data/mandelbrot/fractal_studio/backend/build/CMakeFiles/edit_cache.dir
+/media/kevin0412/Data/mandelbrot/fractal_studio/backend/build/CMakeFiles/rebuild_cache.dir
