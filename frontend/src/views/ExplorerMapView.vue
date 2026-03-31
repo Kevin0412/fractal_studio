@@ -190,12 +190,25 @@ const pointerToComplex = (clientX: number, clientY: number) => {
 
 const loadHsImages = async () => {
   if (hsItems.value.length > 0) return
-  await invokeModule('hidden-structure-family')
-  const list = await getArtifacts({ kind: 'image' })
-  hsItems.value = list.items.filter((item) => /^HS-.*\.out\.png$/i.test(item.name) || /^HS-.*\.png$/i.test(item.name))
-  if (hsItems.value.length > 0) {
-    hsSelectedArtifactId.value = hsItems.value[0].artifactId
+
+  const reports = await getArtifacts({ kind: 'report' })
+  const hsRunIds: string[] = []
+  for (const item of reports.items) {
+    if (item.name === 'hs_family_matrix.json' && !hsRunIds.includes(item.runId)) {
+      hsRunIds.push(item.runId)
+    }
   }
+
+  for (let i = hsRunIds.length - 1; i >= 0; i -= 1) {
+    const list = await getArtifacts({ kind: 'image', runId: hsRunIds[i] })
+    if (list.items.length > 0) {
+      hsItems.value = list.items
+      hsSelectedArtifactId.value = hsItems.value[0].artifactId
+      return
+    }
+  }
+
+  errorMessage.value = 'No HS family images found. Run HS Families once, then switch back here.'
 }
 
 const renderMap = async () => {

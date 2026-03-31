@@ -17,8 +17,8 @@
     </label>
     <ul class="formula-list">
       <li>mod17: R=iter%256, G=iter/256, B=(iter%17)*17</li>
-      <li>hsv_wheel: H=iter%360, S=1, V=1</li>
-      <li>tri765: piecewise RGB over m=int(iter*765/maxIter)</li>
+      <li>hsv_wheel: bigger wheel (H=(iter%1440)/4, S=1, V=1)</li>
+      <li>tri765: cyclic piecewise RGB over m=iter%765</li>
       <li>inside-set: white (255,255,255)</li>
     </ul>
     <label>

@@ -98,7 +98,7 @@ static void colorize(int iter, int max_iter, int palette, unsigned char* r, unsi
     }
 
     if (palette == 2) {
-        const double h = (double)(iter % 360);
+        const double h = fmod((double)iter, 1440.0) / 4.0;
         int rr = 0;
         int gg = 0;
         int bb = 0;
@@ -110,8 +110,8 @@ static void colorize(int iter, int max_iter, int palette, unsigned char* r, unsi
     }
 
     if (palette == 3) {
-        const int m = (int)((long long)iter * 765LL / (long long)max_iter);
-        const int band = (m % 765) / 255;
+        const int m = iter % 765;
+        const int band = m / 255;
         const int d = m % 255;
         int rr = 255;
         int gg = 255;

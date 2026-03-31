@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -29,11 +30,14 @@ Artifact runLegacyHiddenStructureFamily(const fs::path& repoRoot, const std::str
     std::ofstream out(matrix);
     out << "{\n  \"module\": \"hidden-structure-family\",\n  \"stages\": [\n";
 
+    const unsigned int hw = std::thread::hardware_concurrency();
+    const unsigned int ompThreads = hw > 1 ? hw - 1 : 1;
+
     for (size_t i = 0; i < stages.size(); ++i) {
         const auto& s = stages[i];
         const fs::path exe = fs::path(runDir) / (s.stage + ".out");
 
-        std::string compileCmd = "gcc \"" + s.src.string() + "\" -o \"" + exe.string() + "\" -lm -std=gnu11 -include stdint.h";
+        std::string compileCmd = "gcc \"" + s.src.string() + "\" -o \"" + exe.string() + "\" -lm -std=gnu11 -include stdint.h -O3";
         if (s.stage == "HS-MultiChannel" || s.stage == "HS-Symmetry") {
             compileCmd += " -fopenmp";
         }
@@ -41,13 +45,18 @@ Artifact runLegacyHiddenStructureFamily(const fs::path& repoRoot, const std::str
         int rc = std::system(compileCmd.c_str());
         bool runOk = false;
         if (rc == 0) {
-            const std::string runCmd = "bash -lc 'cd \"" + runDir + "\" && \"" + exe.string() + "\"'";
+            std::string runCmd = "bash -lc 'cd \"" + runDir + "\" && \"" + exe.string() + "\"'";
+            if (s.stage == "HS-MultiChannel" || s.stage == "HS-Symmetry") {
+                runCmd = "bash -lc 'cd \"" + runDir + "\" && OMP_NUM_THREADS=" + std::to_string(ompThreads) + " \"" + exe.string() + "\"'";
+            }
             runOk = (std::system(runCmd.c_str()) == 0);
         }
 
         out << "    {\"stage\":\"" << s.stage << "\",\"source\":\"" << s.src.filename().string()
             << "\",\"compile_ok\":" << (rc == 0 ? "true" : "false")
-            << ",\"run_ok\":" << (runOk ? "true" : "false") << "}";
+            << ",\"run_ok\":" << (runOk ? "true" : "false")
+            << ",\"omp_threads\":" << ((s.stage == "HS-MultiChannel" || s.stage == "HS-Symmetry") ? std::to_string(ompThreads) : "0")
+            << "}";
         if (i + 1 != stages.size()) {
             out << ",";
         }
