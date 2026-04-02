@@ -22,11 +22,23 @@
           <option value="grayscale">grayscale</option>
         </select>
       </label>
-      <p>Selected c from left map: {{ juliaRe.toFixed(12) }} + {{ juliaIm.toFixed(12) }}i</p>
-      <p>Left click picks Julia c. Drag/Wheel works on both panes.</p>
+      <label>
+        Mode
+        <select v-model="viewMode" @change="onModeChange">
+          <option value="explore">Explore Fractal</option>
+          <option value="fractal-julia">Fractal + Julia</option>
+        </select>
+      </label>
+      <p v-if="viewMode === 'fractal-julia'">Selected Julia c: {{ juliaRe.toFixed(12) }} + {{ juliaIm.toFixed(12) }}i</p>
+      <p v-if="viewMode === 'fractal-julia'">Left click picks Julia c and recenters left map. Drag/Wheel works on both panes.</p>
+      <p v-else>Left click recenters. Drag/Wheel to explore.</p>
+      <p class="export-row">
+        <button type="button" @click="exportPanePng('left')">Export Left PNG</button>
+        <button v-if="viewMode === 'fractal-julia'" type="button" @click="exportPanePng('right')">Export Right PNG</button>
+      </p>
     </section>
 
-    <section class="dual-grid">
+    <section class="dual-grid" :class="{ single: viewMode === 'explore' }">
       <article class="view-card pane-card">
         <h4>Left: Mandelbrot / Variant</h4>
         <p>Center: {{ left.centerRe }} + {{ left.centerIm }}i</p>
@@ -50,8 +62,9 @@
         </div>
       </article>
 
-      <article class="view-card pane-card">
+      <article class="view-card pane-card" v-if="viewMode === 'fractal-julia'">
         <h4>Right: Julia</h4>
+        <p>Julia c: {{ juliaRe.toFixed(12) }} + {{ juliaIm.toFixed(12) }}i</p>
         <p>Center: {{ right.centerRe }} + {{ right.centerIm }}i</p>
         <p>Scale: {{ right.scale }}</p>
         <div
@@ -62,6 +75,7 @@
           @mouseup="stopDrag('right')"
           @mouseleave="onLeave('right')"
           @wheel.prevent="onWheel('right', $event)"
+          @click="onRightClick"
         >
           <img v-if="right.imageUrl" :src="right.imageUrl" alt="right-map" class="map-image" />
           <div class="map-grid"></div>
@@ -145,6 +159,7 @@ const colorMap = ref('classic_cos')
 const variety = ref(0)
 const juliaRe = ref(0)
 const juliaIm = ref(0)
+const viewMode = ref<'explore' | 'fractal-julia'>('explore')
 
 const leftMouseText = computed(() => (left.mouseRe == null || left.mouseIm == null ? '—' : `${left.mouseRe.toFixed(12)} + ${left.mouseIm.toFixed(12)}i`))
 const rightMouseText = computed(() => (right.mouseRe == null || right.mouseIm == null ? '—' : `${right.mouseRe.toFixed(12)} + ${right.mouseIm.toFixed(12)}i`))
@@ -167,6 +182,7 @@ const syncQuery = () => {
       rightCenterRe: String(right.centerRe),
       rightCenterIm: String(right.centerIm),
       rightScale: String(right.scale),
+      mode: viewMode.value,
     },
   })
 }
@@ -258,7 +274,9 @@ const requestRenderDebounced = (pane: PaneKey) => {
 const onStyleChange = () => {
   syncQuery()
   requestRenderDebounced('left')
-  requestRenderDebounced('right')
+  if (viewMode.value === 'fractal-julia') {
+    requestRenderDebounced('right')
+  }
 }
 
 const onVariantChange = () => {
@@ -267,7 +285,17 @@ const onVariantChange = () => {
   left.scale = 4
   syncQuery()
   void renderPane('left')
-  void renderPane('right')
+  if (viewMode.value === 'fractal-julia') {
+    void renderPane('right')
+  }
+}
+
+const onModeChange = () => {
+  syncQuery()
+  void renderPane('left')
+  if (viewMode.value === 'fractal-julia') {
+    void renderPane('right')
+  }
 }
 
 const startDrag = (pane: PaneKey, e: MouseEvent) => {
@@ -330,10 +358,42 @@ const onWheel = (pane: PaneKey, e: WheelEvent) => {
 const onLeftClick = (e: MouseEvent) => {
   const c = pointerToComplex('left', e.clientX, e.clientY)
   if (!c) return
-  juliaRe.value = c.re
-  juliaIm.value = c.im
+
+  left.centerRe = c.re
+  left.centerIm = c.im
+
+  if (viewMode.value === 'fractal-julia') {
+    juliaRe.value = c.re
+    juliaIm.value = c.im
+    syncQuery()
+    void renderPane('left')
+    void renderPane('right')
+    return
+  }
+
+  syncQuery()
+  void renderPane('left')
+}
+
+const onRightClick = (e: MouseEvent) => {
+  const c = pointerToComplex('right', e.clientX, e.clientY)
+  if (!c) return
+  right.centerRe = c.re
+  right.centerIm = c.im
   syncQuery()
   void renderPane('right')
+}
+
+const exportPanePng = (pane: PaneKey) => {
+  const p = getPane(pane)
+  if (!p.imageUrl) return
+  const a = document.createElement('a')
+  const stamp = Date.now()
+  a.href = p.imageUrl
+  a.download = pane === 'left' ? `fractal-left-${stamp}.png` : `julia-right-${stamp}.png`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
 }
 
 onMounted(async () => {
@@ -349,9 +409,14 @@ onMounted(async () => {
   if (typeof q.rightCenterRe === 'string') right.centerRe = Number(q.rightCenterRe)
   if (typeof q.rightCenterIm === 'string') right.centerIm = Number(q.rightCenterIm)
   if (typeof q.rightScale === 'string') right.scale = Number(q.rightScale)
+  if (q.mode === 'explore' || q.mode === 'fractal-julia') {
+    viewMode.value = q.mode
+  }
 
   await renderPane('left')
-  await renderPane('right')
+  if (viewMode.value === 'fractal-julia') {
+    await renderPane('right')
+  }
 })
 </script>
 
@@ -363,6 +428,19 @@ label {
   display: block;
   margin-bottom: 8px;
 }
+.export-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+button {
+  background: #2f6f92;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
 input,
 select {
   width: 100%;
@@ -372,6 +450,9 @@ select {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
+}
+.dual-grid.single {
+  grid-template-columns: 1fr;
 }
 .pane-card {
   min-width: 0;

@@ -148,180 +148,63 @@ static void colorize(int iter, int max_iter, int palette, unsigned char* r, unsi
     *b = (unsigned char)color_b(n);
 }
 
-static int mandelbrot(complex double c, int max) {
-    complex double n = 0.0 + 0.0 * I;
-    for (int z = 0; z < max; z++) {
-        n = n * n + c;
-        if (cabs(n) > 2.0) return z;
-    }
-    return max;
-}
-
-static int tri(complex double c, int max) {
-    complex double n = 0.0 + 0.0 * I;
-    for (int z = 0; z < max; z++) {
-        n = conj(n * n) + c;
-        if (cabs(n) > 2.0) return z;
-    }
-    return max;
-}
-
-static int boat(complex double c, int max) {
-    complex double n = 0.0 + 0.0 * I;
-    for (int z = 0; z < max; z++) {
-        n = cabs(creal(n)) + cabs(cimag(n)) * I;
-        n = n * n + c;
-        if (cabs(n) > 2.0) return z;
-    }
-    return max;
-}
-
-static int duck(complex double c, int max) {
-    complex double n = 0.0 + 0.0 * I;
-    for (int z = 0; z < max; z++) {
-        n = creal(n) + cabs(cimag(n)) * I;
-        n = n * n + c;
-        if (cabs(n) > 2.0) return z;
-    }
-    return max;
-}
-
-static int bell(complex double c, int max) {
-    complex double n = 0.0 + 0.0 * I;
-    for (int z = 0; z < max; z++) {
-        n = cabs(creal(n)) - cimag(n) * I;
-        n = n * n + c;
-        if (cabs(n) > 2.0) return z;
-    }
-    return max;
-}
-
-static int fish(complex double c, int max) {
-    complex double n = 0.0 + 0.0 * I;
-    for (int z = 0; z < max; z++) {
-        n = n * n;
-        n = cabs(creal(n)) + cimag(n) * I;
-        n = n + c;
-        if (cabs(n) > 2.0) return z;
-    }
-    return max;
-}
-
-static int vase(complex double c, int max) {
-    complex double n = 0.0 + 0.0 * I;
-    for (int z = 0; z < max; z++) {
-        n = n * n;
-        n = cabs(creal(n)) - cimag(n) * I;
-        n = n + c;
-        if (cabs(n) > 2.0) return z;
-    }
-    return max;
-}
-
-static int bird(complex double c, int max) {
-    complex double n = 0.0 + 0.0 * I;
-    for (int z = 0; z < max; z++) {
-        n = n * n;
-        n = cabs(creal(n)) + cabs(cimag(n)) * I;
-        n = n + c;
-        if (cabs(n) > 2.0) return z;
-    }
-    return max;
-}
-
-static int mask(complex double c, int max) {
-    complex double n = 0.0 + 0.0 * I;
-    for (int z = 0; z < max; z++) {
-        n = creal(n) + cabs(cimag(n)) * I;
-        n = n * n;
-        n = cabs(creal(n)) + cimag(n) * I;
-        n = n + c;
-        if (cabs(n) > 2.0) return z;
-    }
-    return max;
-}
-
-static int ship(complex double c, int max) {
-    complex double n = 0.0 + 0.0 * I;
-    for (int z = 0; z < max; z++) {
-        n = cabs(creal(n)) + cimag(n) * I;
-        n = n * n;
-        n = cabs(creal(n)) - cimag(n) * I;
-        n = n + c;
-        if (cabs(n) > 2.0) return z;
-    }
-    return max;
-}
-
-static int iterate_point(complex double c, int max_iter, int variety) {
+static complex double variant_step(complex double z, complex double c, int variety) {
     switch (variety) {
-        case 0: return mandelbrot(c, max_iter);
-        case 1: return tri(c, max_iter);
-        case 2: return boat(c, max_iter);
-        case 3: return duck(c, max_iter);
-        case 4: return bell(c, max_iter);
-        case 5: return fish(c, max_iter);
-        case 6: return vase(c, max_iter);
-        case 7: return bird(c, max_iter);
-        case 8: return mask(c, max_iter);
-        case 9: return ship(c, max_iter);
-        default: return mandelbrot(c, max_iter);
+        case 0:
+            return z * z + c;
+        case 1:
+            return conj(z * z) + c;
+        case 2:
+            z = cabs(creal(z)) + cabs(cimag(z)) * I;
+            return z * z + c;
+        case 3:
+            z = creal(z) + cabs(cimag(z)) * I;
+            return z * z + c;
+        case 4:
+            z = cabs(creal(z)) - cimag(z) * I;
+            return z * z + c;
+        case 5:
+            z = z * z;
+            z = cabs(creal(z)) + cimag(z) * I;
+            return z + c;
+        case 6:
+            z = z * z;
+            z = cabs(creal(z)) - cimag(z) * I;
+            return z + c;
+        case 7:
+            z = z * z;
+            z = cabs(creal(z)) + cabs(cimag(z)) * I;
+            return z + c;
+        case 8:
+            z = creal(z) + cabs(cimag(z)) * I;
+            z = z * z;
+            z = cabs(creal(z)) + cimag(z) * I;
+            return z + c;
+        case 9:
+            z = cabs(creal(z)) + cimag(z) * I;
+            z = z * z;
+            z = cabs(creal(z)) - cimag(z) * I;
+            return z + c;
+        default:
+            return z * z + c;
     }
+}
+
+static int iterate_mandelbrot(complex double c, int max_iter, int variety) {
+    complex double z = 0.0 + 0.0 * I;
+    for (int i = 0; i < max_iter; i++) {
+        z = variant_step(z, c, variety);
+        if (cabs(z) > 2.0) {
+            return i;
+        }
+    }
+    return max_iter;
 }
 
 static int iterate_julia(complex double z0, complex double c_const, int max_iter, int variety) {
     complex double z = z0;
     for (int i = 0; i < max_iter; i++) {
-        switch (variety) {
-            case 0:
-                z = z * z + c_const;
-                break;
-            case 1:
-                z = conj(z * z) + c_const;
-                break;
-            case 2:
-                z = cabs(creal(z)) + cabs(cimag(z)) * I;
-                z = z * z + c_const;
-                break;
-            case 3:
-                z = creal(z) + cabs(cimag(z)) * I;
-                z = z * z + c_const;
-                break;
-            case 4:
-                z = cabs(creal(z)) - cimag(z) * I;
-                z = z * z + c_const;
-                break;
-            case 5:
-                z = z * z;
-                z = cabs(creal(z)) + cimag(z) * I;
-                z = z + c_const;
-                break;
-            case 6:
-                z = z * z;
-                z = cabs(creal(z)) - cimag(z) * I;
-                z = z + c_const;
-                break;
-            case 7:
-                z = z * z;
-                z = cabs(creal(z)) + cabs(cimag(z)) * I;
-                z = z + c_const;
-                break;
-            case 8:
-                z = creal(z) + cabs(cimag(z)) * I;
-                z = z * z;
-                z = cabs(creal(z)) + cimag(z) * I;
-                z = z + c_const;
-                break;
-            case 9:
-                z = cabs(creal(z)) + cimag(z) * I;
-                z = z * z;
-                z = cabs(creal(z)) - cimag(z) * I;
-                z = z + c_const;
-                break;
-            default:
-                z = z * z + c_const;
-                break;
-        }
+        z = variant_step(z, c_const, variety);
         if (cabs(z) > 2.0) {
             return i;
         }
@@ -378,7 +261,7 @@ int main(int argc, char** argv) {
             const complex double c_const = julia_re + julia_im * I;
             const int iter = (mode == 1)
                 ? iterate_julia(point, c_const, max_iter, variety)
-                : iterate_point(point, max_iter, variety);
+                : iterate_mandelbrot(point, max_iter, variety);
             const size_t idx = ((size_t)y * (size_t)w + (size_t)x) * 3;
             colorize(iter, max_iter, palette, &rgb[idx + 0], &rgb[idx + 1], &rgb[idx + 2]);
         }
@@ -412,15 +295,26 @@ Artifact runManagedMapRender(const fs::path& repoRoot, const std::string& runDir
 
     {
         std::lock_guard<std::mutex> lock(gMapBuildMutex);
-        if (!gMapExeReady || !fs::exists(exePath)) {
-            fs::copy_file(legacySvpngInc, managedSvpngDir / "svpng.inc", fs::copy_options::overwrite_existing);
+        const std::string desiredSource = managedMapRendererSource();
+        bool sourceChanged = true;
+        if (fs::exists(managedSrc)) {
+            std::ifstream in(managedSrc);
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            sourceChanged = ss.str() != desiredSource;
+        }
+
+        if (sourceChanged) {
             std::ofstream out(managedSrc, std::ios::trunc);
             if (!out) {
                 throw std::runtime_error("failed to write managed map source");
             }
-            out << managedMapRendererSource();
+            out << desiredSource;
             out.close();
+        }
 
+        if (sourceChanged || !gMapExeReady || !fs::exists(exePath)) {
+            fs::copy_file(legacySvpngInc, managedSvpngDir / "svpng.inc", fs::copy_options::overwrite_existing);
             const std::string compileCmd = "gcc \"" + managedSrc.string() + "\" -o \"" + exePath.string() + "\" -O3 -fopenmp -lm";
             if (std::system(compileCmd.c_str()) != 0) {
                 throw std::runtime_error("managed map compile failed");
