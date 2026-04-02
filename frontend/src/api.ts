@@ -95,6 +95,9 @@ export type MapRenderRequest = {
   variety: number
   iterations: number
   colorMap: string
+  mode?: 'mandelbrot' | 'julia'
+  juliaRe?: number
+  juliaIm?: number
 }
 
 export type MapRenderResponse = {
@@ -109,6 +112,9 @@ export type MapRenderResponse = {
     width: number
     height: number
     variety: number
+    mode?: 'mandelbrot' | 'julia'
+    juliaRe?: number
+    juliaIm?: number
   }
   notes: {
     iterationsApplied: boolean

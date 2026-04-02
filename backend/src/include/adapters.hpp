@@ -23,6 +23,9 @@ struct MapRenderParams {
     int variety;
     int iterations;
     std::string colorMap;
+    std::string mode;
+    double juliaRe;
+    double juliaIm;
 };
 
 Artifact runManagedMapRender(const std::filesystem::path& repoRoot, const std::string& runDir, const MapRenderParams& params);

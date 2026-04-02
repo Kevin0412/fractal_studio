@@ -269,8 +269,68 @@ static int iterate_point(complex double c, int max_iter, int variety) {
     }
 }
 
+static int iterate_julia(complex double z0, complex double c_const, int max_iter, int variety) {
+    complex double z = z0;
+    for (int i = 0; i < max_iter; i++) {
+        switch (variety) {
+            case 0:
+                z = z * z + c_const;
+                break;
+            case 1:
+                z = conj(z * z) + c_const;
+                break;
+            case 2:
+                z = cabs(creal(z)) + cabs(cimag(z)) * I;
+                z = z * z + c_const;
+                break;
+            case 3:
+                z = creal(z) + cabs(cimag(z)) * I;
+                z = z * z + c_const;
+                break;
+            case 4:
+                z = cabs(creal(z)) - cimag(z) * I;
+                z = z * z + c_const;
+                break;
+            case 5:
+                z = z * z;
+                z = cabs(creal(z)) + cimag(z) * I;
+                z = z + c_const;
+                break;
+            case 6:
+                z = z * z;
+                z = cabs(creal(z)) - cimag(z) * I;
+                z = z + c_const;
+                break;
+            case 7:
+                z = z * z;
+                z = cabs(creal(z)) + cabs(cimag(z)) * I;
+                z = z + c_const;
+                break;
+            case 8:
+                z = creal(z) + cabs(cimag(z)) * I;
+                z = z * z;
+                z = cabs(creal(z)) + cimag(z) * I;
+                z = z + c_const;
+                break;
+            case 9:
+                z = cabs(creal(z)) + cimag(z) * I;
+                z = z * z;
+                z = cabs(creal(z)) - cimag(z) * I;
+                z = z + c_const;
+                break;
+            default:
+                z = z * z + c_const;
+                break;
+        }
+        if (cabs(z) > 2.0) {
+            return i;
+        }
+    }
+    return max_iter;
+}
+
 int main(int argc, char** argv) {
-    if (argc != 10) {
+    if (argc != 13) {
         return 1;
     }
 
@@ -283,6 +343,9 @@ int main(int argc, char** argv) {
     const int variety = atoi(argv[7]);
     const int max_iter = atoi(argv[8]);
     const int palette = atoi(argv[9]);
+    const int mode = atoi(argv[10]);
+    const double julia_re = atof(argv[11]);
+    const double julia_im = atof(argv[12]);
 
     if (w <= 0 || h <= 0 || scale <= 0.0 || max_iter <= 0) {
         return 2;
@@ -311,8 +374,11 @@ int main(int argc, char** argv) {
         for (int x = 0; x < w; x++) {
             const double re = re_min + ((double)x + 0.5) / (double)w * span_re;
             const double im = im_max - ((double)y + 0.5) / (double)h * span_im;
-            const complex double c = re + im * I;
-            const int iter = iterate_point(c, max_iter, variety);
+            const complex double point = re + im * I;
+            const complex double c_const = julia_re + julia_im * I;
+            const int iter = (mode == 1)
+                ? iterate_julia(point, c_const, max_iter, variety)
+                : iterate_point(point, max_iter, variety);
             const size_t idx = ((size_t)y * (size_t)w + (size_t)x) * 3;
             colorize(iter, max_iter, palette, &rgb[idx + 0], &rgb[idx + 1], &rgb[idx + 2]);
         }
@@ -368,6 +434,7 @@ Artifact runManagedMapRender(const fs::path& repoRoot, const std::string& runDir
     const int height = std::max(256, std::min(2048, params.height));
     const int variety = std::max(0, std::min(9, params.variety));
     const int iterations = std::max(1, std::min(65535, params.iterations));
+    const int mode = params.mode == "julia" ? 1 : 0;
 
     int palette = 0;
     if (params.colorMap == "mod17") {
@@ -386,6 +453,10 @@ Artifact runManagedMapRender(const fs::path& repoRoot, const std::string& runDir
     reSs << std::setprecision(17) << params.centerRe;
     std::ostringstream imSs;
     imSs << std::setprecision(17) << params.centerIm;
+    std::ostringstream juliaReSs;
+    juliaReSs << std::setprecision(17) << params.juliaRe;
+    std::ostringstream juliaImSs;
+    juliaImSs << std::setprecision(17) << params.juliaIm;
 
     const std::string runCmd =
         "\"" + exePath.string() + "\" " +
@@ -396,7 +467,10 @@ Artifact runManagedMapRender(const fs::path& repoRoot, const std::string& runDir
         std::to_string(height) + " " +
         std::to_string(variety) + " " +
         std::to_string(iterations) + " " +
-        std::to_string(palette);
+        std::to_string(palette) + " " +
+        std::to_string(mode) + " " +
+        juliaReSs.str() + " " +
+        juliaImSs.str();
 
     if (std::system(runCmd.c_str()) != 0) {
         throw std::runtime_error("managed map execution failed");

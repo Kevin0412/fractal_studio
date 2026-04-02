@@ -55,6 +55,12 @@ void validate(const MapRenderParams& p) {
     if (p.variety < 0 || p.variety > 32) {
         throw std::runtime_error("invalid variety: must be 0..32");
     }
+    if (p.mode != "mandelbrot" && p.mode != "julia") {
+        throw std::runtime_error("invalid mode: must be mandelbrot|julia");
+    }
+    if (p.mode == "julia" && (!std::isfinite(p.juliaRe) || !std::isfinite(p.juliaIm))) {
+        throw std::runtime_error("invalid julia constant");
+    }
 }
 
 } // namespace
@@ -69,6 +75,9 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
     params.variety = getIntField(body, "variety").value_or(0);
     params.iterations = getIntField(body, "iterations").value_or(1024);
     params.colorMap = getStringField(body, "colorMap").value_or("classic_cos");
+    params.mode = getStringField(body, "mode").value_or("mandelbrot");
+    params.juliaRe = getNumberField(body, "juliaRe").value_or(0.0);
+    params.juliaIm = getNumberField(body, "juliaIm").value_or(0.0);
 
     validate(params);
 
@@ -99,7 +108,10 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
        << "\"scale\":" << params.scale << ","
        << "\"width\":" << params.width << ","
        << "\"height\":" << params.height << ","
-       << "\"variety\":" << params.variety
+       << "\"variety\":" << params.variety << ","
+       << "\"mode\":\"" << params.mode << "\","
+       << "\"juliaRe\":" << params.juliaRe << ","
+       << "\"juliaIm\":" << params.juliaIm
        << "},"
        << "\"notes\":{\"iterationsApplied\":true,\"colorMapApplied\":true}"
        << "}";
