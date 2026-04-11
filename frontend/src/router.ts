@@ -1,29 +1,19 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
-import DashboardView from './views/DashboardView.vue'
-import AtlasView from './views/AtlasView.vue'
-import SpecialPointsView from './views/SpecialPointsView.vue'
-import TransitionConversionView from './views/TransitionConversionView.vue'
-import HiddenStructureView from './views/HiddenStructureView.vue'
-import ThreeDFamilyView from './views/ThreeDFamilyView.vue'
-import StlGalleryView from './views/StlGalleryView.vue'
-import ConclusionsView from './views/ConclusionsView.vue'
-import ExplorerMapView from './views/ExplorerMapView.vue'
-import ArtifactsView from './views/ArtifactsView.vue'
+import MapView    from './views/MapView.vue'
+import PointsView from './views/PointsView.vue'
+import ThreeDView from './views/ThreeDView.vue'
+import RunsView   from './views/RunsView.vue'
+import SystemView from './views/SystemView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/', name: 'dashboard', component: DashboardView },
-    { path: '/atlas', name: 'atlas', component: AtlasView },
-    { path: '/special-points', name: 'special-points', component: SpecialPointsView },
-    { path: '/transition-conversion', name: 'transition-conversion', component: TransitionConversionView },
-    { path: '/hidden-structure', name: 'hidden-structure', component: HiddenStructureView },
-    { path: '/hidden-structure-families', name: 'hidden-structure-families', component: ThreeDFamilyView },
-    { path: '/stl-gallery', name: 'stl-gallery', component: StlGalleryView },
-    { path: '/explorer-map', name: 'explorer-map', component: ExplorerMapView },
-    { path: '/artifacts', name: 'artifacts', component: ArtifactsView },
-    { path: '/conclusions', name: 'conclusions', component: ConclusionsView },
+    { path: '/',       name: 'map',    component: MapView },
+    { path: '/points', name: 'points', component: PointsView },
+    { path: '/3d',     name: '3d',     component: ThreeDView },
+    { path: '/runs',   name: 'runs',   component: RunsView },
+    { path: '/system', name: 'system', component: SystemView },
   ],
 })
 

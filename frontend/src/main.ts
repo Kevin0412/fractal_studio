@@ -3,6 +3,4 @@ import App from './App.vue'
 import router from './router'
 import './assets/base.css'
 
-import '@google/model-viewer'
-
 createApp(App).use(router).mount('#app')

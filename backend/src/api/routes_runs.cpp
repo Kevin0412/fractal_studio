@@ -1,21 +1,32 @@
-#include "routes.hpp"
+// routes_runs.cpp — run list from the persistent runs table.
 
-#include <sstream>
+#include "routes.hpp"
+#include "routes_common.hpp"
 
 namespace fsd {
 
-std::string createRunRoute(JobRunner& runner, const std::string& module) {
-    const auto run = runner.createRun(module);
-    std::ostringstream ss;
-    ss << "{\"runId\":\"" << run.id << "\",\"status\":\"" << run.status << "\",\"outputDir\":\"" << run.outputDir << "\"}";
-    return ss.str();
-}
+std::string runsListRoute(const std::filesystem::path& repoRoot, const std::string& query) {
+    int limit = 200;
+    const std::string limRaw = getQueryParam(query, "limit");
+    if (!limRaw.empty()) {
+        try { limit = std::stoi(limRaw); } catch (...) {}
+    }
+    Db db = openDb(repoRoot);
+    const auto rows = db.listRuns(limit);
 
-std::string getRunRoute(JobRunner& runner, const std::string& runId) {
-    const auto run = runner.getRun(runId);
-    std::ostringstream ss;
-    ss << "{\"runId\":\"" << run.id << "\",\"status\":\"" << run.status << "\",\"artifactCount\":" << run.artifacts.size() << "}";
-    return ss.str();
+    Json items = Json::array();
+    for (const auto& r : rows) {
+        items.push_back({
+            {"id",         r.id},
+            {"module",     r.module},
+            {"status",     r.status},
+            {"startedAt",  r.startedAt},
+            {"finishedAt", r.finishedAt},
+            {"outputDir",  r.outputDir},
+        });
+    }
+    Json resp = {{"items", items}};
+    return resp.dump();
 }
 
 } // namespace fsd

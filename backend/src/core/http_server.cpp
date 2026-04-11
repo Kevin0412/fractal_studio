@@ -8,10 +8,14 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <string>
+#include <thread>
 #include <tuple>
 
 namespace fsd {
@@ -21,6 +25,9 @@ HttpServer::HttpServer(int port, JobRunner& runner, std::filesystem::path repoRo
 
 std::string HttpServer::makeHttpResponse(int status, const std::string& body, const std::string& contentType, const std::string& extraHeaders) {
     const char* statusText = "OK";
+    if (status == 201) statusText = "Created";
+    if (status == 204) statusText = "No Content";
+    if (status == 400) statusText = "Bad Request";
     if (status == 404) statusText = "Not Found";
     if (status == 405) statusText = "Method Not Allowed";
     if (status == 500) statusText = "Internal Server Error";
@@ -42,9 +49,7 @@ std::string HttpServer::handleRequest(const std::string& request) const {
     try {
     auto splitPathAndQuery = [](const std::string& rawPath) {
         const std::size_t q = rawPath.find('?');
-        if (q == std::string::npos) {
-            return std::make_tuple(rawPath, std::string());
-        }
+        if (q == std::string::npos) return std::make_tuple(rawPath, std::string());
         return std::make_tuple(rawPath.substr(0, q), rawPath.substr(q + 1));
     };
 
@@ -53,54 +58,40 @@ std::string HttpServer::handleRequest(const std::string& request) const {
     const std::string body = (headerEnd == std::string::npos) ? std::string() : request.substr(headerEnd + 4);
 
     std::istringstream in(head);
-    std::string method;
-    std::string rawPath;
-    std::string version;
+    std::string method, rawPath, version;
     in >> method >> rawPath >> version;
 
     const auto [path, query] = splitPathAndQuery(rawPath);
 
-    if (method == "OPTIONS") {
-        return makeHttpResponse(200, "{}");
-    }
+    if (method == "OPTIONS") return makeHttpResponse(200, "{}");
 
-    if (method == "GET" && path == "/api/system/check") {
-        return makeHttpResponse(200, systemCheckRoute());
-    }
+    // System
+    if (method == "GET"  && path == "/api/system/check")    return makeHttpResponse(200, systemCheckRoute());
+    if (method == "GET"  && path == "/api/system/hardware") return makeHttpResponse(200, systemHardwareRoute());
 
-    if (method == "GET" && path == "/api/system/hardware") {
-        return makeHttpResponse(200, systemHardwareRoute());
-    }
+    // Map (native)
+    if (method == "POST" && path == "/api/map/render") return makeHttpResponse(200, mapRenderRoute(repoRoot_, runner_, body));
+    if (method == "POST" && path == "/api/map/ln")     return makeHttpResponse(200, lnMapRenderRoute(repoRoot_, runner_, body));
+    if (method == "POST" && path == "/api/video/zoom")       return makeHttpResponse(200, zoomVideoRoute(repoRoot_, runner_, body));
+    if (method == "POST" && path == "/api/hs/mesh")          return makeHttpResponse(200, hsMeshRoute(repoRoot_, runner_, body));
+    if (method == "POST" && path == "/api/transition/mesh")  return makeHttpResponse(200, transitionMeshRoute(repoRoot_, runner_, body));
 
-    if (method == "POST" && path.rfind("/api/modules/", 0) == 0) {
-        const std::string module = path.substr(std::strlen("/api/modules/"));
-        return makeHttpResponse(200, moduleRoute(module, runner_, repoRoot_));
-    }
+    // Special points
+    if (method == "POST" && path == "/api/special-points/auto") return makeHttpResponse(200, specialPointsAutoRoute(repoRoot_, body));
+    if (method == "POST" && path == "/api/special-points/seed") return makeHttpResponse(200, specialPointsSeedRoute(repoRoot_, body));
+    if (method == "GET"  && path == "/api/special-points")      return makeHttpResponse(200, specialPointsListRoute(repoRoot_, query));
 
-    if (method == "POST" && path == "/api/special-points/auto") {
-        return makeHttpResponse(200, specialPointsAutoRoute(repoRoot_, body));
-    }
+    // Benchmark
+    if (method == "POST" && path == "/api/benchmark") return makeHttpResponse(200, benchmarkRoute(body));
 
-    if (method == "POST" && path == "/api/map/render") {
-        return makeHttpResponse(200, mapRenderRoute(repoRoot_, runner_, body));
-    }
+    // Runs
+    if (method == "GET"  && path == "/api/runs") return makeHttpResponse(200, runsListRoute(repoRoot_, query));
 
-    if (method == "POST" && path == "/api/special-points/seed") {
-        return makeHttpResponse(200, specialPointsSeedRoute(repoRoot_, body));
-    }
-
-    if (method == "GET" && path == "/api/special-points") {
-        return makeHttpResponse(200, specialPointsListRoute(repoRoot_, query));
-    }
-
-    if (method == "GET" && path == "/api/artifacts") {
-        return makeHttpResponse(200, artifactsListRoute(repoRoot_, query));
-    }
-
-    if (method == "GET" && path == "/api/artifacts/download") {
+    // Artifacts
+    if (method == "GET"  && path == "/api/artifacts") return makeHttpResponse(200, artifactsListRoute(repoRoot_, query));
+    if (method == "GET"  && path == "/api/artifacts/download") {
         try {
-            std::string contentType;
-            std::string downloadName;
+            std::string contentType, downloadName;
             const std::string bodyText = artifactDownloadBody(repoRoot_, query, contentType, downloadName);
             const std::string headers = "Content-Disposition: attachment; filename=\"" + downloadName + "\"\r\n";
             return makeHttpResponse(200, bodyText, contentType, headers);
@@ -108,8 +99,7 @@ std::string HttpServer::handleRequest(const std::string& request) const {
             return makeHttpResponse(404, std::string("{\"error\":\"") + ex.what() + "\"}");
         }
     }
-
-    if (method == "GET" && path == "/api/artifacts/content") {
+    if (method == "GET"  && path == "/api/artifacts/content") {
         try {
             std::string contentType;
             const std::string bodyText = artifactContentBody(repoRoot_, query, contentType);
@@ -119,21 +109,94 @@ std::string HttpServer::handleRequest(const std::string& request) const {
         }
     }
 
-    if (method != "GET" && method != "POST") {
-        return makeHttpResponse(405, "{\"error\":\"method not allowed\"}");
-    }
-
+    if (method != "GET" && method != "POST") return makeHttpResponse(405, "{\"error\":\"method not allowed\"}");
     return makeHttpResponse(404, "{\"error\":\"not found\"}");
     } catch (const std::exception& ex) {
         return makeHttpResponse(500, std::string("{\"error\":\"") + ex.what() + "\"}");
     }
 }
 
+namespace {
+
+// Read one HTTP request from a client socket. Handles Content-Length so
+// large JSON POST bodies (> 16 KiB) are fully received before dispatch.
+std::string readRequest(int fd) {
+    std::string buf;
+    buf.reserve(4096);
+    char tmp[8192];
+
+    // Read headers until \r\n\r\n.
+    while (true) {
+        const ssize_t n = ::recv(fd, tmp, sizeof(tmp), 0);
+        if (n <= 0) return buf;
+        buf.append(tmp, static_cast<size_t>(n));
+        if (buf.find("\r\n\r\n") != std::string::npos) break;
+        if (buf.size() > (1u << 24)) return buf; // safety cap: 16 MiB of headers
+    }
+
+    // Find content length.
+    const std::size_t headerEnd = buf.find("\r\n\r\n");
+    std::size_t contentLength = 0;
+    {
+        const std::string headers = buf.substr(0, headerEnd);
+        const std::string key = "Content-Length:";
+        std::size_t p = 0;
+        while (p < headers.size()) {
+            std::size_t eol = headers.find("\r\n", p);
+            if (eol == std::string::npos) eol = headers.size();
+            const std::string line = headers.substr(p, eol - p);
+            if (line.size() >= key.size()) {
+                // case-insensitive compare for the header name
+                bool match = true;
+                for (size_t i = 0; i < key.size(); i++) {
+                    char a = std::tolower(static_cast<unsigned char>(line[i]));
+                    char b = std::tolower(static_cast<unsigned char>(key[i]));
+                    if (a != b) { match = false; break; }
+                }
+                if (match) {
+                    std::string v = line.substr(key.size());
+                    // trim
+                    while (!v.empty() && (v.front() == ' ' || v.front() == '\t')) v.erase(v.begin());
+                    while (!v.empty() && (v.back() == ' ' || v.back() == '\t' || v.back() == '\r')) v.pop_back();
+                    try { contentLength = static_cast<std::size_t>(std::stoul(v)); } catch (...) {}
+                    break;
+                }
+            }
+            p = eol + 2;
+        }
+    }
+
+    // Read remainder of body if needed.
+    const std::size_t bodyStart = headerEnd + 4;
+    while (buf.size() < bodyStart + contentLength) {
+        const ssize_t n = ::recv(fd, tmp, sizeof(tmp), 0);
+        if (n <= 0) break;
+        buf.append(tmp, static_cast<size_t>(n));
+        if (buf.size() > (1u << 30)) break; // 1 GiB safety cap
+    }
+    return buf;
+}
+
+// Send all bytes, looping on partial writes (response can be many MB for
+// artifact content downloads).
+void sendAll(int fd, const std::string& data) {
+    const char* p = data.data();
+    std::size_t remaining = data.size();
+    while (remaining > 0) {
+        // MSG_NOSIGNAL: don't deliver SIGPIPE if the peer has closed the socket.
+        // (main.cpp also calls signal(SIGPIPE, SIG_IGN) for defence-in-depth.)
+        const ssize_t n = ::send(fd, p, remaining, MSG_NOSIGNAL);
+        if (n <= 0) return;  // client gone — stop, don't crash
+        p += n;
+        remaining -= static_cast<size_t>(n);
+    }
+}
+
+} // namespace
+
 void HttpServer::serveForever() {
     const int serverFd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (serverFd < 0) {
-        throw std::runtime_error("failed to create server socket");
-    }
+    if (serverFd < 0) throw std::runtime_error("failed to create server socket");
 
     int opt = 1;
     ::setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -148,7 +211,7 @@ void HttpServer::serveForever() {
         throw std::runtime_error("failed to bind server socket");
     }
 
-    if (::listen(serverFd, 16) < 0) {
+    if (::listen(serverFd, 64) < 0) {
         ::close(serverFd);
         throw std::runtime_error("failed to listen");
     }
@@ -157,19 +220,25 @@ void HttpServer::serveForever() {
 
     while (true) {
         const int clientFd = ::accept(serverFd, nullptr, nullptr);
-        if (clientFd < 0) {
-            continue;
-        }
+        if (clientFd < 0) continue;
 
-        char buffer[16384];
-        const ssize_t n = ::recv(clientFd, buffer, sizeof(buffer) - 1, 0);
-        if (n > 0) {
-            buffer[n] = '\0';
-            const std::string req(buffer);
-            const std::string resp = handleRequest(req);
-            ::send(clientFd, resp.c_str(), resp.size(), 0);
-        }
-        ::close(clientFd);
+        // Detached thread per connection — allows concurrent renders.
+        // All exceptions inside the thread are caught so a bad request
+        // (including a CUDA error) never takes down the server process.
+        std::thread([this, clientFd]() {
+            try {
+                const std::string req = readRequest(clientFd);
+                if (!req.empty()) {
+                    const std::string resp = handleRequest(req);
+                    sendAll(clientFd, resp);
+                }
+            } catch (...) {
+                // Last-resort catch: log and continue serving.
+                const std::string err = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                sendAll(clientFd, err);
+            }
+            ::close(clientFd);
+        }).detach();
     }
 }
 

@@ -1,82 +1,53 @@
+// i18n.ts — tiny two-language store (EN / 中文) with a reactive locale ref.
+
 import { ref } from 'vue'
 
-export type Language = 'en' | 'zh'
+export type Lang = 'en' | 'zh'
 
-export const language = ref<Language>('en')
+export const lang = ref<Lang>((localStorage.getItem('fsd_lang') as Lang) || 'en')
 
-const dictionary: Record<Language, Record<string, string>> = {
-  en: {
-    appTitle: 'Fractal Studio',
-    dashboard: 'Dashboard',
-    atlas: 'Atlas',
-    specialPoints: 'Special Points',
-    transition: 'Transition',
-    hiddenStructure: 'Hidden Structure',
-    hsFamilies: 'HS Families',
-    stlGallery: 'STL Gallery',
-    conclusions: 'Conclusions',
-    explorerMap: 'Explorer Map',
-    artifacts: 'Artifacts',
-    language: '中文',
-    refreshHealth: 'Refresh Health',
-    backend: 'Backend',
-    openmp: 'OpenMP',
-    cuda: 'CUDA',
-    cpuModel: 'CPU Model',
-    cpuLogicalCores: 'CPU Logical Cores',
-    cpuPhysicalCores: 'CPU Physical Cores',
-    memoryTotal: 'Memory Total (MiB)',
-    memoryAvailable: 'Memory Available (MiB)',
-    gpuModel: 'GPU Model',
-    gpuMemory: 'GPU Memory',
-    specialPointModeAuto: 'Auto Mode (k,p)',
-    specialPointModeSeed: 'Seed Mode (complex)',
-    run: 'Run',
-    formulas: 'Variant Formulas',
-  },
-  zh: {
-    appTitle: '分形工作台',
-    dashboard: '仪表盘',
-    atlas: '图谱',
-    specialPoints: '特殊点',
-    transition: '过渡',
-    hiddenStructure: '隐藏结构',
-    hsFamilies: 'HS 家族',
-    stlGallery: 'STL 展示',
-    conclusions: '结论',
-    explorerMap: '探索地图',
-    artifacts: '成果下载',
-    language: 'EN',
-    refreshHealth: '刷新状态',
-    backend: '后端',
-    openmp: 'OpenMP',
-    cuda: 'CUDA',
-    cpuModel: 'CPU 型号',
-    cpuLogicalCores: 'CPU 逻辑核心',
-    cpuPhysicalCores: 'CPU 物理核心',
-    memoryTotal: '总内存 (MiB)',
-    memoryAvailable: '可用内存 (MiB)',
-    gpuModel: 'GPU 型号',
-    gpuMemory: 'GPU 显存',
-    specialPointModeAuto: '自动模式 (k,p)',
-    specialPointModeSeed: '种子模式 (复数)',
-    run: '运行',
-    formulas: '变体公式',
-  },
+export function setLang(l: Lang) {
+  lang.value = l
+  localStorage.setItem('fsd_lang', l)
+}
+
+type Dict = Record<string, { en: string; zh: string }>
+
+const dict: Dict = {
+  nav_map:        { en: 'Map',         zh: '图谱' },
+  nav_points:     { en: 'Points',      zh: '特殊点' },
+  nav_3d:         { en: '3D',          zh: '三维' },
+  nav_runs:       { en: 'Runs',        zh: '运行记录' },
+  nav_system:     { en: 'System',      zh: '系统' },
+
+  variant:        { en: 'Variant',     zh: '变体' },
+  metric:         { en: 'Metric',      zh: '指标' },
+  colormap:       { en: 'Colormap',    zh: '色图' },
+  smooth:         { en: 'Ln-smooth',   zh: '对数平滑着色' },
+  iterations:     { en: 'Iterations',  zh: '迭代' },
+  scale:          { en: 'Scale',       zh: '缩放' },
+  center:         { en: 'Center',      zh: '中心' },
+  theta:          { en: 'θ (rad)',     zh: 'θ (弧度)' },
+  transition:     { en: 'Transition',  zh: '过渡' },
+
+  render:         { en: 'Render',      zh: '渲染' },
+  export_png:     { en: 'Export PNG',  zh: '导出 PNG' },
+  export_lnmap:   { en: 'Export ln-map', zh: '导出 ln 图' },
+  export_video:   { en: 'Export video (P2)', zh: '导出视频 (阶段2)' },
+
+  points_k:       { en: 'Pre-period k', zh: '前周期 k' },
+  points_p:       { en: 'Period p',    zh: '周期 p' },
+  points_auto:    { en: 'Auto-solve',  zh: '自动求解' },
+  points_seed:    { en: 'Seed',        zh: '种子求解' },
+  points_import:  { en: '→ Map',       zh: '→ 映射到图谱' },
+
+  status_cpu:     { en: 'cpu',         zh: 'cpu' },
+  status_gpu:     { en: 'gpu',         zh: 'gpu' },
+  status_time:    { en: 'render',      zh: '渲染' },
+  status_ready:   { en: 'ready',       zh: '就绪' },
 }
 
 export function t(key: string): string {
-  const entry = dictionary[language.value][key]
-  if (entry == null) {
-    return key
-  }
-  return entry
-}
-
-export function toggleLanguage(): void {
-  if (language.value === 'en') {
-    language.value = 'zh'
-  } else {
-    language.value = 'en'
-  }
+  const entry = dict[key]
+  return entry ? entry[lang.value] : key
 }

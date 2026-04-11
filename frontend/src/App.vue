@@ -1,30 +1,47 @@
+<script setup lang="ts">
+import NavRail    from './components/NavRail.vue'
+import StatusRail from './components/StatusRail.vue'
+import { provide, reactive } from 'vue'
+import type { StatusState } from './types'
+
+const status = reactive<StatusState>({
+  cpu: null,
+  gpu: null,
+  renderMs: null,
+  engine: 'openmp·fp64',
+  cRe: null,
+  cIm: null,
+  zoom: null,
+  iter: null,
+  variant: 'mandelbrot',
+  metric: 'escape',
+  message: 'ready',
+})
+
+provide('status', status)
+</script>
+
 <template>
-  <div class="app-shell">
-    <aside class="sidebar">
-      <div class="sidebar-top">
-        <h1>{{ t('appTitle') }}</h1>
-        <LanguageToggle />
-      </div>
-      <nav>
-        <RouterLink to="/">{{ t('dashboard') }}</RouterLink>
-        <RouterLink to="/atlas">{{ t('atlas') }}</RouterLink>
-        <RouterLink to="/special-points">{{ t('specialPoints') }}</RouterLink>
-        <RouterLink to="/transition-conversion">{{ t('transition') }}</RouterLink>
-        <RouterLink to="/hidden-structure">{{ t('hiddenStructure') }}</RouterLink>
-        <RouterLink to="/hidden-structure-families">{{ t('hsFamilies') }}</RouterLink>
-        <RouterLink to="/stl-gallery">{{ t('stlGallery') }}</RouterLink>
-        <RouterLink to="/explorer-map">{{ t('explorerMap') }}</RouterLink>
-        <RouterLink to="/artifacts">{{ t('artifacts') }}</RouterLink>
-        <RouterLink to="/conclusions">{{ t('conclusions') }}</RouterLink>
-      </nav>
-    </aside>
-    <main class="content">
-      <RouterView />
+  <div class="shell">
+    <NavRail />
+    <main class="main">
+      <router-view />
     </main>
+    <StatusRail :status="status" />
   </div>
 </template>
 
-<script setup lang="ts">
-import LanguageToggle from './components/LanguageToggle.vue'
-import { t } from './i18n'
-</script>
+<style scoped>
+.shell {
+  display: grid;
+  grid-template-columns: var(--nav-w) 1fr var(--rail-w);
+  height: 100vh;
+  overflow: hidden;
+}
+
+.main {
+  border-left:  1px solid var(--rule);
+  border-right: 1px solid var(--rule);
+  overflow: auto;
+}
+</style>
