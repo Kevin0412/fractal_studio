@@ -51,7 +51,7 @@ std::string hsMeshRoute(const std::filesystem::path&, JobRunner& runner, const s
     p.variant = parseVariant(j.value("variant", std::string("mandelbrot")));
     p.metric  = parseMetric (j.value("metric",  std::string("min_abs")));
 
-    if (p.resolution < 8 || p.resolution > 1024) throw std::runtime_error("invalid resolution");
+    if (p.resolution < 8 || p.resolution > 4096) throw std::runtime_error("invalid resolution");
     if (p.iterations < 1 || p.iterations > 1000000) throw std::runtime_error("invalid iterations");
 
     auto run = runner.createRun("hs-mesh", body);
@@ -113,7 +113,7 @@ std::string transitionMeshRoute(const std::filesystem::path&, JobRunner& runner,
     p.bailout   = j.value("bailout",   2.0);
     const double iso = j.value("iso",  0.5);
 
-    if (p.resolution < 8 || p.resolution > 512)  throw std::runtime_error("invalid resolution");
+    if (p.resolution < 8 || p.resolution > 1024) throw std::runtime_error("invalid resolution");
     if (p.iterations < 1 || p.iterations > 10000) throw std::runtime_error("invalid iterations");
 
     auto run = runner.createRun("transition-mesh", body);

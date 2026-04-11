@@ -12,7 +12,7 @@
 namespace fsd::compute {
 
 McField buildTransitionVolume(const TransitionVolumeParams& p) {
-    const int N = std::max(4, std::min(512, p.resolution));
+    const int N = std::max(4, std::min(1024, p.resolution));
     McField field;
     field.Nx = field.Ny = field.Nz = N;
     field.data.assign(static_cast<size_t>(N) * N * N, 1.0f);

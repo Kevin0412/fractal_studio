@@ -11,14 +11,14 @@ const mode = ref<Mode>('hs')
 // HS mode params
 const hsMetric  = ref<HsStage>('min_abs')
 const hsVariant = ref<Variant>('mandelbrot')
-const hsRes     = ref(128)
+const hsRes     = ref(512)
 const hsIter    = ref(512)
 const hsCenterRe = ref(-0.75)
 const hsCenterIm = ref(0.0)
 const hsScale    = ref(3.0)
 
 // Transition mode params
-const txRes   = ref(96)
+const txRes   = ref(256)
 const txTheta = ref(0.0)
 const txIso   = ref(0.5)
 const txIter  = ref(128)
@@ -120,7 +120,7 @@ function compute() {
         </div>
         <div class="group">
           <label>resolution</label>
-          <input type="number" v-model.number="hsRes" min="32" max="512" step="32" />
+          <input type="number" v-model.number="hsRes" min="32" max="4096" step="64" />
         </div>
         <div class="group">
           <label>{{ t('iterations') }}</label>
@@ -154,7 +154,7 @@ function compute() {
         </div>
         <div class="group">
           <label>resolution</label>
-          <input type="number" v-model.number="txRes" min="32" max="256" step="16" />
+          <input type="number" v-model.number="txRes" min="32" max="1024" step="32" />
         </div>
         <div class="group">
           <label>{{ t('iterations') }}</label>
