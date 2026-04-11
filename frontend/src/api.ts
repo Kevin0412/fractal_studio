@@ -1,26 +1,76 @@
-export type ModuleRunResponse = {
+// api.ts — typed client for the native fractal_studio backend.
+//
+// All endpoints are POST JSON / GET query-string. Returns parsed JSON.
+
+const BASE =
+  (import.meta as any).env?.VITE_BACKEND_URL ??
+  `http://${location.hostname}:18080`
+
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(BASE + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`)
+  return res.json() as Promise<T>
+}
+
+async function getJson<T>(path: string): Promise<T> {
+  const res = await fetch(BASE + path)
+  if (!res.ok) throw new Error(`${path}: ${res.status}`)
+  return res.json() as Promise<T>
+}
+
+// ---- Types ----
+
+export type Variant =
+  | 'mandelbrot' | 'tri' | 'boat' | 'duck' | 'bell'
+  | 'fish' | 'vase' | 'bird' | 'mask' | 'ship'
+
+export const VARIANTS: Variant[] = [
+  'mandelbrot', 'tri', 'boat', 'duck', 'bell',
+  'fish', 'vase', 'bird', 'mask', 'ship',
+]
+
+export type Metric = 'escape' | 'min_abs' | 'max_abs' | 'envelope' | 'min_pairwise_dist'
+
+export const METRICS: Metric[] = ['escape', 'min_abs', 'max_abs', 'envelope', 'min_pairwise_dist']
+
+export type ColorMap = 'classic_cos' | 'mod17' | 'hsv_wheel' | 'tri765' | 'grayscale' | 'hs_rainbow'
+
+export const COLORMAPS: ColorMap[] = ['classic_cos', 'mod17', 'hsv_wheel', 'tri765', 'grayscale', 'hs_rainbow']
+
+export interface MapRenderRequest {
+  centerRe: number
+  centerIm: number
+  scale: number          // height in complex units
+  width: number
+  height: number
+  iterations: number
+  variant?: Variant
+  metric?: Metric
+  colorMap?: ColorMap
+  smooth?: boolean           // ln-smooth continuous coloring (μ = iter + 1 − log₂(log₂(|z|²)))
+  bailout?: number
+  julia?: boolean
+  juliaRe?: number
+  juliaIm?: number
+  transitionTheta?: number  // 0..π; when set, transition kernel is used instead of the variant kernel
+}
+
+export interface MapRenderResponse {
   runId: string
   status: string
-  artifactCount: number
-  error?: string
+  artifactId: string
+  imagePath: string
+  generatedMs: number
+  width: number
+  height: number
+  effective: Record<string, any>
 }
 
-export type SystemCheckResponse = {
-  openmp: boolean
-  cuda: boolean
-}
-
-export type SystemHardwareResponse = {
-  cpuModel: string
-  cpuLogicalCores: number
-  cpuPhysicalCores: number
-  memoryTotalMiB: number
-  memoryAvailableMiB: number
-  gpuModel: string
-  gpuMemory: string
-}
-
-export type SpecialPoint = {
+export interface SpecialPoint {
   id: string
   family: string
   pointType: string
@@ -32,204 +82,158 @@ export type SpecialPoint = {
   createdAt: string
 }
 
-export type SpecialPointsListResponse = {
-  items: SpecialPoint[]
-}
-
-export type SpecialPointsAutoRequest = {
-  family: string
-  pointType: string
-  k: number
-  p: number
-}
-
-export type SpecialPointsAutoResponse = {
-  mode: 'auto'
-  k: number
-  p: number
-  count: number
-  points: Array<{ id: string; real: number; imag: number }>
-}
-
-export type SpecialPointsSeedRequest = {
-  family: string
-  k: number
-  p: number
-  maxIter: number
-  seed: {
-    re: number
-    im: number
-  }
-}
-
-export type SpecialPointsSeedResponse = {
-  mode: 'seed'
-  point: {
-    id: string
-    real: number
-    imag: number
-    digits: number
-    residualReal: number
-    residualImag: number
-  }
-}
-
-export type ArtifactItem = {
-  artifactId: string
-  runId: string
-  name: string
-  kind: string
-  downloadPath: string
-}
-
-export type ArtifactsListResponse = {
-  items: ArtifactItem[]
-}
-
-export type MapRenderRequest = {
+export interface LnMapRequest {
   centerRe: number
   centerIm: number
-  scale: number
-  width: number
-  height: number
-  variety: number
-  iterations: number
-  colorMap: string
-  mode?: 'mandelbrot' | 'julia'
-  juliaRe?: number
-  juliaIm?: number
+  widthS: number
+  depthOctaves: number
+  variant?: Variant
+  colorMap?: ColorMap
+  iterations?: number
 }
 
-export type MapRenderResponse = {
+export interface LnMapResponse {
   runId: string
   status: string
   artifactId: string
   imagePath: string
-  effective: {
-    centerRe: number
-    centerIm: number
-    scale: number
-    width: number
-    height: number
-    variety: number
-    mode?: 'mandelbrot' | 'julia'
-    juliaRe?: number
-    juliaIm?: number
-  }
-  notes: {
-    iterationsApplied: boolean
-    colorMapApplied: boolean
-  }
+  widthS: number
+  heightT: number
+  depthOctaves: number
+  generatedMs: number
 }
 
-const baseUrl = (import.meta.env.VITE_BACKEND_URL as string | undefined) ?? 'http://127.0.0.1:18080'
+export type HsStage = 'min_abs' | 'max_abs' | 'envelope' | 'min_pairwise_dist'
 
-export async function invokeModule(moduleName: string): Promise<ModuleRunResponse> {
-  const res = await fetch(`${baseUrl}/api/modules/${moduleName}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({}),
-  })
-
-  if (!res.ok) {
-    throw new Error(`request failed: ${res.status}`)
-  }
-
-  return (await res.json()) as ModuleRunResponse
+export interface HsMeshRequest {
+  centerRe?: number
+  centerIm?: number
+  scale?: number
+  width?: number
+  height?: number
+  resolution?: number
+  metric?: HsStage
+  variant?: Variant
+  iterations?: number
 }
 
-export async function getSystemCheck(): Promise<SystemCheckResponse> {
-  const res = await fetch(`${baseUrl}/api/system/check`)
-  if (!res.ok) {
-    throw new Error(`request failed: ${res.status}`)
-  }
-  return (await res.json()) as SystemCheckResponse
+export interface MeshResponse {
+  runId: string
+  status: string
+  glbArtifactId: string
+  glbUrl: string
+  stlArtifactId: string
+  stlUrl: string
+  vertexCount: number
+  triangleCount: number
+  generatedMs?: number
+  fieldMs?: number
+  mcMs?: number
 }
 
-export async function getSystemHardware(): Promise<SystemHardwareResponse> {
-  const res = await fetch(`${baseUrl}/api/system/hardware`)
-  if (!res.ok) {
-    throw new Error(`request failed: ${res.status}`)
-  }
-  return (await res.json()) as SystemHardwareResponse
+export interface TransitionMeshRequest {
+  centerRe?: number
+  centerIm?: number
+  scale?: number
+  resolution?: number
+  theta?: number
+  iso?: number
+  iterations?: number
 }
 
-export async function postSpecialPointsAuto(payload: SpecialPointsAutoRequest): Promise<SpecialPointsAutoResponse> {
-  const res = await fetch(`${baseUrl}/api/special-points/auto`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  if (!res.ok) {
-    throw new Error(`request failed: ${res.status}`)
-  }
-  return (await res.json()) as SpecialPointsAutoResponse
+export interface VideoZoomRequest {
+  lnMapArtifactId: string
+  fps?: number
+  durationSec?: number
+  width?: number
+  height?: number
+  startLnRadius?: number
+  depthOctaves?: number
 }
 
-export async function postSpecialPointsSeed(payload: SpecialPointsSeedRequest): Promise<SpecialPointsSeedResponse> {
-  const res = await fetch(`${baseUrl}/api/special-points/seed`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  if (!res.ok) {
-    throw new Error(`request failed: ${res.status}`)
-  }
-  return (await res.json()) as SpecialPointsSeedResponse
+export interface VideoZoomResponse {
+  runId: string
+  status: string
+  artifactId: string
+  videoUrl: string
+  downloadUrl: string
+  frameCount: number
+  fps: number
+  durationSec: number
+  width: number
+  height: number
+  generatedMs: number
 }
 
-export async function getSpecialPoints(params?: { family?: string; k?: number; p?: number }): Promise<SpecialPointsListResponse> {
-  const query = new URLSearchParams()
-  if (params?.family != null && params.family !== '') {
-    query.set('family', params.family)
-  }
-  if (params?.k != null) {
-    query.set('k', String(params.k))
-  }
-  if (params?.p != null) {
-    query.set('p', String(params.p))
-  }
-  const suffix = query.toString().length > 0 ? `?${query.toString()}` : ''
-  const res = await fetch(`${baseUrl}/api/special-points${suffix}`)
-  if (!res.ok) {
-    throw new Error(`request failed: ${res.status}`)
-  }
-  return (await res.json()) as SpecialPointsListResponse
+export interface Hardware {
+  cpuModel: string
+  cpuLogicalCores: number
+  cpuPhysicalCores: number
+  memoryTotalMiB: number
+  memoryAvailableMiB: number
+  gpuModel: string
+  gpuMemory: string
 }
 
-export async function getArtifacts(params?: { kind?: string; runId?: string }): Promise<ArtifactsListResponse> {
-  const query = new URLSearchParams()
-  if (params?.kind != null && params.kind !== '') {
-    query.set('kind', params.kind)
-  }
-  if (params?.runId != null && params.runId !== '') {
-    query.set('runId', params.runId)
-  }
-  const suffix = query.toString().length > 0 ? `?${query.toString()}` : ''
-  const res = await fetch(`${baseUrl}/api/artifacts${suffix}`)
-  if (!res.ok) {
-    throw new Error(`request failed: ${res.status}`)
-  }
-  return (await res.json()) as ArtifactsListResponse
+export interface RunRow {
+  id: string
+  module: string
+  status: string
+  startedAt: number
+  finishedAt: number
+  outputDir: string
 }
 
-export function artifactDownloadUrl(downloadPath: string): string {
-  return `${baseUrl}${downloadPath}`
+export interface ArtifactRow {
+  artifactId: string
+  runId: string
+  name: string
+  kind: string
+  sizeBytes: number
+  downloadPath: string
+  contentPath: string
 }
 
-export function artifactContentUrl(artifactId: string): string {
-  const query = new URLSearchParams({ artifactId })
-  return `${baseUrl}/api/artifacts/content?${query.toString()}`
-}
+// ---- API methods ----
 
-export async function postMapRender(payload: MapRenderRequest): Promise<MapRenderResponse> {
-  const res = await fetch(`${baseUrl}/api/map/render`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  if (!res.ok) {
-    throw new Error(`request failed: ${res.status}`)
-  }
-  return (await res.json()) as MapRenderResponse
+export const api = {
+  baseUrl: BASE,
+
+  systemCheck: () => getJson<{ openmp: boolean; cuda: boolean }>('/api/system/check'),
+  hardware:    () => getJson<Hardware>('/api/system/hardware'),
+
+  mapRender:  (req: MapRenderRequest) => postJson<MapRenderResponse>('/api/map/render', req),
+  lnMap:      (req: LnMapRequest)     => postJson<LnMapResponse>('/api/map/ln', req),
+
+  specialPointsAuto: (k: number, p: number, pointType?: string) =>
+    postJson<{ mode: string; k: number; p: number; count: number; points: SpecialPoint[] }>(
+      '/api/special-points/auto', { k, p, pointType }),
+
+  specialPointsSeed: (k: number, p: number, re: number, im: number) =>
+    postJson<{ mode: string; converged: boolean; points: SpecialPoint[] }>(
+      '/api/special-points/seed', { k, p, re, im }),
+
+  specialPointsList: (family?: string) =>
+    getJson<{ items: SpecialPoint[] }>(
+      `/api/special-points${family ? `?family=${encodeURIComponent(family)}` : ''}`),
+
+  hsMesh: (req: HsMeshRequest) => postJson<MeshResponse>('/api/hs/mesh', req),
+  transitionMesh: (req: TransitionMeshRequest) => postJson<MeshResponse>('/api/transition/mesh', req),
+  videoZoom: (req: VideoZoomRequest) => postJson<VideoZoomResponse>('/api/video/zoom', req),
+
+  runs: (limit = 50) => getJson<{ items: RunRow[] }>(`/api/runs?limit=${limit}`),
+
+  artifacts: (kind?: string, runId?: string) => {
+    const q = new URLSearchParams()
+    if (kind)  q.set('kind',  kind)
+    if (runId) q.set('runId', runId)
+    const s = q.toString()
+    return getJson<{ items: ArtifactRow[] }>(`/api/artifacts${s ? '?' + s : ''}`)
+  },
+
+  artifactContentUrl: (artifactId: string) =>
+    `${BASE}/api/artifacts/content?artifactId=${encodeURIComponent(artifactId)}`,
+
+  artifactDownloadUrl: (artifactId: string) =>
+    `${BASE}/api/artifacts/download?artifactId=${encodeURIComponent(artifactId)}`,
 }
