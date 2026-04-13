@@ -1,8 +1,8 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { t } from '../i18n'
 
-// Simple two-letter glyph icons in monospace — matches the instrumentation aesthetic.
 const items = [
   { to: '/',       glyph: 'MP', label: 'nav_map' },
   { to: '/points', glyph: 'PT', label: 'nav_points' },
@@ -10,6 +10,16 @@ const items = [
   { to: '/runs',   glyph: 'RN', label: 'nav_runs' },
   { to: '/system', glyph: 'SY', label: 'nav_system' },
 ]
+
+const isLight = ref(false)
+function toggleTheme() {
+  isLight.value = !isLight.value
+  if (isLight.value) {
+    document.documentElement.setAttribute('data-theme', 'light')
+  } else {
+    document.documentElement.removeAttribute('data-theme')
+  }
+}
 </script>
 
 <template>
@@ -24,6 +34,13 @@ const items = [
       <span class="glyph mono">{{ item.glyph }}</span>
       <span class="tip">{{ t(item.label) }}</span>
     </RouterLink>
+
+    <div class="spacer"></div>
+
+    <button class="theme-btn nav-item" @click="toggleTheme" :title="isLight ? 'Switch to dark mode' : 'Switch to light mode'">
+      <span class="glyph mono">{{ isLight ? 'DK' : 'LT' }}</span>
+      <span class="tip">{{ isLight ? 'dark mode' : 'light mode' }}</span>
+    </button>
   </nav>
 </template>
 
@@ -34,8 +51,24 @@ const items = [
   align-items: center;
   background: var(--bg);
   padding-top: 18px;
+  padding-bottom: 12px;
   gap: 4px;
+  height: 100%;
 }
+
+.spacer { flex: 1; }
+
+.theme-btn {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: inherit;
+}
+
+.theme-btn:hover { color: var(--accent); }
 
 .brand {
   font-family: var(--mono);

@@ -1,65 +1,86 @@
 <script setup lang="ts">
-import { inject, onMounted, ref, watch } from 'vue'
+import { inject, onMounted, ref, watch, computed } from 'vue'
 import MapCanvas from '../components/MapCanvas.vue'
 import SpecialPointList from '../components/SpecialPointList.vue'
 import {
   api, VARIANTS, METRICS, COLORMAPS,
   type Variant, type Metric, type ColorMap, type SpecialPoint,
-  type LnMapResponse, type MapRenderResponse,
+  type LnMapResponse,
 } from '../api'
 import type { StatusState } from '../types'
 import { t } from '../i18n'
 
 const status = inject<StatusState>('status')!
 
-const centerRe = ref(-0.75)
-const centerIm = ref( 0.0)
-const scale    = ref( 3.0)
+// ── Left / Mandelbrot viewport ────────────────────────────────────────────────
+const centerRe   = ref(-0.75)
+const centerIm   = ref( 0.0)
+const scale      = ref( 3.0)
 const iterations = ref(1024)
 
 const variant  = ref<Variant>('mandelbrot')
 const metric   = ref<Metric>('escape')
 const colorMap = ref<ColorMap>('classic_cos')
-const smooth   = ref(false)   // ln-smooth continuous coloring
+const smooth   = ref(false)
 
 const transitionOn = ref(false)
-const thetaDeg     = ref(0)   // 0–90 degrees
+const thetaDeg     = ref(0)
 
-// Julia mode
+// ── Julia mode ────────────────────────────────────────────────────────────────
 const juliaOn  = ref(false)
 const juliaRe  = ref(-0.7)
 const juliaIm  = ref(0.27)
 
-function useCurrentAsJulia() {
-  juliaRe.value = centerRe.value
-  juliaIm.value = centerIm.value
+// Right / Julia viewport (independent)
+const jCenterRe = ref(0.0)
+const jCenterIm = ref(0.0)
+const jScale    = ref(4.0)
+
+// Format c for display
+const juliaLabel = computed(() => {
+  const sign = juliaIm.value >= 0 ? '+' : ''
+  return `${juliaRe.value.toPrecision(10)} ${sign}${juliaIm.value.toPrecision(10)}i`
+})
+
+// Left-canvas click: pick julia c AND recenter left map
+function onPickJulia(pos: { re: number; im: number }) {
+  juliaRe.value = pos.re
+  juliaIm.value = pos.im
+  centerRe.value = pos.re
+  centerIm.value = pos.im
 }
 
-// Phase 3: engine + scalar type selection
-const engineMode  = ref<'auto' | 'openmp' | 'avx512' | 'cuda' | 'hybrid'>('auto')
-const scalarMode  = ref<'auto' | 'fp64' | 'fx64'>('auto')
+function onJuliaViewport(v: { centerRe: number; centerIm: number; scale: number }) {
+  jCenterRe.value = v.centerRe
+  jCenterIm.value = v.centerIm
+  jScale.value    = v.scale
+}
 
-const lastMs = ref<number | null>(null)
+// ── Engine / scalar ───────────────────────────────────────────────────────────
+const engineMode = ref<'auto' | 'openmp' | 'avx512' | 'cuda' | 'hybrid'>('auto')
+const scalarMode = ref<'auto' | 'fp64' | 'fx64'>('auto')
+
+// ── Status rail sync ─────────────────────────────────────────────────────────
+const lastMs         = ref<number | null>(null)
 const lastArtifactId = ref<string>('')
-const lastEngine = ref('')
-const lastScalar = ref('')
+const lastEngine     = ref('')
+const lastScalar     = ref('')
 
 function syncStatus() {
-  status.cRe     = centerRe.value
-  status.cIm     = centerIm.value
-  status.zoom    = scale.value
-  status.iter    = iterations.value
-  status.variant = variant.value
-  status.metric  = metric.value
+  status.cRe      = centerRe.value
+  status.cIm      = centerIm.value
+  status.zoom     = scale.value
+  status.iter     = iterations.value
+  status.variant  = variant.value
+  status.metric   = metric.value
   status.renderMs = lastMs.value
-  status.engine  = lastEngine.value || engineMode.value
-  status.scalar  = lastScalar.value || scalarMode.value
-  status.message = 'ready'
+  status.engine   = lastEngine.value || engineMode.value
+  status.scalar   = lastScalar.value || scalarMode.value
+  status.message  = 'ready'
 }
 
 watch([centerRe, centerIm, scale, iterations, variant, metric, lastMs], syncStatus, { immediate: true })
 
-// If the PointsView navigated here with a pending center, adopt it.
 onMounted(() => {
   const pending = sessionStorage.getItem('fs_pending_center')
   if (pending) {
@@ -82,17 +103,17 @@ function onViewportChange(v: { centerRe: number; centerIm: number; scale: number
 }
 
 function onRendered(meta: { generatedMs: number; artifactId: string; engineUsed?: string; scalarUsed?: string }) {
-  lastMs.value = meta.generatedMs
+  lastMs.value         = meta.generatedMs
   lastArtifactId.value = meta.artifactId
-  lastEngine.value = meta.engineUsed ?? ''
-  lastScalar.value = meta.scalarUsed ?? ''
+  lastEngine.value     = meta.engineUsed ?? ''
+  lastScalar.value     = meta.scalarUsed ?? ''
   syncStatus()
 }
 
 function resetView() {
-  centerRe.value =  0.0
-  centerIm.value =  0.0
-  scale.value    =  4.0
+  centerRe.value = 0.0
+  centerIm.value = 0.0
+  scale.value    = 4.0
 }
 
 function onImportPoint(p: SpecialPoint) {
@@ -106,12 +127,13 @@ function exportPng() {
   window.open(api.artifactDownloadUrl(lastArtifactId.value), '_blank')
 }
 
-const lnBusy   = ref(false)
-const lnStatus = ref('')
+// ── ln-map & video export ─────────────────────────────────────────────────────
+const lnBusy         = ref(false)
+const lnStatus       = ref('')
 const lastLnArtifact = ref<LnMapResponse | null>(null)
 
 async function exportLnMap() {
-  lnBusy.value = true
+  lnBusy.value  = true
   lnStatus.value = 'rendering ln-map…'
   lastLnArtifact.value = null
   try {
@@ -134,26 +156,25 @@ async function exportLnMap() {
   }
 }
 
-// ---- Video export modal ----
-const videoModalOpen = ref(false)
-const videoFps       = ref(30)
-const videoDuration  = ref(8.0)
-const videoWidth     = ref(720)
-const videoHeight    = ref(720)
-const videoBusy      = ref(false)
-const videoStatus    = ref('')
+const videoModalOpen  = ref(false)
+const videoFps        = ref(30)
+const videoDuration   = ref(8.0)
+const videoWidth      = ref(720)
+const videoHeight     = ref(720)
+const videoBusy       = ref(false)
+const videoStatus     = ref('')
 const videoArtifactId = ref('')
 
 function openVideoModal() {
   if (!lastLnArtifact.value) return
-  videoModalOpen.value = true
-  videoStatus.value = ''
+  videoModalOpen.value  = true
+  videoStatus.value     = ''
   videoArtifactId.value = ''
 }
 
 async function exportVideo() {
   if (!lastLnArtifact.value) return
-  videoBusy.value  = true
+  videoBusy.value   = true
   videoStatus.value = 'generating video…'
   videoArtifactId.value = ''
   try {
@@ -181,6 +202,8 @@ function downloadVideo() {
 
 <template>
   <div class="map-view">
+
+    <!-- ── Controls bar ──────────────────────────────────────────────────── -->
     <div class="controls">
       <div class="group">
         <label>{{ t('variant') }}</label>
@@ -205,7 +228,7 @@ function downloadVideo() {
 
       <div class="group">
         <label>
-          <input type="checkbox" v-model="smooth" style="width:auto; margin-right:6px;" />
+          <input type="checkbox" v-model="smooth" style="width:auto;margin-right:6px" />
           {{ t('smooth') }}
         </label>
       </div>
@@ -217,7 +240,7 @@ function downloadVideo() {
 
       <div class="group transition-group">
         <label>
-          <input type="checkbox" v-model="transitionOn" style="width:auto; margin-right:6px;" />
+          <input type="checkbox" v-model="transitionOn" style="width:auto;margin-right:6px" />
           {{ t('transition') }} m↔b
         </label>
         <div v-if="transitionOn" class="theta-row">
@@ -226,22 +249,11 @@ function downloadVideo() {
         </div>
       </div>
 
-      <div class="group julia-group">
+      <div class="group">
         <label>
-          <input type="checkbox" v-model="juliaOn" style="width:auto; margin-right:6px;" />
+          <input type="checkbox" v-model="juliaOn" style="width:auto;margin-right:6px" />
           Julia J(c)
         </label>
-        <div v-if="juliaOn" class="julia-row">
-          <div class="julia-coord">
-            <span class="coord-label">Re</span>
-            <input type="number" v-model.number="juliaRe" step="0.001" />
-          </div>
-          <div class="julia-coord">
-            <span class="coord-label">Im</span>
-            <input type="number" v-model.number="juliaIm" step="0.001" />
-          </div>
-          <button class="snap-btn" @click="useCurrentAsJulia" title="use current view center as c">← use center</button>
-        </div>
       </div>
 
       <div class="group">
@@ -269,11 +281,91 @@ function downloadVideo() {
       <button @click="resetView" title="Reset to 0+0i, scale 4">⌂ reset</button>
       <button @click="exportPng" :disabled="!lastArtifactId">{{ t('export_png') }}</button>
       <button @click="exportLnMap" :disabled="lnBusy">{{ t('export_lnmap') }}</button>
-      <button @click="openVideoModal" :disabled="!lastLnArtifact" title="Export zoom video from ln-map">video →</button>
+      <button @click="openVideoModal" :disabled="!lastLnArtifact" title="Export zoom video">video →</button>
     </div>
+
+    <!-- ── ln-map status strip ───────────────────────────────────────────── -->
     <div v-if="lnStatus" class="ln-status mono">{{ lnStatus }}</div>
 
-    <!-- Video export modal -->
+    <!-- ── Julia info strip ─────────────────────────────────────────────── -->
+    <div v-if="juliaOn" class="julia-strip mono">
+      <span class="julia-label">Selected julia c:</span>
+      <span class="julia-val">{{ juliaLabel }}</span>
+      <span class="julia-hint">Left click picks julia c and recenters left map. Drag/Wheel works on both panes.</span>
+    </div>
+
+    <!-- ── Main stage: dual-pane or single ──────────────────────────────── -->
+    <div class="stage">
+
+      <!-- Single-pane mode (no Julia) -->
+      <template v-if="!juliaOn">
+        <MapCanvas
+          :centerRe="centerRe" :centerIm="centerIm" :scale="scale"
+          :iterations="iterations" :variant="variant" :metric="metric"
+          :colorMap="colorMap" :smooth="smooth"
+          :transitionTheta="transitionOn ? thetaDeg * Math.PI / 180 : null"
+          :engine="engineMode" :scalarType="scalarMode"
+          @viewport-change="onViewportChange"
+          @rendered="onRendered"
+        />
+        <aside class="points">
+          <SpecialPointList @import-point="onImportPoint" />
+        </aside>
+      </template>
+
+      <!-- Dual-pane Julia mode -->
+      <template v-else>
+        <div class="dual-pane">
+          <!-- Left: Mandelbrot / variant — click picks julia c -->
+          <div class="pane">
+            <div class="pane-header mono">
+              <span class="pane-title">Left: {{ variant }}</span>
+              <span class="pane-meta">
+                Center: {{ centerRe.toPrecision(10) }} + {{ centerIm.toPrecision(10) }}i
+                &nbsp;·&nbsp;Scale: {{ scale.toPrecision(6) }}
+              </span>
+            </div>
+            <div class="pane-canvas">
+              <MapCanvas
+                :centerRe="centerRe" :centerIm="centerIm" :scale="scale"
+                :iterations="iterations" :variant="variant" :metric="metric"
+                :colorMap="colorMap" :smooth="smooth"
+                :transitionTheta="transitionOn ? thetaDeg * Math.PI / 180 : null"
+                :engine="engineMode" :scalarType="scalarMode"
+                @viewport-change="onViewportChange"
+                @rendered="onRendered"
+                @click-world="onPickJulia"
+              />
+            </div>
+          </div>
+
+          <!-- Right: Julia set J(c) — own viewport -->
+          <div class="pane">
+            <div class="pane-header mono">
+              <span class="pane-title">Right: Julia</span>
+              <span class="pane-meta">
+                julia c: {{ juliaRe.toPrecision(10) }} + {{ juliaIm.toPrecision(10) }}i
+                &nbsp;·&nbsp;Center: {{ jCenterRe.toPrecision(6) }} + {{ jCenterIm.toPrecision(6) }}i
+                &nbsp;·&nbsp;Scale: {{ jScale.toPrecision(6) }}
+              </span>
+            </div>
+            <div class="pane-canvas">
+              <MapCanvas
+                :centerRe="jCenterRe" :centerIm="jCenterIm" :scale="jScale"
+                :iterations="iterations" :variant="variant" :metric="metric"
+                :colorMap="colorMap" :smooth="smooth"
+                :transitionTheta="null"
+                :julia="true" :juliaRe="juliaRe" :juliaIm="juliaIm"
+                :engine="engineMode" :scalarType="scalarMode"
+                @viewport-change="onJuliaViewport"
+              />
+            </div>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- ── Video export modal ────────────────────────────────────────────── -->
     <Teleport to="body">
       <div v-if="videoModalOpen" class="modal-backdrop" @click.self="videoModalOpen = false">
         <div class="modal">
@@ -295,7 +387,7 @@ function downloadVideo() {
               <label>height px</label>
               <input type="number" v-model.number="videoHeight" min="128" max="1080" step="64" />
             </div>
-            <div class="mrow source mono" v-if="lastLnArtifact">
+            <div v-if="lastLnArtifact" class="mrow source mono">
               source: {{ lastLnArtifact.artifactId }}<br/>
               {{ lastLnArtifact.widthS }}×{{ lastLnArtifact.heightT }} · {{ lastLnArtifact.depthOctaves }} oct
             </div>
@@ -314,51 +406,27 @@ function downloadVideo() {
       </div>
     </Teleport>
 
-    <div class="stage">
-      <MapCanvas
-        :centerRe="centerRe"
-        :centerIm="centerIm"
-        :scale="scale"
-        :iterations="iterations"
-        :variant="variant"
-        :metric="metric"
-        :colorMap="colorMap"
-        :smooth="smooth"
-        :transitionTheta="transitionOn ? thetaDeg * Math.PI / 180 : null"
-        :julia="juliaOn"
-        :juliaRe="juliaRe"
-        :juliaIm="juliaIm"
-        :engine="engineMode"
-        :scalarType="scalarMode"
-        @viewport-change="onViewportChange"
-        @rendered="onRendered"
-      />
-    </div>
-
-    <aside class="points">
-      <SpecialPointList @import-point="onImportPoint" />
-    </aside>
   </div>
 </template>
 
 <style scoped>
 .map-view {
-  display: grid;
-  grid-template-columns: 1fr 320px;
-  grid-template-rows: auto auto 1fr;
+  display: flex;
+  flex-direction: column;
   height: 100%;
-  gap: 0;
+  overflow: hidden;
 }
 
+/* ── Controls ── */
 .controls {
-  grid-column: 1 / -1;
   display: flex;
   align-items: flex-end;
   gap: 14px;
-  padding: 12px 14px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--rule);
   background: var(--panel);
   flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
 .group {
@@ -368,81 +436,107 @@ function downloadVideo() {
 }
 
 .group.transition-group { min-width: 200px; }
-.group.julia-group { min-width: 260px; }
 
 .theta-row {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-
 .theta-row input[type="range"] { flex: 1; }
-
-.julia-row {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 4px;
-}
-
-.julia-coord {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.coord-label {
-  font-family: var(--mono);
-  font-size: 10px;
-  color: var(--text-dim);
-  width: 18px;
-}
-
-.julia-coord input[type="number"] {
-  flex: 1;
-  width: 0;
-}
-
-.snap-btn {
-  font-size: 10px;
-  font-family: var(--mono);
-  padding: 3px 8px;
-  background: transparent;
-  border: 1px solid var(--rule);
-  color: var(--text-dim);
-  cursor: pointer;
-  align-self: flex-start;
-}
-
-.snap-btn:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
 
 .spacer { flex: 1; }
 
+/* ── ln-map status ── */
 .ln-status {
-  grid-column: 1 / -1;
-  padding: 6px 14px;
+  padding: 5px 14px;
   color: var(--text-dim);
   font-size: var(--fs-label);
   border-bottom: 1px solid var(--rule);
   background: var(--bg-raised);
+  flex-shrink: 0;
 }
 
-.stage {
-  position: relative;
-  min-height: 0;
+/* ── Julia strip ── */
+.julia-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 14px;
+  background: var(--accent-weak);
+  border-bottom: 1px solid var(--accent-edge);
+  font-size: var(--fs-label);
+  flex-shrink: 0;
 }
+.julia-label { color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; }
+.julia-val   { color: var(--accent); }
+.julia-hint  { color: var(--text-faint); margin-left: auto; }
+
+/* ── Stage ── */
+.stage {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 320px;
+}
+
+/* single-pane: canvas takes full grid, points panel on right */
+.stage > .map-canvas-wrap,
+.stage > canvas { grid-column: 1; }
 
 .points {
   border-left: 1px solid var(--rule);
   padding: 12px 14px;
   background: var(--bg-raised);
-  overflow: auto;
+  overflow-y: auto;
 }
 
-/* ---- Video modal ---- */
+/* ── Dual pane ── */
+.dual-pane {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  height: 100%;
+  min-height: 0;
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--rule);
+}
+.pane:last-child { border-right: none; }
+
+.pane-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--rule);
+  flex-shrink: 0;
+}
+.pane-title {
+  font-size: var(--fs-label);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+}
+.pane-meta {
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pane-canvas {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+/* ── Video modal ── */
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -452,7 +546,6 @@ function downloadVideo() {
   justify-content: center;
   z-index: 9999;
 }
-
 .modal {
   background: var(--panel);
   border: 1px solid var(--rule);
@@ -462,7 +555,6 @@ function downloadVideo() {
   flex-direction: column;
   gap: 14px;
 }
-
 .modal-title {
   font-family: var(--mono);
   font-size: 12px;
@@ -470,20 +562,13 @@ function downloadVideo() {
   text-transform: uppercase;
   letter-spacing: 0.1em;
 }
-
-.modal-body {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
+.modal-body { display: flex; flex-direction: column; gap: 10px; }
 .mrow {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
-
 .mrow label {
   font-size: 11px;
   color: var(--text-dim);
@@ -491,11 +576,7 @@ function downloadVideo() {
   letter-spacing: 0.05em;
   min-width: 90px;
 }
-
-.mrow input[type="number"] {
-  width: 100px;
-}
-
+.mrow input[type="number"] { width: 100px; }
 .mrow.source {
   flex-direction: column;
   align-items: flex-start;
@@ -503,13 +584,7 @@ function downloadVideo() {
   color: var(--text-dim);
   line-height: 1.5;
 }
-
-.modal-footer {
-  display: flex;
-  gap: 10px;
-  justify-content: flex-end;
-}
-
+.modal-footer { display: flex; gap: 10px; justify-content: flex-end; }
 .btn-cancel {
   background: transparent;
   border: 1px solid var(--rule);
@@ -519,7 +594,6 @@ function downloadVideo() {
   font-size: 12px;
   cursor: pointer;
 }
-
 .btn-go {
   background: var(--accent);
   color: #000;
@@ -530,14 +604,6 @@ function downloadVideo() {
   font-weight: 600;
   cursor: pointer;
 }
-
-.btn-go:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.modal-status {
-  font-size: 10px;
-  color: var(--text-dim);
-}
+.btn-go:disabled { opacity: 0.5; cursor: default; }
+.modal-status { font-size: 10px; color: var(--text-dim); }
 </style>

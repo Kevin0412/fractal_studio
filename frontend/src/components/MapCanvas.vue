@@ -25,6 +25,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'viewport-change', v: { centerRe: number; centerIm: number; scale: number }): void
   (e: 'rendered', meta: { generatedMs: number; artifactId: string; engineUsed?: string; scalarUsed?: string }): void
+  (e: 'click-world', pos: { re: number; im: number }): void
 }>()
 
 const imgUrl  = ref<string>('')
@@ -146,10 +147,24 @@ function onWheel(e: WheelEvent) {
 }
 
 let dragging = false
+let dragMoved = false
 let dragStart = { x: 0, y: 0, cx: 0, cy: 0, sc: 0 }
 
+function screenToWorld(e: MouseEvent): { re: number; im: number } | null {
+  if (!wrapper.value) return null
+  const rect = wrapper.value.getBoundingClientRect()
+  const aspect = rect.width / rect.height
+  const px = (e.clientX - rect.left) / rect.width
+  const py = (e.clientY - rect.top)  / rect.height
+  return {
+    re: props.centerRe + (px - 0.5) * props.scale * aspect,
+    im: props.centerIm - (py - 0.5) * props.scale,
+  }
+}
+
 function onMouseDown(e: MouseEvent) {
-  dragging = true
+  dragging  = true
+  dragMoved = false
   dragStart = {
     x: e.clientX, y: e.clientY,
     cx: props.centerRe, cy: props.centerIm, sc: props.scale,
@@ -158,16 +173,25 @@ function onMouseDown(e: MouseEvent) {
 
 function onMouseMove(e: MouseEvent) {
   if (!dragging || !wrapper.value) return
+  const dx = e.clientX - dragStart.x
+  const dy = e.clientY - dragStart.y
+  if (!dragMoved && Math.hypot(dx, dy) < 5) return
+  dragMoved = true
   const rect = wrapper.value.getBoundingClientRect()
   const aspect = rect.width / rect.height
-  const dx = (e.clientX - dragStart.x) / rect.width
-  const dy = (e.clientY - dragStart.y) / rect.height
-  const newCenterRe = dragStart.cx - dx * dragStart.sc * aspect
-  const newCenterIm = dragStart.cy + dy * dragStart.sc
+  const newCenterRe = dragStart.cx - (dx / rect.width)  * dragStart.sc * aspect
+  const newCenterIm = dragStart.cy + (dy / rect.height) * dragStart.sc
   emit('viewport-change', { centerRe: newCenterRe, centerIm: newCenterIm, scale: dragStart.sc })
 }
 
-function onMouseUp() { dragging = false }
+function onMouseUp(e: MouseEvent) {
+  if (dragging && !dragMoved) {
+    // clean click — emit world coords
+    const w = screenToWorld(e)
+    if (w) emit('click-world', w)
+  }
+  dragging = false
+}
 </script>
 
 <template>
