@@ -74,20 +74,20 @@ function onImportPoint(pt: any) {
           <div><label>{{ t('points_k') }}</label><input type="number" v-model.number="k" min="0" /></div>
           <div><label>{{ t('points_p') }}</label><input type="number" v-model.number="p" min="1" /></div>
         </div>
-        <button class="primary" @click="autoSolve" :disabled="busy">solve</button>
+        <button class="primary" @click="autoSolve" :disabled="busy">{{ t('points_auto') }}</button>
       </div>
 
       <div class="panel">
         <div class="panel-title">{{ t('points_seed') }}</div>
         <div class="row">
-          <div><label>k</label><input type="number" v-model.number="seedK" min="0" /></div>
-          <div><label>p</label><input type="number" v-model.number="seedP" min="1" /></div>
+          <div><label>{{ t('points_table_k') }}</label><input type="number" v-model.number="seedK" min="0" /></div>
+          <div><label>{{ t('points_table_p') }}</label><input type="number" v-model.number="seedP" min="1" /></div>
         </div>
         <div class="row">
-          <div><label>seed re</label><input type="number" v-model.number="seedRe" step="0.01" /></div>
-          <div><label>seed im</label><input type="number" v-model.number="seedIm" step="0.01" /></div>
+          <div><label>{{ t('points_seed_re') }}</label><input type="number" v-model.number="seedRe" step="0.01" /></div>
+          <div><label>{{ t('points_seed_im') }}</label><input type="number" v-model.number="seedIm" step="0.01" /></div>
         </div>
-        <button class="primary" @click="seedSolve" :disabled="busy">newton</button>
+        <button class="primary" @click="seedSolve" :disabled="busy">{{ t('points_seed') }}</button>
       </div>
 
       <div v-if="message" class="msg mono">{{ message }}</div>

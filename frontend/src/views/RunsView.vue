@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { api, type RunRow, type ArtifactRow } from '../api'
+import { t } from '../i18n'
 
 const runs = ref<RunRow[]>([])
 const artifacts = ref<ArtifactRow[]>([])
@@ -39,18 +40,18 @@ onMounted(refresh)
 <template>
   <div class="wrap">
     <div class="head">
-      <span class="panel-title">runs ({{ runs.length }})</span>
-      <button @click="refresh" :disabled="loading">refresh</button>
+      <span class="panel-title">{{ t('runs_title') }} ({{ runs.length }})</span>
+      <button @click="refresh" :disabled="loading">{{ t('render') }}</button>
     </div>
     <table class="runs">
       <thead>
         <tr>
-          <th>id</th>
-          <th>module</th>
-          <th>status</th>
+          <th>{{ t('runs_id') }}</th>
+          <th>{{ t('runs_module') }}</th>
+          <th>{{ t('runs_status') }}</th>
           <th>started</th>
           <th>took</th>
-          <th>artifacts</th>
+          <th>{{ t('runs_artifacts') }}</th>
         </tr>
       </thead>
       <tbody>
@@ -70,7 +71,7 @@ onMounted(refresh)
     </table>
 
     <div v-if="selectedRun" class="artifacts">
-      <div class="panel-title">artifacts for {{ selectedRun }}</div>
+      <div class="panel-title">{{ t('runs_artifacts') }} for {{ selectedRun }}</div>
       <ul>
         <li v-for="a in runArtifacts(selectedRun)" :key="a.artifactId">
           <a class="mono" :href="api.artifactDownloadUrl(a.artifactId)" target="_blank">

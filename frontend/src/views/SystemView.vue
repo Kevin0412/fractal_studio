@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { api, type Hardware } from '../api'
+import { t } from '../i18n'
 
 const hw    = ref<Hardware | null>(null)
 const check = ref<{ openmp: boolean; cuda: boolean } | null>(null)
@@ -70,13 +71,13 @@ function speedBar(mpps: number): string {
 <template>
   <div class="wrap">
     <div class="head">
-      <span class="panel-title">system</span>
-      <button @click="refresh" :disabled="loading">refresh</button>
+      <span class="panel-title">{{ t('sys_title') }}</span>
+      <button @click="refresh" :disabled="loading">{{ t('render') }}</button>
     </div>
 
     <div class="grid">
       <div class="panel">
-        <div class="panel-title">compute backends</div>
+        <div class="panel-title">{{ t('sys_engines') }}</div>
         <div v-if="check">
           <div class="row">
             <span class="k">openmp</span>
@@ -106,12 +107,12 @@ function speedBar(mpps: number): string {
       </div>
 
       <div class="panel">
-        <div class="panel-title">host</div>
+        <div class="panel-title">{{ t('sys_title') }}</div>
         <div v-if="hw">
-          <div class="row"><span class="k">cpu</span><span class="v mono">{{ hw.cpuModel }}</span></div>
+          <div class="row"><span class="k">{{ t('sys_cpu') }}</span><span class="v mono">{{ hw.cpuModel }}</span></div>
           <div class="row"><span class="k">cores</span><span class="v num">{{ hw.cpuPhysicalCores }} phys / {{ hw.cpuLogicalCores }} logical</span></div>
-          <div class="row"><span class="k">memory</span><span class="v num">{{ Math.round(hw.memoryAvailableMiB/1024) }} / {{ Math.round(hw.memoryTotalMiB/1024) }} GiB avail</span></div>
-          <div class="row"><span class="k">gpu</span><span class="v mono">{{ hw.gpuModel }}</span></div>
+          <div class="row"><span class="k">{{ t('sys_ram') }}</span><span class="v num">{{ Math.round(hw.memoryAvailableMiB/1024) }} / {{ Math.round(hw.memoryTotalMiB/1024) }} GiB avail</span></div>
+          <div class="row"><span class="k">{{ t('sys_gpu') }}</span><span class="v mono">{{ hw.gpuModel }}</span></div>
           <div class="row"><span class="k">vram</span><span class="v mono">{{ hw.gpuMemory }}</span></div>
         </div>
       </div>

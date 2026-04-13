@@ -28,15 +28,15 @@ onMounted(refresh)
 <template>
   <div>
     <div class="head">
-      <span class="panel-title">saved points ({{ items.length }})</span>
-      <button @click="refresh" :disabled="loading">refresh</button>
+      <span class="panel-title">{{ t('points_table_c') }} ({{ items.length }})</span>
+      <button @click="refresh" :disabled="loading">{{ t('render') }}</button>
     </div>
     <table class="pts" v-if="items.length">
       <thead>
         <tr>
-          <th>k/p</th>
-          <th>re</th>
-          <th>im</th>
+          <th>{{ t('points_table_k') }}/{{ t('points_table_p') }}</th>
+          <th>Re</th>
+          <th>Im</th>
           <th>type</th>
           <th></th>
         </tr>
@@ -51,7 +51,7 @@ onMounted(refresh)
         </tr>
       </tbody>
     </table>
-    <div v-else class="empty">no points yet — compute some with auto-solve</div>
+    <div v-else class="empty">{{ t('points_none') }}</div>
   </div>
 </template>
 
