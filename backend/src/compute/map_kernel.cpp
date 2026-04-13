@@ -213,13 +213,12 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
     // Fall through to OpenMP which has access to IterResult.norm.
     const bool needs_norm = p.smooth;
 
-    // CUDA path: Mandelbrot + Escape only (no Julia, no smooth).
+    // CUDA path: all 10 variants, Julia mode, metrics 0-3 (not MinPairwiseDist=4).
+    // smooth coloring (needs IterResult.norm) still falls to OpenMP.
 #if USE_CUDA
     const bool can_cuda = !needs_norm
-                       && !p.julia
                        && (p.engine == "cuda" || p.engine == "auto" || p.engine == "hybrid")
-                       && (p.variant == Variant::Mandelbrot)
-                       && (p.metric == Metric::Escape)
+                       && (static_cast<int>(p.metric) < 4)  // excludes MinPairwiseDist
                        && fsd_cuda::cuda_available();
     if (can_cuda) {
         fsd_cuda::CudaMapParams cp;
@@ -232,6 +231,11 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
         cp.bailout    = p.bailout;
         cp.scalar_type  = fx ? "fx64" : "fp64";
         cp.colormap_id  = static_cast<int>(p.colormap);
+        cp.variant_id   = static_cast<int>(p.variant);
+        cp.julia        = p.julia;
+        cp.julia_re     = p.julia_re;
+        cp.julia_im     = p.julia_im;
+        cp.metric_id    = static_cast<int>(p.metric);
         auto cs = fsd_cuda::cuda_render_map(cp, out);
         MapStats s;
         s.elapsed_ms  = cs.elapsed_ms;
@@ -242,13 +246,19 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
     }
 #endif
 
-    // AVX-512 path: only Mandelbrot + Escape metric currently (most common case).
-    // Other variants, non-escape metrics, and smooth mode fall through to OpenMP.
-    const bool can_avx = !needs_norm
-                      && (p.engine == "avx512" || p.engine == "auto" || p.engine == "hybrid")
-                      && (p.variant == Variant::Mandelbrot)
-                      && (p.metric == Metric::Escape)
-                      && avx512_available();
+    // AVX-512 path: all 10 variants, Julia mode, metrics 0-3 (fp64).
+    // For fx64 (IFMA52): Mandelbrot-only variant is supported; non-Mandelbrot
+    // variants fall through to scalar OpenMP for correctness.
+    // MinPairwiseDist (metric 4) is excluded: O(N²) orbit buffer not vectorised.
+    // Smooth coloring needs per-pixel norm from IterResult — falls to OpenMP.
+    const bool can_avx_base = !needs_norm
+                           && (p.engine == "avx512" || p.engine == "auto" || p.engine == "hybrid")
+                           && (static_cast<int>(p.metric) < 4)
+                           && avx512_available();
+    // fx64 path: restrict to Mandelbrot variant only (IFMA52 integer variant
+    // extensions are not yet implemented for the other 9 variants).
+    const bool can_avx = can_avx_base
+                      && (!fx || p.variant == Variant::Mandelbrot);
 
     if (can_avx) {
         auto s = fx ? render_map_avx512_fx64(p, out)
