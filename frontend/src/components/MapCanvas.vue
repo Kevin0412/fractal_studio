@@ -15,6 +15,9 @@ const props = defineProps<{
   colorMap: ColorMap
   smooth?: boolean
   transitionTheta: number | null
+  julia?: boolean
+  juliaRe?: number
+  juliaIm?: number
   engine?: string
   scalarType?: string
 }>()
@@ -55,7 +58,12 @@ async function triggerRender() {
     colorMap:   props.colorMap,
   }
   if (props.transitionTheta !== null) req.transitionTheta = props.transitionTheta
-  if (props.smooth)      req.smooth      = props.smooth
+  if (props.smooth)      req.smooth    = props.smooth
+  if (props.julia) {
+    req.julia   = true
+    req.juliaRe = props.juliaRe ?? 0
+    req.juliaIm = props.juliaIm ?? 0
+  }
   if (props.engine)     (req as any).engine     = props.engine
   if (props.scalarType) (req as any).scalarType = props.scalarType
   try {
@@ -82,7 +90,8 @@ function requestRender() {
 watch(() => [
   props.centerRe, props.centerIm, props.scale,
   props.iterations, props.variant, props.metric, props.colorMap, props.smooth,
-  props.transitionTheta, props.engine, props.scalarType,
+  props.transitionTheta, props.julia, props.juliaRe, props.juliaIm,
+  props.engine, props.scalarType,
   domW.value, domH.value,
 ], requestRender)
 

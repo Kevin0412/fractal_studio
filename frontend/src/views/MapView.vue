@@ -25,6 +25,16 @@ const smooth   = ref(false)   // ln-smooth continuous coloring
 const transitionOn = ref(false)
 const thetaDeg     = ref(0)   // 0–90 degrees
 
+// Julia mode
+const juliaOn  = ref(false)
+const juliaRe  = ref(-0.7)
+const juliaIm  = ref(0.27)
+
+function useCurrentAsJulia() {
+  juliaRe.value = centerRe.value
+  juliaIm.value = centerIm.value
+}
+
 // Phase 3: engine + scalar type selection
 const engineMode  = ref<'auto' | 'openmp' | 'avx512' | 'cuda' | 'hybrid'>('auto')
 const scalarMode  = ref<'auto' | 'fp64' | 'fx64'>('auto')
@@ -216,6 +226,24 @@ function downloadVideo() {
         </div>
       </div>
 
+      <div class="group julia-group">
+        <label>
+          <input type="checkbox" v-model="juliaOn" style="width:auto; margin-right:6px;" />
+          Julia J(c)
+        </label>
+        <div v-if="juliaOn" class="julia-row">
+          <div class="julia-coord">
+            <span class="coord-label">Re</span>
+            <input type="number" v-model.number="juliaRe" step="0.001" />
+          </div>
+          <div class="julia-coord">
+            <span class="coord-label">Im</span>
+            <input type="number" v-model.number="juliaIm" step="0.001" />
+          </div>
+          <button class="snap-btn" @click="useCurrentAsJulia" title="use current view center as c">← use center</button>
+        </div>
+      </div>
+
       <div class="group">
         <label>engine</label>
         <select v-model="engineMode">
@@ -297,6 +325,9 @@ function downloadVideo() {
         :colorMap="colorMap"
         :smooth="smooth"
         :transitionTheta="transitionOn ? thetaDeg * Math.PI / 180 : null"
+        :julia="juliaOn"
+        :juliaRe="juliaRe"
+        :juliaIm="juliaIm"
         :engine="engineMode"
         :scalarType="scalarMode"
         @viewport-change="onViewportChange"
@@ -337,6 +368,7 @@ function downloadVideo() {
 }
 
 .group.transition-group { min-width: 200px; }
+.group.julia-group { min-width: 260px; }
 
 .theta-row {
   display: flex;
@@ -345,6 +377,47 @@ function downloadVideo() {
 }
 
 .theta-row input[type="range"] { flex: 1; }
+
+.julia-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.julia-coord {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.coord-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  width: 18px;
+}
+
+.julia-coord input[type="number"] {
+  flex: 1;
+  width: 0;
+}
+
+.snap-btn {
+  font-size: 10px;
+  font-family: var(--mono);
+  padding: 3px 8px;
+  background: transparent;
+  border: 1px solid var(--rule);
+  color: var(--text-dim);
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.snap-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
 
 .spacer { flex: 1; }
 
