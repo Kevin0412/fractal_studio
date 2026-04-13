@@ -20,9 +20,9 @@ const hsCenterIm = ref(0.0)
 const hsScale    = ref(3.0)
 
 // Transition mode params
-const txRes   = ref(256)
+const txRes   = ref(64)    // good default for voxel: fast, ~50k exposed faces
 const txTheta = ref(0.0)
-const txIso   = ref(0.5)
+const txIso   = ref(0.48)  // 0.48 ≈ all inside voxels; lower = deep-core only
 const txIter  = ref(128)
 const txCenterRe = ref(-0.75)
 const txCenterIm = ref(0.0)
@@ -181,10 +181,14 @@ function compute() {
           <button :class="['mode-btn', txRMode === 'mesh'  ? 'active' : '']" @click="txRMode = 'mesh'">◈ MESH</button>
         </div>
 
+        <!-- Iso: threshold for inside. 0.5 = all inside voxels; lower = deep core only -->
         <div class="group">
-          <label>{{ t('three_iso') }}</label>
-          <input type="range" min="0.1" max="0.9" step="0.05" v-model.number="txIso" />
-          <span class="num">{{ txIso.toFixed(2) }}</span>
+          <label>
+            {{ t('three_iso') }}
+            <span class="dim"> ({{ txRMode === 'voxel' ? 'core depth' : 'surface' }})</span>
+          </label>
+          <input type="range" min="0.05" max="0.48" step="0.01" v-model.number="txIso" />
+          <span class="num">{{ txIso.toFixed(2) }}{{ txRMode === 'voxel' ? (txIso >= 0.45 ? ' (all)' : '') : '' }}</span>
         </div>
         <div class="group">
           <label>{{ t('three_resolution') }}</label>
@@ -194,16 +198,6 @@ function compute() {
                  type="number" v-model.number="txRes" min="32" max="1024" step="32" />
           <span class="num dim">{{ txRMode === 'voxel' ? txRes + '³ vox' : txRes + '³ MC' }}</span>
         </div>
-
-        <!-- Mesh-only params -->
-        <template v-if="txRMode === 'mesh'">
-        <div class="group">
-          <label>{{ t('theta') }}</label>
-          <input type="range" min="0" max="1.5707963267948966" step="0.01" v-model.number="txTheta" />
-          <span class="num">{{ txTheta.toFixed(3) }}</span>
-        </div>
-        </template>
-
         <div class="group">
           <label>{{ t('iterations') }}</label>
           <input type="number" v-model.number="txIter" min="32" max="2000" step="32" />
