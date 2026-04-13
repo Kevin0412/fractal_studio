@@ -213,9 +213,10 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
     // Fall through to OpenMP which has access to IterResult.norm.
     const bool needs_norm = p.smooth;
 
-    // CUDA path: Mandelbrot + Escape only; falls back for other variants/metrics.
+    // CUDA path: Mandelbrot + Escape only (no Julia, no smooth).
 #if USE_CUDA
     const bool can_cuda = !needs_norm
+                       && !p.julia
                        && (p.engine == "cuda" || p.engine == "auto" || p.engine == "hybrid")
                        && (p.variant == Variant::Mandelbrot)
                        && (p.metric == Metric::Escape)
