@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import ThreeDViewer from '../components/ThreeDViewer.vue'
-import { api, VARIANTS, VARIANT_LABELS, type Variant, type HsStage } from '../api'
+import { api, VARIANTS, VARIANT_LABELS, type Variant, type HsStage, type TransitionVoxelResponse } from '../api'
 import { t, lang } from '../i18n'
 
 type Mode = 'hs' | 'transition'
+type TxRenderMode = 'mesh' | 'voxel'
 
-const mode = ref<Mode>('hs')
+const mode    = ref<Mode>('hs')
+const txRMode = ref<TxRenderMode>('voxel')  // default to voxel for M↔B
 
 // HS mode params
 const hsMetric  = ref<HsStage>('min_abs')
@@ -26,10 +28,11 @@ const txCenterRe = ref(-0.75)
 const txCenterIm = ref(0.0)
 const txScale    = ref(3.0)
 
-const glbUrl  = ref<string | null>(null)
-const loading = ref(false)
-const info    = ref('')
-const error   = ref('')
+const glbUrl    = ref<string | null>(null)
+const voxelData = ref<TransitionVoxelResponse | null>(null)
+const loading   = ref(false)
+const info      = ref('')
+const error     = ref('')
 
 const HS_METRICS: HsStage[] = ['min_abs', 'max_abs', 'envelope', 'min_pairwise_dist']
 
@@ -65,11 +68,34 @@ async function computeHsMesh() {
   }
 }
 
+async function computeTransitionVoxels() {
+  loading.value   = true
+  error.value     = ''
+  info.value      = 'computing voxel field…'
+  glbUrl.value    = null
+  voxelData.value = null
+  try {
+    const r = await api.transitionVoxels({
+      resolution: txRes.value,
+      iso:        txIso.value,
+      iterations: txIter.value,
+    })
+    voxelData.value = r
+    info.value = `${r.insideCount.toLocaleString()} voxels · ${r.resolution}³ grid · ${r.generatedMs.toFixed(0)}ms`
+  } catch (e: any) {
+    error.value = e?.message ?? String(e)
+    info.value  = ''
+  } finally {
+    loading.value = false
+  }
+}
+
 async function computeTransitionMesh() {
-  loading.value = true
-  error.value   = ''
-  info.value    = 'marching cubes…'
-  glbUrl.value  = null
+  loading.value   = true
+  error.value     = ''
+  info.value      = 'marching cubes…'
+  glbUrl.value    = null
+  voxelData.value = null
   try {
     const r = await api.transitionMesh({
       centerRe:   txCenterRe.value,
@@ -91,8 +117,13 @@ async function computeTransitionMesh() {
 }
 
 function compute() {
-  if (mode.value === 'hs') computeHsMesh()
-  else computeTransitionMesh()
+  if (mode.value === 'hs') {
+    computeHsMesh()
+  } else if (txRMode.value === 'voxel') {
+    computeTransitionVoxels()
+  } else {
+    computeTransitionMesh()
+  }
 }
 </script>
 
@@ -144,11 +175,12 @@ function compute() {
 
       <!-- Transition params -->
       <template v-else>
-        <div class="group">
-          <label>{{ t('theta') }}</label>
-          <input type="range" min="0" max="1.5707963267948966" step="0.01" v-model.number="txTheta" />
-          <span class="num">{{ txTheta.toFixed(3) }}</span>
+        <!-- Render-mode toggle: voxel (Minecraft) vs smooth mesh -->
+        <div class="mode-row" style="margin-bottom:10px">
+          <button :class="['mode-btn', txRMode === 'voxel' ? 'active' : '']" @click="txRMode = 'voxel'">⬜ VOXEL</button>
+          <button :class="['mode-btn', txRMode === 'mesh'  ? 'active' : '']" @click="txRMode = 'mesh'">◈ MESH</button>
         </div>
+
         <div class="group">
           <label>{{ t('three_iso') }}</label>
           <input type="range" min="0.1" max="0.9" step="0.05" v-model.number="txIso" />
@@ -156,23 +188,25 @@ function compute() {
         </div>
         <div class="group">
           <label>{{ t('three_resolution') }}</label>
-          <input type="number" v-model.number="txRes" min="32" max="1024" step="32" />
+          <input v-if="txRMode === 'voxel'"
+                 type="number" v-model.number="txRes" min="16" max="256" step="16" />
+          <input v-else
+                 type="number" v-model.number="txRes" min="32" max="1024" step="32" />
+          <span class="num dim">{{ txRMode === 'voxel' ? txRes + '³ vox' : txRes + '³ MC' }}</span>
         </div>
+
+        <!-- Mesh-only params -->
+        <template v-if="txRMode === 'mesh'">
+        <div class="group">
+          <label>{{ t('theta') }}</label>
+          <input type="range" min="0" max="1.5707963267948966" step="0.01" v-model.number="txTheta" />
+          <span class="num">{{ txTheta.toFixed(3) }}</span>
+        </div>
+        </template>
+
         <div class="group">
           <label>{{ t('iterations') }}</label>
           <input type="number" v-model.number="txIter" min="32" max="2000" step="32" />
-        </div>
-        <div class="group">
-          <label>{{ t('three_center_re') }}</label>
-          <input type="number" v-model.number="txCenterRe" step="0.01" />
-        </div>
-        <div class="group">
-          <label>{{ t('three_center_im') }}</label>
-          <input type="number" v-model.number="txCenterIm" step="0.01" />
-        </div>
-        <div class="group">
-          <label>{{ t('three_scale') }}</label>
-          <input type="number" v-model.number="txScale" min="0.0001" step="0.1" />
         </div>
       </template>
 
@@ -186,7 +220,7 @@ function compute() {
 
     <!-- Viewer canvas -->
     <div class="viewer">
-      <ThreeDViewer :glbUrl="glbUrl" :loading="loading" />
+      <ThreeDViewer :glbUrl="glbUrl" :voxelData="voxelData" :loading="loading" />
     </div>
   </div>
 </template>
@@ -258,6 +292,8 @@ function compute() {
   color: var(--text-dim);
   align-self: flex-end;
 }
+
+.dim { color: var(--text-faint); }
 
 .compute-btn {
   margin-top: 8px;

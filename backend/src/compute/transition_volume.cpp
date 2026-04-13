@@ -47,14 +47,19 @@ McField buildTransitionVolume(const TransitionVolumeParams& p) {
                     }
                 }
 
-                // Smooth escape-time → scalar in [0, 1]. Inside points = 0,
-                // outside = fraction of iterations before escape.
+                // Scalar field: iso = 0.5, inside < 0.5, outside >= 0.5.
+                //
+                // Outside: v in [0.5, 1.0] — faster escape → closer to 1.
+                // Inside:  v in [0.0, 0.48] — final orbit magnitude gives a depth
+                //          gradient so the voxel renderer can shade surface vs.
+                //          interior voxels differently (boundary = bright, deep = dark).
                 float v = 0.0f;
                 if (escaped) {
-                    v = static_cast<float>(iter) / static_cast<float>(maxIter);
-                    v = 0.5f + 0.5f * v;  // push outside above the iso level
+                    v = 0.5f + 0.5f * (static_cast<float>(iter) / static_cast<float>(maxIter));
                 } else {
-                    v = 0.0f;  // inside → below iso
+                    const double finalMag = std::sqrt(x*x + y*y + z*z);
+                    // Normalize to [0, 0.48) — near-boundary orbits reach higher mag.
+                    v = static_cast<float>(finalMag / p.bailout) * 0.48f;
                 }
 
                 const size_t idx = static_cast<size_t>(xi) +

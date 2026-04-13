@@ -25,6 +25,8 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
 // HS heightfield mesh + transition 3D mesh.
 std::string hsMeshRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body);
 std::string transitionMeshRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body);
+// Voxel grid (Minecraft-style) for the transition renderer.
+std::string transitionVoxelsRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body);
 
 // Special points (native Newton solver).
 std::string specialPointsAutoRoute(const std::filesystem::path& repoRoot, const std::string& body);

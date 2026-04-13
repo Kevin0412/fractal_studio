@@ -1,14 +1,20 @@
 <script setup lang="ts">
-// ThreeDViewer.vue — three.js GLB viewer with orbit controls.
-// Loads a GLB from a backend artifact URL; replaces scene mesh on prop change.
+// ThreeDViewer.vue — three.js viewer.
+// Supports two render modes:
+//   GLB mode  : loads a glTF/GLB mesh artifact URL.
+//   Voxel mode: renders a Minecraft-style InstancedMesh from a field byte array.
+//               Each inside voxel is an axis-aligned cube; color encodes depth
+//               (byte=1 → dark amber, byte=255 → bright amber / surface).
 
 import { onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import type { TransitionVoxelResponse } from '../api'
 
 const props = defineProps<{
-  glbUrl: string | null
+  glbUrl?: string | null
+  voxelData?: TransitionVoxelResponse | null
   loading?: boolean
 }>()
 
@@ -20,6 +26,7 @@ let camera: THREE.PerspectiveCamera | null = null
 let controls: OrbitControls | null = null
 let animId: number | null = null
 let meshGroup: THREE.Group | null = null
+let voxelMesh: THREE.InstancedMesh | null = null
 let ro: ResizeObserver | null = null
 
 function initThree() {
@@ -31,16 +38,16 @@ function initThree() {
   scene = new THREE.Scene()
 
   camera = new THREE.PerspectiveCamera(45, el.clientWidth / el.clientHeight, 0.001, 100)
-  camera.position.set(0, 0.6, 2.5)
+  camera.position.set(0, 0.8, 3.2)
 
-  // Lighting: key + fill, no rim glow — instrumentation aesthetic
-  const key = new THREE.DirectionalLight(0xd7dae0, 1.6)
-  key.position.set(1, 2, 2)
+  // Key + fill + ambient — instrumentation aesthetic
+  const key = new THREE.DirectionalLight(0xd7dae0, 1.8)
+  key.position.set(1.5, 2, 2)
   scene.add(key)
-  const fill = new THREE.DirectionalLight(0xd7dae0, 0.4)
+  const fill = new THREE.DirectionalLight(0xd7dae0, 0.5)
   fill.position.set(-2, 1, -1)
   scene.add(fill)
-  const ambient = new THREE.AmbientLight(0xd7dae0, 0.2)
+  const ambient = new THREE.AmbientLight(0xd7dae0, 0.25)
   scene.add(ambient)
 
   controls = new OrbitControls(camera, renderer.domElement)
@@ -72,6 +79,8 @@ function loop() {
   renderer!.render(scene!, camera!)
 }
 
+// ── GLB ───────────────────────────────────────────────────────────────────────
+
 function clearMesh() {
   if (meshGroup && scene) {
     scene.remove(meshGroup)
@@ -90,13 +99,13 @@ const loader = new GLTFLoader()
 
 async function loadGlb(url: string) {
   clearMesh()
+  clearVoxels()
   try {
     const gltf = await loader.loadAsync(url)
     meshGroup = new THREE.Group()
 
     gltf.scene.traverse(child => {
       if (child instanceof THREE.Mesh) {
-        // Replace whatever material came with the GLB with our instrumentation look
         const mat = new THREE.MeshStandardMaterial({
           color: 0xc8cdd5,
           roughness: 0.7,
@@ -104,38 +113,133 @@ async function loadGlb(url: string) {
           side: THREE.DoubleSide,
         })
         child.material = mat
-        // Amber wireframe overlay on hover would need a second mesh; skip for now
         meshGroup!.add(child.clone())
       }
     })
 
-    // Center and normalize to unit bounding box
-    const box = new THREE.Box3().setFromObject(meshGroup)
-    const center = box.getCenter(new THREE.Vector3())
-    const size = box.getSize(new THREE.Vector3()).length()
-    meshGroup.position.sub(center)
-    if (size > 0) meshGroup.scale.setScalar(2.0 / size)
-
+    centerAndNormalize(meshGroup)
     scene!.add(meshGroup)
-
-    // Reset camera to see the whole mesh
-    controls!.reset()
-    camera!.position.set(0, 0.6, 2.5)
-    controls!.target.set(0, 0, 0)
-    controls!.update()
+    resetCamera()
   } catch (e) {
     console.error('ThreeDViewer: GLB load failed', e)
   }
 }
 
+// ── Voxels ────────────────────────────────────────────────────────────────────
+
+function clearVoxels() {
+  if (voxelMesh && scene) {
+    scene.remove(voxelMesh)
+    voxelMesh.geometry.dispose()
+    ;(voxelMesh.material as THREE.Material).dispose()
+    voxelMesh = null
+  }
+}
+
+// Amber palette: deep inside = dark, surface = bright
+// We lerp from darkAmber (#1a0a00) to brightAmber (#f0a030).
+const DARK   = new THREE.Color(0x1a0800)
+const BRIGHT = new THREE.Color(0xf0a030)
+const TMP    = new THREE.Color()
+
+function buildVoxels(data: TransitionVoxelResponse) {
+  clearMesh()
+  clearVoxels()
+
+  const N = data.resolution
+  const iso = data.isoLevel
+  const extent = data.extent
+
+  // Decode base64 → Uint8Array
+  const binStr = atob(data.fieldB64)
+  const bytes  = new Uint8Array(binStr.length)
+  for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i)
+
+  // Count inside voxels
+  let count = 0
+  for (let i = 0; i < bytes.length; i++) if (bytes[i] > 0) count++
+  if (count === 0) return
+
+  // Cube geometry — slight gap (Minecraft gap look): scale to 0.92 of cell size
+  const cellSize = (extent * 2) / N
+  const geo = new THREE.BoxGeometry(cellSize * 0.92, cellSize * 0.92, cellSize * 0.92)
+  const mat = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0.05 })
+
+  voxelMesh = new THREE.InstancedMesh(geo, mat, count)
+  voxelMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+  voxelMesh.instanceColor = new THREE.InstancedBufferAttribute(
+    new Float32Array(count * 3), 3
+  )
+
+  const dummy = new THREE.Object3D()
+  const origin = -extent + cellSize * 0.5  // center of first cell
+
+  let idx = 0
+  for (let zi = 0; zi < N; zi++) {
+    for (let yi = 0; yi < N; yi++) {
+      for (let xi = 0; xi < N; xi++) {
+        const byteVal = bytes[xi + N * (yi + N * zi)]
+        if (byteVal === 0) continue
+
+        // Position in world space (centered at origin)
+        dummy.position.set(
+          origin + xi * cellSize,
+          origin + yi * cellSize,
+          origin + zi * cellSize
+        )
+        dummy.updateMatrix()
+        voxelMesh.setMatrixAt(idx, dummy.matrix)
+
+        // Color: byte=1 (deep) → DARK, byte=255 (surface) → BRIGHT
+        const t = (byteVal - 1) / 254
+        TMP.copy(DARK).lerp(BRIGHT, Math.pow(t, 0.6))  // power < 1 → more bright surface
+        voxelMesh.setColorAt(idx, TMP)
+
+        idx++
+      }
+    }
+  }
+
+  voxelMesh.instanceMatrix.needsUpdate = true
+  if (voxelMesh.instanceColor) voxelMesh.instanceColor.needsUpdate = true
+
+  scene!.add(voxelMesh)
+  resetCamera()
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function centerAndNormalize(group: THREE.Group) {
+  const box = new THREE.Box3().setFromObject(group)
+  const center = box.getCenter(new THREE.Vector3())
+  const size = box.getSize(new THREE.Vector3()).length()
+  group.position.sub(center)
+  if (size > 0) group.scale.setScalar(2.0 / size)
+}
+
+function resetCamera() {
+  controls!.reset()
+  camera!.position.set(0, 0.8, 3.2)
+  controls!.target.set(0, 0, 0)
+  controls!.update()
+}
+
+// ── Watchers ──────────────────────────────────────────────────────────────────
+
 watch(() => props.glbUrl, (url) => {
   if (url) loadGlb(url)
-  else clearMesh()
+  else { clearMesh(); clearVoxels() }
+})
+
+watch(() => props.voxelData, (data) => {
+  if (data) buildVoxels(data)
+  else clearVoxels()
 })
 
 onMounted(() => {
   initThree()
-  if (props.glbUrl) loadGlb(props.glbUrl)
+  if (props.glbUrl)    loadGlb(props.glbUrl)
+  if (props.voxelData) buildVoxels(props.voxelData)
 })
 
 onBeforeUnmount(() => {
@@ -144,6 +248,7 @@ onBeforeUnmount(() => {
   controls?.dispose()
   renderer?.dispose()
   clearMesh()
+  clearVoxels()
 })
 </script>
 
@@ -151,9 +256,9 @@ onBeforeUnmount(() => {
   <div class="viewer-wrap">
     <canvas ref="canvasEl" class="canvas" />
     <div v-if="loading" class="overlay">
-      <span class="spinner">loading mesh…</span>
+      <span class="spinner">computing…</span>
     </div>
-    <div v-if="!glbUrl && !loading" class="overlay">
+    <div v-if="!glbUrl && !voxelData && !loading" class="overlay">
       <span class="hint">no mesh — select mode and compute</span>
     </div>
   </div>

@@ -17,6 +17,29 @@
 #include <chrono>
 #include <filesystem>
 #include <stdexcept>
+#include <cstring>
+
+// ─── tiny base64 encoder ────────────────────────────────────────────────────
+namespace {
+static constexpr char B64_CHARS[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+std::string base64Encode(const uint8_t* data, size_t len) {
+    std::string out;
+    out.reserve(((len + 2) / 3) * 4);
+    for (size_t i = 0; i < len; i += 3) {
+        const uint32_t b0 = data[i];
+        const uint32_t b1 = (i + 1 < len) ? data[i + 1] : 0;
+        const uint32_t b2 = (i + 2 < len) ? data[i + 2] : 0;
+        const uint32_t triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push_back(B64_CHARS[(triple >> 18) & 0x3F]);
+        out.push_back(B64_CHARS[(triple >> 12) & 0x3F]);
+        out.push_back((i + 1 < len) ? B64_CHARS[(triple >>  6) & 0x3F] : '=');
+        out.push_back((i + 2 < len) ? B64_CHARS[(triple >>  0) & 0x3F] : '=');
+    }
+    return out;
+}
+} // namespace
 
 namespace fsd {
 
@@ -163,6 +186,77 @@ std::string transitionMeshRoute(const std::filesystem::path&, JobRunner& runner,
         {"triangleCount", tc},
         {"fieldMs",  fieldMs},
         {"mcMs",     mcMs},
+    };
+    return resp.dump();
+}
+
+// Voxel grid export for the Minecraft-style 3D transition renderer.
+// Returns the raw field as a flat Uint8 array (base64-encoded):
+//   byte = 0           → outside (escaped)
+//   byte = 1..255      → inside, mapped from depth in [0, iso)
+//                         byte=1 = deep interior, byte=255 = near surface
+// Frontend uses THREE.InstancedMesh to render one cube per inside voxel.
+std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runner, const std::string& body) {
+    const Json j = parseJsonBody(body);
+
+    compute::TransitionVolumeParams p;
+    p.centerX    = j.value("centerX",    0.0);
+    p.centerY    = j.value("centerY",    0.0);
+    p.centerZ    = j.value("centerZ",    0.0);
+    p.extent     = j.value("extent",     2.0);
+    p.resolution = j.value("resolution", 64);
+    p.iterations = j.value("iterations", 128);
+    p.bailout    = j.value("bailout",    2.0);
+    const float iso = static_cast<float>(j.value("iso", 0.5));
+
+    if (p.resolution < 4 || p.resolution > 256) throw std::runtime_error("resolution out of range [4,256]");
+    if (p.iterations < 1 || p.iterations > 10000) throw std::runtime_error("invalid iterations");
+
+    auto run = runner.createRun("transition-voxels", body);
+    runner.setStatus(run.id, "running");
+
+    const auto t0 = std::chrono::steady_clock::now();
+    compute::McField field;
+    try {
+        field = compute::buildTransitionVolume(p);
+        runner.setStatus(run.id, "completed");
+    } catch (const std::exception&) {
+        runner.setStatus(run.id, "failed");
+        throw;
+    }
+    const auto t1 = std::chrono::steady_clock::now();
+    const double elapsed = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    const int N = field.Nx;
+    const size_t total = static_cast<size_t>(N) * N * N;
+
+    // Encode: 0 = outside, 1-255 = inside depth
+    std::vector<uint8_t> bytes(total);
+    size_t insideCount = 0;
+    for (size_t i = 0; i < total; ++i) {
+        const float v = field.data[i];
+        if (v < iso) {
+            // depth: map [0, iso) → [1, 255]
+            const uint8_t depth = static_cast<uint8_t>(1 + static_cast<int>(v / iso * 254.0f));
+            bytes[i] = depth;
+            ++insideCount;
+        } else {
+            bytes[i] = 0;
+        }
+    }
+
+    Json resp = {
+        {"runId",       run.id},
+        {"status",      "completed"},
+        {"resolution",  N},
+        {"isoLevel",    iso},
+        {"extent",      p.extent},
+        {"centerX",     p.centerX},
+        {"centerY",     p.centerY},
+        {"centerZ",     p.centerZ},
+        {"insideCount", insideCount},
+        {"generatedMs", elapsed},
+        {"fieldB64",    base64Encode(bytes.data(), bytes.size())},
     };
     return resp.dump();
 }

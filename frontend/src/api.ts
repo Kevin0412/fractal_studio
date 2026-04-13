@@ -155,6 +155,30 @@ export interface TransitionMeshRequest {
   iterations?: number
 }
 
+export interface TransitionVoxelRequest {
+  centerX?: number
+  centerY?: number
+  centerZ?: number
+  extent?: number
+  resolution?: number   // default 64, max 256
+  iso?: number
+  iterations?: number
+}
+
+export interface TransitionVoxelResponse {
+  runId: string
+  status: string
+  resolution: number
+  isoLevel: number
+  extent: number
+  centerX: number
+  centerY: number
+  centerZ: number
+  insideCount: number
+  generatedMs: number
+  fieldB64: string      // base64 Uint8Array, length = resolution³; 0=outside, 1-255=inside depth
+}
+
 export interface VideoZoomRequest {
   lnMapArtifactId: string
   fps?: number
@@ -232,7 +256,8 @@ export const api = {
       `/api/special-points${family ? `?family=${encodeURIComponent(family)}` : ''}`),
 
   hsMesh: (req: HsMeshRequest) => postJson<MeshResponse>('/api/hs/mesh', req),
-  transitionMesh: (req: TransitionMeshRequest) => postJson<MeshResponse>('/api/transition/mesh', req),
+  transitionMesh:   (req: TransitionMeshRequest)  => postJson<MeshResponse>('/api/transition/mesh', req),
+  transitionVoxels: (req: TransitionVoxelRequest) => postJson<TransitionVoxelResponse>('/api/transition/voxels', req),
   videoZoom: (req: VideoZoomRequest) => postJson<VideoZoomResponse>('/api/video/zoom', req),
 
   runs: (limit = 50) => getJson<{ items: RunRow[] }>(`/api/runs?limit=${limit}`),

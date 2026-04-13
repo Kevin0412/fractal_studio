@@ -73,8 +73,9 @@ std::string HttpServer::handleRequest(const std::string& request) const {
     if (method == "POST" && path == "/api/map/render") return makeHttpResponse(200, mapRenderRoute(repoRoot_, runner_, body));
     if (method == "POST" && path == "/api/map/ln")     return makeHttpResponse(200, lnMapRenderRoute(repoRoot_, runner_, body));
     if (method == "POST" && path == "/api/video/zoom")       return makeHttpResponse(200, zoomVideoRoute(repoRoot_, runner_, body));
-    if (method == "POST" && path == "/api/hs/mesh")          return makeHttpResponse(200, hsMeshRoute(repoRoot_, runner_, body));
-    if (method == "POST" && path == "/api/transition/mesh")  return makeHttpResponse(200, transitionMeshRoute(repoRoot_, runner_, body));
+    if (method == "POST" && path == "/api/hs/mesh")              return makeHttpResponse(200, hsMeshRoute(repoRoot_, runner_, body));
+    if (method == "POST" && path == "/api/transition/mesh")      return makeHttpResponse(200, transitionMeshRoute(repoRoot_, runner_, body));
+    if (method == "POST" && path == "/api/transition/voxels")    return makeHttpResponse(200, transitionVoxelsRoute(repoRoot_, runner_, body));
 
     // Special points
     if (method == "POST" && path == "/api/special-points/auto") return makeHttpResponse(200, specialPointsAutoRoute(repoRoot_, body));
