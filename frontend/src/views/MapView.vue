@@ -3,12 +3,30 @@ import { inject, onMounted, ref, watch, computed } from 'vue'
 import MapCanvas from '../components/MapCanvas.vue'
 import SpecialPointList from '../components/SpecialPointList.vue'
 import {
-  api, VARIANTS, METRICS, COLORMAPS,
+  api, VARIANTS, METRICS, COLORMAPS, VARIANT_LABELS,
   type Variant, type Metric, type ColorMap, type SpecialPoint,
   type LnMapResponse,
 } from '../api'
 import type { StatusState } from '../types'
-import { t } from '../i18n'
+import { t, lang } from '../i18n'
+
+// Metric display labels
+const METRIC_LABELS: Record<string, { en: string; zh: string }> = {
+  escape:             { en: 'Escape time',   zh: '逃逸时间' },
+  min_abs:            { en: 'Min |z|',       zh: '最小 |z|' },
+  max_abs:            { en: 'Max |z|',       zh: '最大 |z|' },
+  envelope:           { en: 'Envelope',      zh: '包络' },
+  min_pairwise_dist:  { en: 'Min pairwise',  zh: '最小轨道距' },
+}
+
+const COLORMAP_LABELS: Record<string, { en: string; zh: string }> = {
+  classic_cos: { en: 'Classic Cos', zh: '经典余弦' },
+  mod17:       { en: 'Mod-17',      zh: 'Mod-17' },
+  hsv_wheel:   { en: 'HSV Wheel',   zh: 'HSV 色轮' },
+  tri765:      { en: 'Tri-765',     zh: 'Tri-765' },
+  grayscale:   { en: 'Grayscale',   zh: '灰度' },
+  hs_rainbow:  { en: 'HS Rainbow',  zh: '隐结构彩虹' },
+}
 
 const status = inject<StatusState>('status')!
 
@@ -208,21 +226,21 @@ function downloadVideo() {
       <div class="group">
         <label>{{ t('variant') }}</label>
         <select v-model="variant" :disabled="transitionOn">
-          <option v-for="v in VARIANTS" :key="v" :value="v">{{ v }}</option>
+          <option v-for="v in VARIANTS" :key="v" :value="v">{{ VARIANT_LABELS[v][lang] }}</option>
         </select>
       </div>
 
       <div class="group">
         <label>{{ t('metric') }}</label>
         <select v-model="metric">
-          <option v-for="m in METRICS" :key="m" :value="m">{{ m }}</option>
+          <option v-for="m in METRICS" :key="m" :value="m">{{ METRIC_LABELS[m]?.[lang] ?? m }}</option>
         </select>
       </div>
 
       <div class="group">
         <label>{{ t('colormap') }}</label>
         <select v-model="colorMap">
-          <option v-for="c in COLORMAPS" :key="c" :value="c">{{ c }}</option>
+          <option v-for="c in COLORMAPS" :key="c" :value="c">{{ COLORMAP_LABELS[c]?.[lang] ?? c }}</option>
         </select>
       </div>
 
@@ -241,7 +259,7 @@ function downloadVideo() {
       <div class="group transition-group">
         <label>
           <input type="checkbox" v-model="transitionOn" style="width:auto;margin-right:6px" />
-          {{ t('transition') }} m↔b
+          {{ t('transition') }}
         </label>
         <div v-if="transitionOn" class="theta-row">
           <input type="range" min="0" max="90" step="0.1" v-model.number="thetaDeg" />
@@ -252,12 +270,12 @@ function downloadVideo() {
       <div class="group">
         <label>
           <input type="checkbox" v-model="juliaOn" style="width:auto;margin-right:6px" />
-          Julia J(c)
+          {{ t('julia') }}
         </label>
       </div>
 
       <div class="group">
-        <label>engine</label>
+        <label>{{ t('engine') }}</label>
         <select v-model="engineMode">
           <option value="auto">auto</option>
           <option value="cuda">cuda</option>
@@ -268,7 +286,7 @@ function downloadVideo() {
       </div>
 
       <div class="group">
-        <label>scalar</label>
+        <label>{{ t('scalar') }}</label>
         <select v-model="scalarMode">
           <option value="auto">auto</option>
           <option value="fp64">fp64</option>
@@ -278,7 +296,7 @@ function downloadVideo() {
 
       <div class="spacer"></div>
 
-      <button @click="resetView" title="Reset to 0+0i, scale 4">⌂ reset</button>
+      <button @click="resetView" :title="t('reset')">⌂ {{ t('reset') }}</button>
       <button @click="exportPng" :disabled="!lastArtifactId">{{ t('export_png') }}</button>
       <button @click="exportLnMap" :disabled="lnBusy">{{ t('export_lnmap') }}</button>
       <button @click="openVideoModal" :disabled="!lastLnArtifact" title="Export zoom video">video →</button>
@@ -289,9 +307,9 @@ function downloadVideo() {
 
     <!-- ── Julia info strip ─────────────────────────────────────────────── -->
     <div v-if="juliaOn" class="julia-strip mono">
-      <span class="julia-label">Selected julia c:</span>
+      <span class="julia-label">{{ t('julia_selected_c') }}:</span>
       <span class="julia-val">{{ juliaLabel }}</span>
-      <span class="julia-hint">Left click picks julia c and recenters left map. Drag/Wheel works on both panes.</span>
+      <span class="julia-hint">{{ t('julia_hint') }}</span>
     </div>
 
     <!-- ── Main stage: dual-pane or single ──────────────────────────────── -->
@@ -319,10 +337,10 @@ function downloadVideo() {
           <!-- Left: Mandelbrot / variant — click picks julia c -->
           <div class="pane">
             <div class="pane-header mono">
-              <span class="pane-title">Left: {{ variant }}</span>
+              <span class="pane-title">{{ t('julia_left') }}: {{ VARIANT_LABELS[variant][lang] }}</span>
               <span class="pane-meta">
-                Center: {{ centerRe.toPrecision(10) }} + {{ centerIm.toPrecision(10) }}i
-                &nbsp;·&nbsp;Scale: {{ scale.toPrecision(6) }}
+                {{ t('center') }}: {{ centerRe.toPrecision(10) }} + {{ centerIm.toPrecision(10) }}i
+                &nbsp;·&nbsp;{{ t('scale') }}: {{ scale.toPrecision(6) }}
               </span>
             </div>
             <div class="pane-canvas">
@@ -342,11 +360,11 @@ function downloadVideo() {
           <!-- Right: Julia set J(c) — own viewport -->
           <div class="pane">
             <div class="pane-header mono">
-              <span class="pane-title">Right: Julia</span>
+              <span class="pane-title">{{ t('julia_right') }}</span>
               <span class="pane-meta">
                 julia c: {{ juliaRe.toPrecision(10) }} + {{ juliaIm.toPrecision(10) }}i
-                &nbsp;·&nbsp;Center: {{ jCenterRe.toPrecision(6) }} + {{ jCenterIm.toPrecision(6) }}i
-                &nbsp;·&nbsp;Scale: {{ jScale.toPrecision(6) }}
+                &nbsp;·&nbsp;{{ t('center') }}: {{ jCenterRe.toPrecision(6) }} + {{ jCenterIm.toPrecision(6) }}i
+                &nbsp;·&nbsp;{{ t('scale') }}: {{ jScale.toPrecision(6) }}
               </span>
             </div>
             <div class="pane-canvas">
@@ -369,38 +387,38 @@ function downloadVideo() {
     <Teleport to="body">
       <div v-if="videoModalOpen" class="modal-backdrop" @click.self="videoModalOpen = false">
         <div class="modal">
-          <div class="modal-title">export zoom video</div>
+          <div class="modal-title">{{ t('video_title') }}</div>
           <div class="modal-body">
             <div class="mrow">
-              <label>fps</label>
+              <label>{{ t('video_fps') }}</label>
               <input type="number" v-model.number="videoFps" min="1" max="60" step="1" />
             </div>
             <div class="mrow">
-              <label>duration (s)</label>
+              <label>{{ t('video_duration') }}</label>
               <input type="number" v-model.number="videoDuration" min="1" max="300" step="1" />
             </div>
             <div class="mrow">
-              <label>width px</label>
+              <label>{{ t('video_width') }}</label>
               <input type="number" v-model.number="videoWidth" min="128" max="1920" step="64" />
             </div>
             <div class="mrow">
-              <label>height px</label>
+              <label>{{ t('video_height') }}</label>
               <input type="number" v-model.number="videoHeight" min="128" max="1080" step="64" />
             </div>
             <div v-if="lastLnArtifact" class="mrow source mono">
-              source: {{ lastLnArtifact.artifactId }}<br/>
+              {{ t('video_source') }}: {{ lastLnArtifact.artifactId }}<br/>
               {{ lastLnArtifact.widthS }}×{{ lastLnArtifact.heightT }} · {{ lastLnArtifact.depthOctaves }} oct
             </div>
           </div>
           <div class="modal-footer">
-            <button @click="videoModalOpen = false" class="btn-cancel">cancel</button>
+            <button @click="videoModalOpen = false" class="btn-cancel">{{ t('video_cancel') }}</button>
             <button @click="exportVideo" :disabled="videoBusy" class="btn-go">
-              {{ videoBusy ? 'rendering…' : 'render' }}
+              {{ videoBusy ? t('loading') : t('video_render') }}
             </button>
           </div>
           <div v-if="videoStatus" class="modal-status mono">{{ videoStatus }}</div>
           <div v-if="videoArtifactId" class="modal-footer">
-            <button @click="downloadVideo" class="btn-go">download mp4</button>
+            <button @click="downloadVideo" class="btn-go">{{ t('video_download') }}</button>
           </div>
         </div>
       </div>

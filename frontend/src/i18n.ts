@@ -1,4 +1,5 @@
-// i18n.ts — tiny two-language store (EN / 中文) with a reactive locale ref.
+// i18n.ts — two-language store (EN / 中文) with reactive locale.
+// Lang is persisted in localStorage.
 
 import { ref } from 'vue'
 
@@ -11,40 +12,129 @@ export function setLang(l: Lang) {
   localStorage.setItem('fsd_lang', l)
 }
 
+export function toggleLang() {
+  setLang(lang.value === 'en' ? 'zh' : 'en')
+}
+
 type Dict = Record<string, { en: string; zh: string }>
 
 const dict: Dict = {
-  nav_map:        { en: 'Map',         zh: '图谱' },
-  nav_points:     { en: 'Points',      zh: '特殊点' },
-  nav_3d:         { en: '3D',          zh: '三维' },
-  nav_runs:       { en: 'Runs',        zh: '运行记录' },
-  nav_system:     { en: 'System',      zh: '系统' },
+  // ── Nav ─────────────────────────────────────────────────────────────────
+  nav_map:          { en: 'Map',              zh: '图谱' },
+  nav_points:       { en: 'Points',           zh: '特殊点' },
+  nav_3d:           { en: '3D',               zh: '三维' },
+  nav_runs:         { en: 'Runs',             zh: '运行记录' },
+  nav_system:       { en: 'System',           zh: '系统' },
+  nav_light:        { en: 'Light mode',       zh: '浅色模式' },
+  nav_dark:         { en: 'Dark mode',        zh: '深色模式' },
 
-  variant:        { en: 'Variant',     zh: '变体' },
-  metric:         { en: 'Metric',      zh: '指标' },
-  colormap:       { en: 'Colormap',    zh: '色图' },
-  smooth:         { en: 'Ln-smooth',   zh: '对数平滑着色' },
-  iterations:     { en: 'Iterations',  zh: '迭代' },
-  scale:          { en: 'Scale',       zh: '缩放' },
-  center:         { en: 'Center',      zh: '中心' },
-  theta:          { en: 'θ (rad)',     zh: 'θ (弧度)' },
-  transition:     { en: 'Transition',  zh: '过渡' },
+  // ── Map controls ────────────────────────────────────────────────────────
+  variant:          { en: 'Variant',          zh: '变体' },
+  metric:           { en: 'Metric',           zh: '指标' },
+  colormap:         { en: 'Colormap',         zh: '色图' },
+  smooth:           { en: 'Ln-smooth',        zh: '对数平滑着色' },
+  iterations:       { en: 'Iterations',       zh: '迭代次数' },
+  scale:            { en: 'Scale',            zh: '缩放' },
+  center:           { en: 'Center',           zh: '中心' },
+  theta:            { en: 'θ (rad)',          zh: 'θ（弧度）' },
+  transition:       { en: 'Transition',       zh: 'M↔B 过渡' },
+  julia:            { en: 'Julia J(c)',       zh: 'Julia J(c)' },
+  engine:           { en: 'Engine',           zh: '引擎' },
+  scalar:           { en: 'Scalar',           zh: '标量类型' },
+  reset:            { en: 'Reset',            zh: '重置视图' },
 
-  render:         { en: 'Render',      zh: '渲染' },
-  export_png:     { en: 'Export PNG',  zh: '导出 PNG' },
-  export_lnmap:   { en: 'Export ln-map', zh: '导出 ln 图' },
-  export_video:   { en: 'Export video (P2)', zh: '导出视频 (阶段2)' },
+  // ── Julia mode ──────────────────────────────────────────────────────────
+  julia_selected_c: { en: 'Selected julia c', zh: '已选 Julia 常数 c' },
+  julia_hint:       { en: 'Left-click picks c and recenters left map. Drag/Wheel works on both panes.',
+                       zh: '左键单击选取 c 并重置左图中心，两侧均可拖拽/滚轮缩放。' },
+  julia_left:       { en: 'Left',             zh: '左侧' },
+  julia_right:      { en: 'Right: Julia',     zh: '右侧：Julia' },
 
-  points_k:       { en: 'Pre-period k', zh: '前周期 k' },
-  points_p:       { en: 'Period p',    zh: '周期 p' },
-  points_auto:    { en: 'Auto-solve',  zh: '自动求解' },
-  points_seed:    { en: 'Seed',        zh: '种子求解' },
-  points_import:  { en: '→ Map',       zh: '→ 映射到图谱' },
+  // ── Export ──────────────────────────────────────────────────────────────
+  export_png:       { en: 'Export PNG',       zh: '导出 PNG' },
+  export_lnmap:     { en: 'Export ln-map',    zh: '导出对数图' },
+  export_video:     { en: 'Video →',          zh: '视频 →' },
+  video_fps:        { en: 'FPS',              zh: '帧率' },
+  video_duration:   { en: 'Duration (s)',     zh: '时长（秒）' },
+  video_width:      { en: 'Width px',         zh: '宽度（像素）' },
+  video_height:     { en: 'Height px',        zh: '高度（像素）' },
+  video_render:     { en: 'Render',           zh: '渲染' },
+  video_cancel:     { en: 'Cancel',           zh: '取消' },
+  video_download:   { en: 'Download mp4',     zh: '下载 mp4' },
+  video_title:      { en: 'Export zoom video', zh: '导出缩放视频' },
+  video_source:     { en: 'source',           zh: '来源' },
 
-  status_cpu:     { en: 'cpu',         zh: 'cpu' },
-  status_gpu:     { en: 'gpu',         zh: 'gpu' },
-  status_time:    { en: 'render',      zh: '渲染' },
-  status_ready:   { en: 'ready',       zh: '就绪' },
+  // ── Special points ──────────────────────────────────────────────────────
+  points_k:         { en: 'Pre-period k',     zh: '前周期 k' },
+  points_p:         { en: 'Period p',         zh: '周期 p' },
+  points_auto:      { en: 'Auto-solve',       zh: '自动求解' },
+  points_seed:      { en: 'Seed solve',       zh: '种子求解' },
+  points_import:    { en: '→ Map',            zh: '→ 导入图谱' },
+  points_seed_re:   { en: 'Seed Re',          zh: '种子实部' },
+  points_seed_im:   { en: 'Seed Im',          zh: '种子虚部' },
+  points_table_c:   { en: 'c (root)',         zh: 'c（根）' },
+  points_table_k:   { en: 'k',               zh: 'k' },
+  points_table_p:   { en: 'p',               zh: 'p' },
+  points_none:      { en: 'No points yet.',   zh: '暂无特殊点。' },
+
+  // ── 3D view ─────────────────────────────────────────────────────────────
+  three_mode_hs:    { en: 'HS',              zh: '隐结构' },
+  three_mode_tx:    { en: 'M↔B',            zh: 'M↔B 三维' },
+  three_metric:     { en: 'Metric',          zh: '指标' },
+  three_resolution: { en: 'Resolution',      zh: '分辨率' },
+  three_iso:        { en: 'Iso level',       zh: '等值面' },
+  three_compute:    { en: 'Compute',         zh: '计算' },
+  three_computing:  { en: 'Computing…',      zh: '计算中…' },
+  three_center_re:  { en: 'Center Re',       zh: '中心实部' },
+  three_center_im:  { en: 'Center Im',       zh: '中心虚部' },
+  three_scale:      { en: 'Scale',           zh: '缩放' },
+
+  // ── Runs / artifacts ────────────────────────────────────────────────────
+  runs_title:       { en: 'Run History',      zh: '运行历史' },
+  runs_id:          { en: 'Run ID',           zh: '运行 ID' },
+  runs_module:      { en: 'Module',           zh: '模块' },
+  runs_status:      { en: 'Status',           zh: '状态' },
+  runs_artifacts:   { en: 'Artifacts',        zh: '产物' },
+  runs_download:    { en: 'Download',         zh: '下载' },
+  runs_none:        { en: 'No runs yet.',     zh: '暂无运行记录。' },
+
+  // ── System ──────────────────────────────────────────────────────────────
+  sys_title:        { en: 'System',           zh: '系统信息' },
+  sys_cpu:          { en: 'CPU',              zh: 'CPU' },
+  sys_gpu:          { en: 'GPU',              zh: 'GPU' },
+  sys_ram:          { en: 'RAM',              zh: '内存' },
+  sys_engines:      { en: 'Available engines', zh: '可用引擎' },
+
+  // ── Status rail ─────────────────────────────────────────────────────────
+  status_cpu:       { en: 'cpu',              zh: 'cpu' },
+  status_gpu:       { en: 'gpu',              zh: 'gpu' },
+  status_time:      { en: 'render',           zh: '渲染' },
+  status_ready:     { en: 'ready',            zh: '就绪' },
+  status_engine:    { en: 'engine',           zh: '引擎' },
+  status_scalar:    { en: 'scalar',           zh: '标量' },
+
+  // ── Metrics (display labels) ─────────────────────────────────────────────
+  metric_escape:    { en: 'Escape time',      zh: '逃逸时间' },
+  metric_min_abs:   { en: 'Min |z|',          zh: '最小 |z|' },
+  metric_max_abs:   { en: 'Max |z|',          zh: '最大 |z|' },
+  metric_envelope:  { en: 'Envelope',         zh: '包络' },
+  metric_minpair:   { en: 'Min pairwise',     zh: '最小轨道距' },
+
+  // ── Colormaps (display labels) ───────────────────────────────────────────
+  cmap_classic_cos: { en: 'Classic Cos',      zh: '经典余弦' },
+  cmap_mod17:       { en: 'Mod-17',           zh: 'Mod-17' },
+  cmap_hsv_wheel:   { en: 'HSV Wheel',        zh: 'HSV 色轮' },
+  cmap_tri765:      { en: 'Tri-765',          zh: 'Tri-765' },
+  cmap_grayscale:   { en: 'Grayscale',        zh: '灰度' },
+  cmap_hs_rainbow:  { en: 'HS Rainbow',       zh: '隐结构彩虹' },
+
+  // ── Generic ─────────────────────────────────────────────────────────────
+  render:           { en: 'Render',           zh: '渲染' },
+  loading:          { en: 'Loading…',         zh: '加载中…' },
+  error:            { en: 'Error',            zh: '错误' },
+  download:         { en: 'Download',         zh: '下载' },
+  close:            { en: 'Close',            zh: '关闭' },
+  computing:        { en: 'Computing…',       zh: '计算中…' },
 }
 
 export function t(key: string): string {

@@ -25,13 +25,27 @@ async function getJson<T>(path: string): Promise<T> {
 // ---- Types ----
 
 export type Variant =
-  | 'mandelbrot' | 'tri' | 'boat' | 'duck' | 'bell'
-  | 'fish' | 'vase' | 'bird' | 'mask' | 'ship'
+  | 'mandelbrot' | 'tricorn' | 'burning_ship' | 'celtic' | 'heart'
+  | 'buffalo' | 'perp_buffalo' | 'celtic_ship' | 'mandelceltic' | 'perp_ship'
 
 export const VARIANTS: Variant[] = [
-  'mandelbrot', 'tri', 'boat', 'duck', 'bell',
-  'fish', 'vase', 'bird', 'mask', 'ship',
+  'mandelbrot', 'tricorn', 'burning_ship', 'celtic', 'heart',
+  'buffalo', 'perp_buffalo', 'celtic_ship', 'mandelceltic', 'perp_ship',
 ]
+
+// Human-readable display names, used in dropdowns and info panels
+export const VARIANT_LABELS: Record<Variant, { en: string; zh: string }> = {
+  mandelbrot:   { en: 'Mandelbrot',        zh: 'Mandelbrot' },
+  tricorn:      { en: 'Tricorn',           zh: '三角形' },
+  burning_ship: { en: 'Burning Ship',      zh: '燃烧船' },
+  celtic:       { en: 'Celtic',            zh: '凯尔特' },
+  heart:        { en: 'Heart',             zh: '心形' },
+  buffalo:      { en: 'Buffalo',           zh: '野牛' },
+  perp_buffalo: { en: 'Perp. Buffalo',     zh: '垂直野牛' },
+  celtic_ship:  { en: 'Celtic Ship',       zh: '凯尔特船' },
+  mandelceltic: { en: 'Mandelceltic',      zh: '曼德凯尔特' },
+  perp_ship:    { en: 'Perp. Ship',        zh: '垂直船' },
+}
 
 export type Metric = 'escape' | 'min_abs' | 'max_abs' | 'envelope' | 'min_pairwise_dist'
 

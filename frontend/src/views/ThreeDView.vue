@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import ThreeDViewer from '../components/ThreeDViewer.vue'
-import { api, VARIANTS, type Variant, type HsStage } from '../api'
-import { t } from '../i18n'
+import { api, VARIANTS, VARIANT_LABELS, type Variant, type HsStage } from '../api'
+import { t, lang } from '../i18n'
 
 type Mode = 'hs' | 'transition'
 
@@ -31,12 +31,14 @@ const loading = ref(false)
 const info    = ref('')
 const error   = ref('')
 
-const HS_METRICS: { value: HsStage; label: string }[] = [
-  { value: 'min_abs',           label: 'min |z|  (HS-base)' },
-  { value: 'max_abs',           label: 'max |z|  (envelope hi)' },
-  { value: 'envelope',          label: 'envelope' },
-  { value: 'min_pairwise_dist', label: 'min pairwise dist (recurrence)' },
-]
+const HS_METRICS: HsStage[] = ['min_abs', 'max_abs', 'envelope', 'min_pairwise_dist']
+
+const HS_METRIC_LABELS: Record<HsStage, { en: string; zh: string }> = {
+  min_abs:            { en: 'Min |z|  (HS-base)',        zh: '最小 |z|（HS 基础）' },
+  max_abs:            { en: 'Max |z|  (envelope hi)',    zh: '最大 |z|（包络高）' },
+  envelope:           { en: 'Envelope',                  zh: '包络' },
+  min_pairwise_dist:  { en: 'Min pairwise (recurrence)', zh: '最小轨道距（递归）' },
+}
 
 async function computeHsMesh() {
   loading.value = true
@@ -100,26 +102,26 @@ function compute() {
     <aside class="controls">
       <!-- Mode toggle -->
       <div class="mode-row">
-        <button :class="['mode-btn', mode === 'hs' ? 'active' : '']" @click="mode = 'hs'">HS</button>
-        <button :class="['mode-btn', mode === 'transition' ? 'active' : '']" @click="mode = 'transition'">M↔B</button>
+        <button :class="['mode-btn', mode === 'hs' ? 'active' : '']" @click="mode = 'hs'">{{ t('three_mode_hs') }}</button>
+        <button :class="['mode-btn', mode === 'transition' ? 'active' : '']" @click="mode = 'transition'">{{ t('three_mode_tx') }}</button>
       </div>
 
       <!-- HS params -->
       <template v-if="mode === 'hs'">
         <div class="group">
-          <label>metric</label>
+          <label>{{ t('three_metric') }}</label>
           <select v-model="hsMetric">
-            <option v-for="m in HS_METRICS" :key="m.value" :value="m.value">{{ m.label }}</option>
+            <option v-for="m in HS_METRICS" :key="m" :value="m">{{ HS_METRIC_LABELS[m][lang] }}</option>
           </select>
         </div>
         <div class="group">
           <label>{{ t('variant') }}</label>
           <select v-model="hsVariant">
-            <option v-for="v in VARIANTS" :key="v" :value="v">{{ v }}</option>
+            <option v-for="v in VARIANTS" :key="v" :value="v">{{ VARIANT_LABELS[v][lang] }}</option>
           </select>
         </div>
         <div class="group">
-          <label>resolution</label>
+          <label>{{ t('three_resolution') }}</label>
           <input type="number" v-model.number="hsRes" min="32" max="4096" step="64" />
         </div>
         <div class="group">
@@ -127,15 +129,15 @@ function compute() {
           <input type="number" v-model.number="hsIter" min="64" max="10000" step="128" />
         </div>
         <div class="group">
-          <label>center Re</label>
+          <label>{{ t('three_center_re') }}</label>
           <input type="number" v-model.number="hsCenterRe" step="0.01" />
         </div>
         <div class="group">
-          <label>center Im</label>
+          <label>{{ t('three_center_im') }}</label>
           <input type="number" v-model.number="hsCenterIm" step="0.01" />
         </div>
         <div class="group">
-          <label>scale</label>
+          <label>{{ t('three_scale') }}</label>
           <input type="number" v-model.number="hsScale" min="0.0001" step="0.1" />
         </div>
       </template>
@@ -143,17 +145,17 @@ function compute() {
       <!-- Transition params -->
       <template v-else>
         <div class="group">
-          <label>θ (M↔B)</label>
+          <label>{{ t('theta') }}</label>
           <input type="range" min="0" max="1.5707963267948966" step="0.01" v-model.number="txTheta" />
           <span class="num">{{ txTheta.toFixed(3) }}</span>
         </div>
         <div class="group">
-          <label>iso level</label>
+          <label>{{ t('three_iso') }}</label>
           <input type="range" min="0.1" max="0.9" step="0.05" v-model.number="txIso" />
           <span class="num">{{ txIso.toFixed(2) }}</span>
         </div>
         <div class="group">
-          <label>resolution</label>
+          <label>{{ t('three_resolution') }}</label>
           <input type="number" v-model.number="txRes" min="32" max="1024" step="32" />
         </div>
         <div class="group">
@@ -161,21 +163,21 @@ function compute() {
           <input type="number" v-model.number="txIter" min="32" max="2000" step="32" />
         </div>
         <div class="group">
-          <label>center Re</label>
+          <label>{{ t('three_center_re') }}</label>
           <input type="number" v-model.number="txCenterRe" step="0.01" />
         </div>
         <div class="group">
-          <label>center Im</label>
+          <label>{{ t('three_center_im') }}</label>
           <input type="number" v-model.number="txCenterIm" step="0.01" />
         </div>
         <div class="group">
-          <label>scale</label>
+          <label>{{ t('three_scale') }}</label>
           <input type="number" v-model.number="txScale" min="0.0001" step="0.1" />
         </div>
       </template>
 
       <button class="compute-btn" @click="compute" :disabled="loading">
-        {{ loading ? 'computing…' : 'compute' }}
+        {{ loading ? t('three_computing') : t('three_compute') }}
       </button>
 
       <div v-if="info"  class="info mono">{{ info }}</div>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { RouterLink } from 'vue-router'
-import { t } from '../i18n'
+import { t, lang, toggleLang } from '../i18n'
 
 const items = [
   { to: '/',       glyph: 'MP', label: 'nav_map' },
@@ -37,9 +37,14 @@ function toggleTheme() {
 
     <div class="spacer"></div>
 
+    <button class="theme-btn nav-item" @click="toggleLang" title="Toggle language / 切换语言">
+      <span class="glyph mono">{{ lang === 'en' ? 'ZH' : 'EN' }}</span>
+      <span class="tip">{{ lang === 'en' ? '中文' : 'English' }}</span>
+    </button>
+
     <button class="theme-btn nav-item" @click="toggleTheme" :title="isLight ? 'Switch to dark mode' : 'Switch to light mode'">
       <span class="glyph mono">{{ isLight ? 'DK' : 'LT' }}</span>
-      <span class="tip">{{ isLight ? 'dark mode' : 'light mode' }}</span>
+      <span class="tip">{{ isLight ? t('nav_dark') : t('nav_light') }}</span>
     </button>
   </nav>
 </template>
