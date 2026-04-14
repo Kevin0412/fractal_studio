@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <limits>
 #include <stdexcept>
 #include <cstring>
 
@@ -122,6 +123,79 @@ std::string hsMeshRoute(const std::filesystem::path&, JobRunner& runner, const s
     return resp.dump();
 }
 
+// ─── HS field (raw float64 height values for frontend-rendered mesh) ─────────
+// Returns the same field that buildHsMesh computes internally, before the
+// meshing step, so the browser can build a three.js PlaneGeometry and apply an
+// arbitrary z-scale without a round-trip to the server.
+
+std::string hsFieldRoute(const std::filesystem::path&, JobRunner& runner, const std::string& body) {
+    const Json j = parseJsonBody(body);
+
+    compute::hs::HsMeshParams p;
+    p.center_re   = j.value("centerRe",    -0.75);
+    p.center_im   = j.value("centerIm",      0.0);
+    p.scale       = j.value("scale",         3.0);
+    p.resolution  = j.value("resolution",   192);
+    p.iterations  = j.value("iterations",   512);
+    p.bailout     = j.value("bailout",       2.0);
+    p.heightClamp = j.value("heightClamp",   2.0);
+    p.variant = parseVariant(j.value("variant", std::string("mandelbrot")));
+    p.metric  = parseMetric (j.value("metric",  std::string("min_abs")));
+
+    if (p.resolution < 8 || p.resolution > 4096) throw std::runtime_error("invalid resolution");
+    if (p.iterations < 1 || p.iterations > 1000000) throw std::runtime_error("invalid iterations");
+
+    auto run = runner.createRun("hs-field", body);
+    runner.setStatus(run.id, "running");
+
+    double elapsed = 0.0;
+
+    try {
+        const auto t0 = std::chrono::steady_clock::now();
+
+        // Reuse the existing field compute from buildHsMesh, which computes
+        // raw metric values. We replicate the field computation here to return
+        // the raw (un-normalized, un-meshed) float64 values. The frontend does
+        // normalization and meshing.
+        std::vector<double> rawField;
+        compute::hs::computeHsField(p, rawField);
+
+        const auto t1 = std::chrono::steady_clock::now();
+        elapsed = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+        // Compute min/max for the frontend (it normalizes for colorization).
+        double fmin =  std::numeric_limits<double>::infinity();
+        double fmax = -std::numeric_limits<double>::infinity();
+        for (double v : rawField) {
+            if (v < fmin) fmin = v;
+            if (v > fmax) fmax = v;
+        }
+
+        // Base64-encode as little-endian float64 array.
+        const auto* bytes = reinterpret_cast<const uint8_t*>(rawField.data());
+        const std::string fieldB64 = base64Encode(bytes, rawField.size() * sizeof(double));
+
+        runner.setStatus(run.id, "completed");
+
+        const int N = p.resolution;
+        Json resp = {
+            {"runId",       run.id},
+            {"status",      "completed"},
+            {"width",       N},
+            {"height",      N},
+            {"fieldMin",    fmin},
+            {"fieldMax",    fmax},
+            {"fieldB64",    fieldB64},
+            {"generatedMs", elapsed},
+        };
+        return resp.dump();
+
+    } catch (const std::exception&) {
+        runner.setStatus(run.id, "failed");
+        throw;
+    }
+}
+
 // Transition 3D volume mesh (Mandelbrot ↔ Burning Ship bridge as a 3D object).
 std::string transitionMeshRoute(const std::filesystem::path&, JobRunner& runner, const std::string& body) {
     const Json j = parseJsonBody(body);
@@ -215,7 +289,7 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
     p.bailout    = j.value("bailout",    2.0);
     const float iso = static_cast<float>(j.value("iso", 0.48));
 
-    if (p.resolution < 4 || p.resolution > 512) throw std::runtime_error("resolution out of range [4,512]");
+    if (p.resolution < 4 || p.resolution > 1024) throw std::runtime_error("resolution out of range [4,1024]");
     if (p.iterations < 1 || p.iterations > 10000) throw std::runtime_error("invalid iterations");
 
     auto run = runner.createRun("transition-voxels", body);

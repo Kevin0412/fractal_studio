@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { t, lang, toggleLang } from '../i18n'
+import { isLight, toggleTheme } from '../theme'
 
 const items = [
   { to: '/',       glyph: 'MP', label: 'nav_map' },
@@ -10,16 +10,6 @@ const items = [
   { to: '/runs',   glyph: 'RN', label: 'nav_runs' },
   { to: '/system', glyph: 'SY', label: 'nav_system' },
 ]
-
-const isLight = ref(false)
-function toggleTheme() {
-  isLight.value = !isLight.value
-  if (isLight.value) {
-    document.documentElement.setAttribute('data-theme', 'light')
-  } else {
-    document.documentElement.removeAttribute('data-theme')
-  }
-}
 </script>
 
 <template>

@@ -7,8 +7,8 @@
 
 ## Features / 功能特性
 
-- **10 Mandelbrot-family variants** — all rendered natively in C++, no external shell-outs
-  **10 种 Mandelbrot 族变体** — 全部原生 C++ 渲染，无外部进程调用
+- **16 Mandelbrot-family variants** — 10 polynomial + 6 complex-trig (sin, cos, exp, sinh, cosh, tan), all rendered natively in C++
+  **16 种 Mandelbrot 族变体** — 10 种多项式 + 6 种复数超越函数（sin、cos、exp、sinh、cosh、tan），全部原生 C++ 渲染
 - **Multiple metrics** — escape time, min |z|, max |z|, envelope, min pairwise orbit distance
   **多种度量指标** — 逃逸时间、min |z|、max |z|、包络、最小轨道距
 - **Dual-pane Julia explorer** — left pane picks c by click and recenters; right pane shows the Julia set J(c) with independent viewport
@@ -28,7 +28,7 @@
 
 ## Engine Support Matrix / 引擎支持矩阵
 
-| Engine / 引擎 | All 10 variants | Julia mode | Escape | Min/Max \|z\| · Envelope | Min pairwise dist | Fixed-point fx64 |
+| Engine / 引擎 | All 10 variants | Julia mode | Escape | Min/Max abs(z) · Envelope | Min pairwise dist | Fixed-point fx64 |
 |--------|:-:|:-:|:-:|:-:|:-:|:-:|
 | **OpenMP**       | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | **CUDA**         | ✓ | ✓ | ✓ | ✓ | — | ✓ |
@@ -53,14 +53,20 @@
 |---|---|---|
 | `mandelbrot`   | Mandelbrot        | z² + c |
 | `tricorn`      | Tricorn           | conj(z)² + c |
-| `burning_ship` | Burning Ship      | (\|Re z\| + \|Im z\|·i)² + c |
-| `celtic`       | Celtic            | (Re z + \|Im z\|·i)² + c |
-| `heart`        | Heart             | (\|Re z\| − Im z·i)² + c |
-| `buffalo`      | Buffalo           | z²→\|Re(z²)\| + Im(z²)·i + c |
-| `perp_buffalo` | Perp. Buffalo     | z²→\|Re(z²)\| − Im(z²)·i + c |
-| `celtic_ship`  | Celtic Ship       | z²→\|Re(z²)\| + \|Im(z²)\|·i + c |
-| `mandelceltic` | Mandelceltic      | (Re+\|Im\|·i)²→\|Re\|+Im·i + c |
-| `perp_ship`    | Perp. Ship        | (\|Re\|+Im·i)²→\|Re\|−Im·i + c |
+| `burning_ship` | Burning Ship      | (abs(Re z) + abs(Im z)·i)² + c |
+| `celtic`       | Celtic            | (Re z + abs(Im z)·i)² + c |
+| `heart`        | Heart             | (abs(Re z) − Im z·i)² + c |
+| `buffalo`      | Buffalo           | z²→abs(Re(z²)) + Im(z²)·i + c |
+| `perp_buffalo` | Perp. Buffalo     | z²→abs(Re(z²)) − Im(z²)·i + c |
+| `celtic_ship`  | Celtic Ship       | z²→abs(Re(z²)) + abs(Im(z²))·i + c |
+| `mandelceltic` | Mandelceltic      | (Re+abs(Im)·i)²→abs(Re)+Im·i + c |
+| `perp_ship`    | Perp. Ship        | (abs(Re)+Im·i)²→abs(Re)−Im·i + c |
+| `sin_z`        | sin(z)+c          | sin(z) + c |
+| `cos_z`        | cos(z)+c          | cos(z) + c |
+| `exp_z`        | exp(z)+c          | exp(z) + c |
+| `sinh_z`       | sinh(z)+c         | sinh(z) + c |
+| `cosh_z`       | cosh(z)+c         | cosh(z) + c |
+| `tan_z`        | tan(z)+c          | tan(z) + c |
 
 ---
 

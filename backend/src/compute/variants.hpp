@@ -1,6 +1,6 @@
 // compute/variants.hpp
 //
-// The 10 Mandelbrot-family variant step functions, tag-dispatched so the
+// The 16 Mandelbrot-family variant step functions, tag-dispatched so the
 // compiler inlines the chosen body into the escape-time loop. Math ported
 // verbatim from C_mandelbrot/Mandelbrot_python_ln.c and the legacy managed map
 // renderer in fractal_studio/backend/src/adapters/legacy_map_adapter.cpp.
@@ -16,10 +16,17 @@
 //   celtic_ship  — z² → |Re(z²)| + |Im(z²)|·i + c      (Celtic+Ship combined)
 //   mandelceltic — (Re+|Im|·i)² → |Re|+Im·i + c         (pre+post fold Im)
 //   perp_ship    — (|Re|+Im·i)² → |Re|−Im·i + c         (perpendicular ship)
+//   sin_z        — sin(z) + c
+//   cos_z        — cos(z) + c
+//   exp_z        — exp(z) + c
+//   sinh_z       — sinh(z) + c
+//   cosh_z       — cosh(z) + c
+//   tan_z        — tan(z) + c
 
 #pragma once
 
 #include "complex.hpp"
+#include <cmath>
 
 namespace fsd::compute {
 
@@ -34,7 +41,67 @@ enum class Variant {
     Bird        = 7,  // z²→|Re(z²)|+|Im(z²)|·i+c          (Celtic Ship)
     Mask        = 8,  // (Re+|Im|·i)²→|Re|+Im·i+c          (Mandelceltic)
     Ship        = 9,  // (|Re|+Im·i)²→|Re|−Im·i+c          (Perpendicular Ship)
+    SinZ        = 10, // sin(z) + c
+    CosZ        = 11, // cos(z) + c
+    ExpZ        = 12, // exp(z) + c
+    SinhZ       = 13, // sinh(z) + c
+    CoshZ       = 14, // cosh(z) + c
+    TanZ        = 15, // tan(z) + c
 };
+
+// ─── complex trig helpers (double only) ──────────────────────────────────────
+// All identities use real-valued cmath functions to avoid <complex> dependency.
+
+inline Cx<double> cx_sin(Cx<double> z) {
+    // sin(x+iy) = sin(x)cosh(y) + i·cos(x)sinh(y)
+    return { std::sin(z.re) * std::cosh(z.im),
+             std::cos(z.re) * std::sinh(z.im) };
+}
+inline Cx<double> cx_cos(Cx<double> z) {
+    // cos(x+iy) = cos(x)cosh(y) − i·sin(x)sinh(y)
+    return { std::cos(z.re) * std::cosh(z.im),
+            -std::sin(z.re) * std::sinh(z.im) };
+}
+inline Cx<double> cx_exp(Cx<double> z) {
+    // exp(x+iy) = e^x·(cos(y) + i·sin(y))
+    const double ex = std::exp(z.re);
+    return { ex * std::cos(z.im), ex * std::sin(z.im) };
+}
+inline Cx<double> cx_sinh(Cx<double> z) {
+    // sinh(x+iy) = sinh(x)cos(y) + i·cosh(x)sin(y)
+    return { std::sinh(z.re) * std::cos(z.im),
+             std::cosh(z.re) * std::sin(z.im) };
+}
+inline Cx<double> cx_cosh(Cx<double> z) {
+    // cosh(x+iy) = cosh(x)cos(y) + i·sinh(x)sin(y)
+    return { std::cosh(z.re) * std::cos(z.im),
+             std::sinh(z.re) * std::sin(z.im) };
+}
+inline Cx<double> cx_tan(Cx<double> z) {
+    // tan(z) = sin(z) / cos(z), both complex.
+    // Numerically stable form: tan(z) = sin(2x)/(cos(2x)+cosh(2y))
+    //                              + i·sinh(2y)/(cos(2x)+cosh(2y))
+    const double denom = std::cos(2.0 * z.re) + std::cosh(2.0 * z.im);
+    if (denom == 0.0) return { 0.0, 0.0 };
+    return { std::sin(2.0 * z.re) / denom,
+             std::sinh(2.0 * z.im) / denom };
+}
+
+// Helper to apply a trig function when S may not be double (Fx64 fallback).
+// Casts to Cx<double>, applies fn, casts result back to Cx<S>.
+template <typename S>
+Cx<S> apply_trig(Cx<S> z, Cx<S> c, Cx<double>(*fn)(Cx<double>)) {
+    Cx<double> zd{ static_cast<double>(z.re), static_cast<double>(z.im) };
+    Cx<double> cd{ static_cast<double>(c.re), static_cast<double>(c.im) };
+    Cx<double> rd = fn(zd);
+    rd.re += cd.re;
+    rd.im += cd.im;
+    if constexpr (std::is_same_v<S, double>) {
+        return { rd.re, rd.im };
+    } else {
+        return { S::from_double(rd.re), S::from_double(rd.im) };
+    }
+}
 
 inline const char* variant_name(Variant v) {
     switch (v) {
@@ -48,6 +115,12 @@ inline const char* variant_name(Variant v) {
         case Variant::Bird:       return "celtic_ship";
         case Variant::Mask:       return "mandelceltic";
         case Variant::Ship:       return "perp_ship";
+        case Variant::SinZ:       return "sin_z";
+        case Variant::CosZ:       return "cos_z";
+        case Variant::ExpZ:       return "exp_z";
+        case Variant::SinhZ:      return "sinh_z";
+        case Variant::CoshZ:      return "cosh_z";
+        case Variant::TanZ:       return "tan_z";
     }
     return "mandelbrot";
 }
@@ -65,6 +138,12 @@ inline bool variant_from_name(const char* name, Variant& out) {
         {"celtic_ship", Variant::Bird},
         {"mandelceltic",Variant::Mask},
         {"perp_ship",   Variant::Ship},
+        {"sin_z",       Variant::SinZ},
+        {"cos_z",       Variant::CosZ},
+        {"exp_z",       Variant::ExpZ},
+        {"sinh_z",      Variant::SinhZ},
+        {"cosh_z",      Variant::CoshZ},
+        {"tan_z",       Variant::TanZ},
         // Legacy aliases (keep old names working)
         {"tri",         Variant::Tri},
         {"boat",        Variant::Boat},
@@ -83,6 +162,23 @@ inline bool variant_from_name(const char* name, Variant& out) {
         if (*a == 0 && *b == 0) { out = e.v; return true; }
     }
     return false;
+}
+
+// Returns true for variants that require scalar (fp64) fallback in
+// vectorised paths (AVX-512, CUDA). Trig variants use std::cmath and cannot
+// easily be vectorised without a dedicated SVML/libm port.
+inline bool variant_needs_scalar_fallback(Variant v) {
+    switch (v) {
+        case Variant::SinZ:
+        case Variant::CosZ:
+        case Variant::ExpZ:
+        case Variant::SinhZ:
+        case Variant::CoshZ:
+        case Variant::TanZ:
+            return true;
+        default:
+            return false;
+    }
 }
 
 // Tag-dispatched step. The compiler collapses the switch on V away when V is a
@@ -127,6 +223,18 @@ inline Cx<S> variant_step(Cx<S> z, const Cx<S>& c) {
         w.re = scalar_abs(w.re);
         w.im = -w.im;
         return w + c;
+    } else if constexpr (V == Variant::SinZ) {
+        return apply_trig(z, c, cx_sin);
+    } else if constexpr (V == Variant::CosZ) {
+        return apply_trig(z, c, cx_cos);
+    } else if constexpr (V == Variant::ExpZ) {
+        return apply_trig(z, c, cx_exp);
+    } else if constexpr (V == Variant::SinhZ) {
+        return apply_trig(z, c, cx_sinh);
+    } else if constexpr (V == Variant::CoshZ) {
+        return apply_trig(z, c, cx_cosh);
+    } else if constexpr (V == Variant::TanZ) {
+        return apply_trig(z, c, cx_tan);
     }
 }
 

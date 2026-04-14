@@ -27,10 +27,12 @@ async function getJson<T>(path: string): Promise<T> {
 export type Variant =
   | 'mandelbrot' | 'tricorn' | 'burning_ship' | 'celtic' | 'heart'
   | 'buffalo' | 'perp_buffalo' | 'celtic_ship' | 'mandelceltic' | 'perp_ship'
+  | 'sin_z' | 'cos_z' | 'exp_z' | 'sinh_z' | 'cosh_z' | 'tan_z'
 
 export const VARIANTS: Variant[] = [
   'mandelbrot', 'tricorn', 'burning_ship', 'celtic', 'heart',
   'buffalo', 'perp_buffalo', 'celtic_ship', 'mandelceltic', 'perp_ship',
+  'sin_z', 'cos_z', 'exp_z', 'sinh_z', 'cosh_z', 'tan_z',
 ]
 
 // Human-readable display names, used in dropdowns and info panels
@@ -45,6 +47,12 @@ export const VARIANT_LABELS: Record<Variant, { en: string; zh: string }> = {
   celtic_ship:  { en: 'Celtic Ship',       zh: '凯尔特船' },
   mandelceltic: { en: 'Mandelceltic',      zh: '曼德凯尔特' },
   perp_ship:    { en: 'Perp. Ship',        zh: '垂直船' },
+  sin_z:        { en: 'sin(z)+c',          zh: 'sin(z)+c' },
+  cos_z:        { en: 'cos(z)+c',          zh: 'cos(z)+c' },
+  exp_z:        { en: 'exp(z)+c',          zh: 'exp(z)+c' },
+  sinh_z:       { en: 'sinh(z)+c',         zh: 'sinh(z)+c' },
+  cosh_z:       { en: 'cosh(z)+c',         zh: 'cosh(z)+c' },
+  tan_z:        { en: 'tan(z)+c',          zh: 'tan(z)+c' },
 }
 
 export type Metric = 'escape' | 'min_abs' | 'max_abs' | 'envelope' | 'min_pairwise_dist'
@@ -129,6 +137,28 @@ export interface HsMeshRequest {
   metric?: HsStage
   variant?: Variant
   iterations?: number
+}
+
+export interface HsFieldRequest {
+  centerRe?: number
+  centerIm?: number
+  scale?: number
+  resolution?: number
+  metric?: HsStage
+  variant?: Variant
+  iterations?: number
+  heightClamp?: number
+}
+
+export interface HsFieldResponse {
+  runId: string
+  status: string
+  width: number
+  height: number
+  fieldMin: number
+  fieldMax: number
+  fieldB64: string   // base64 float64[width * height], row-major
+  generatedMs: number
 }
 
 export interface MeshResponse {
@@ -253,7 +283,8 @@ export const api = {
     getJson<{ items: SpecialPoint[] }>(
       `/api/special-points${family ? `?family=${encodeURIComponent(family)}` : ''}`),
 
-  hsMesh: (req: HsMeshRequest) => postJson<MeshResponse>('/api/hs/mesh', req),
+  hsMesh:  (req: HsMeshRequest)  => postJson<MeshResponse>('/api/hs/mesh', req),
+  hsField: (req: HsFieldRequest) => postJson<HsFieldResponse>('/api/hs/field', req),
   transitionMesh:   (req: TransitionMeshRequest)  => postJson<MeshResponse>('/api/transition/mesh', req),
   transitionVoxels: (req: TransitionVoxelRequest) => postJson<TransitionVoxelResponse>('/api/transition/voxels', req),
   videoZoom: (req: VideoZoomRequest) => postJson<VideoZoomResponse>('/api/video/zoom', req),

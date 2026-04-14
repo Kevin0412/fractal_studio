@@ -1,23 +1,27 @@
 <script setup lang="ts">
-// ThreeDViewer.vue — three.js viewer with two render modes:
+// ThreeDViewer.vue — three.js viewer with three render modes:
 //
-//   GLB mode  : loads a glTF/GLB mesh artifact URL.
-//   Voxel mode: Minecraft-style surface mesh.
-//               For each inside voxel, only the faces adjacent to an empty
-//               neighbour are emitted into a single BufferGeometry, so zero
-//               hidden geometry is uploaded to the GPU.
-//               Color encodes depth: byte=1 (deep) → dark amber,
-//                                    byte=255 (near surface) → bright amber.
+//   HS field mode  : frontend-built PlaneGeometry from float64 height field.
+//                    Camera top-down, pan+zoom only (no orbit rotation).
+//                    zScale applied client-side without re-fetching field data.
+//   GLB mode       : loads a glTF/GLB mesh artifact URL.
+//   Voxel mode     : Minecraft-style surface mesh for M↔B transition.
+//                    Color encodes depth: byte=1 (deep) → dark amber,
+//                                        byte=255 (near surface) → bright amber.
 
 import { onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import type { TransitionVoxelResponse } from '../api'
+import type { TransitionVoxelResponse, HsFieldResponse } from '../api'
+import { isLight, clearColor } from '../theme'
 
 const props = defineProps<{
   glbUrl?: string | null
   voxelData?: TransitionVoxelResponse | null
+  hsFieldData?: HsFieldResponse | null
+  zScale?: number
+  viewMode?: 'hs' | 'transition'
   loading?: boolean
 }>()
 
@@ -30,6 +34,12 @@ let controls: OrbitControls | null = null
 let animId:   number | null = null
 let meshGroup: THREE.Group | null = null
 let voxelMesh: THREE.Mesh | null = null
+let hsMesh:    THREE.Mesh | null = null
+
+// Cache raw float64 field values for z-scale rebuildling without re-fetch
+let cachedField:  Float64Array | null = null
+let cachedW = 0, cachedH = 0
+
 let ro: ResizeObserver | null = null
 
 // ── Init ─────────────────────────────────────────────────────────────────────
@@ -38,7 +48,7 @@ function initThree() {
   const el = canvasEl.value!
   renderer = new THREE.WebGLRenderer({ canvas: el, antialias: true })
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-  renderer.setClearColor(0x0a0b0d, 1)
+  renderer.setClearColor(clearColor(), 1)
 
   scene = new THREE.Scene()
 
@@ -59,10 +69,27 @@ function initThree() {
   controls.minDistance    = 0.05
   controls.maxDistance    = 20
 
+  applyViewMode(props.viewMode)
+
   ro = new ResizeObserver(() => resizeRenderer())
   ro.observe(el.parentElement!)
   resizeRenderer()
   loop()
+}
+
+function applyViewMode(mode?: 'hs' | 'transition') {
+  if (!controls || !camera) return
+  if (mode === 'hs') {
+    controls.enableRotate = false
+    camera.position.set(0, 3.0, 0.5)
+    controls.target.set(0, 0, 0)
+    controls.update()
+  } else {
+    controls.enableRotate = true
+    camera.position.set(0, 0.8, 3.2)
+    controls.target.set(0, 0, 0)
+    controls.update()
+  }
 }
 
 function resizeRenderer() {
@@ -81,9 +108,7 @@ function loop() {
 
 function resetCamera() {
   controls!.reset()
-  camera!.position.set(0, 0.8, 3.2)
-  controls!.target.set(0, 0, 0)
-  controls!.update()
+  applyViewMode(props.viewMode)
 }
 
 // ── GLB ──────────────────────────────────────────────────────────────────────
@@ -105,7 +130,7 @@ function clearMesh() {
 const loader = new GLTFLoader()
 
 async function loadGlb(url: string) {
-  clearMesh(); clearVoxels()
+  clearMesh(); clearVoxels(); clearHsMesh()
   try {
     const gltf = await loader.loadAsync(url)
     meshGroup = new THREE.Group()
@@ -117,7 +142,6 @@ async function loadGlb(url: string) {
         meshGroup!.add(child.clone())
       }
     })
-    // Normalize to unit bounding box
     const box    = new THREE.Box3().setFromObject(meshGroup)
     const center = box.getCenter(new THREE.Vector3())
     const size   = box.getSize(new THREE.Vector3()).length()
@@ -131,11 +155,6 @@ async function loadGlb(url: string) {
 }
 
 // ── Voxels ────────────────────────────────────────────────────────────────────
-// Face culling and CCW winding are computed in the C++ backend.
-// The response carries three compact base64 arrays:
-//   posB64   — float32[faceCount * 4 * 3]   vertex positions (world space)
-//   normB64  — int8[faceCount * 3]           one outward normal per face
-//   depthB64 — uint8[faceCount]              depth byte (1=deep, 255=surface)
 
 function clearVoxels() {
   if (voxelMesh && scene) {
@@ -158,9 +177,8 @@ function decodeB64Bytes(b64: string): Uint8Array {
 }
 
 function buildVoxels(data: TransitionVoxelResponse) {
-  clearMesh(); clearVoxels()
+  clearMesh(); clearVoxels(); clearHsMesh()
 
-  // Decode the three compact arrays from the backend
   const posBytes   = decodeB64Bytes(data.posB64)
   const normBytes  = decodeB64Bytes(data.normB64)
   const depthBytes = decodeB64Bytes(data.depthB64)
@@ -168,10 +186,8 @@ function buildVoxels(data: TransitionVoxelResponse) {
   const faceCount  = depthBytes.length
   if (faceCount === 0) return
 
-  // posF32: positions are already in world space, 4 vertices × 3 floats per face
   const posF32 = new Float32Array(posBytes.buffer, posBytes.byteOffset, posBytes.byteLength / 4)
 
-  // Normals: int8 per-face (3 components) → expand to per-vertex float (×4)
   const norF32 = new Float32Array(faceCount * 4 * 3)
   const normI8 = new Int8Array(normBytes.buffer, normBytes.byteOffset, normBytes.byteLength)
   for (let f = 0; f < faceCount; f++) {
@@ -185,7 +201,6 @@ function buildVoxels(data: TransitionVoxelResponse) {
     }
   }
 
-  // Colors: depth byte → amber lerp, expand to per-vertex (×4)
   const colF32 = new Float32Array(faceCount * 4 * 3)
   for (let f = 0; f < faceCount; f++) {
     const t = Math.pow((depthBytes[f] - 1) / 254, 0.55)
@@ -197,7 +212,6 @@ function buildVoxels(data: TransitionVoxelResponse) {
     }
   }
 
-  // Indices: 0,1,2,0,2,3 per face; use Uint32 to handle > 64k vertices
   const idxArr = new Uint32Array(faceCount * 6)
   for (let f = 0; f < faceCount; f++) {
     const b = f * 4
@@ -219,6 +233,157 @@ function buildVoxels(data: TransitionVoxelResponse) {
   resetCamera()
 }
 
+// ── HS Height Field ───────────────────────────────────────────────────────────
+// Builds a PlaneGeometry-style grid from the float64 height field.
+// zScale is applied client-side; rebuilding geometry from cached field is fast.
+
+function clearHsMesh() {
+  if (hsMesh && scene) {
+    scene.remove(hsMesh)
+    hsMesh.geometry.dispose()
+    ;(hsMesh.material as THREE.Material).dispose()
+    hsMesh = null
+  }
+  cachedField = null
+  cachedW = 0
+  cachedH = 0
+}
+
+function buildHsField(data: HsFieldResponse, zScale: number) {
+  clearMesh(); clearVoxels(); clearHsMesh()
+
+  const W = data.width
+  const H = data.height
+
+  // Decode base64 float64 array
+  const bytes = decodeB64Bytes(data.fieldB64)
+  const f64 = new Float64Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 8)
+
+  // Cache for z-scale rebuild
+  cachedField = f64
+  cachedW = W
+  cachedH = H
+
+  hsMesh = buildHsGeometry(f64, W, H, data.fieldMin, data.fieldMax, zScale)
+  scene!.add(hsMesh)
+  resetCamera()
+}
+
+// Build the actual THREE.Mesh from the float64 field
+function buildHsGeometry(
+  f64: Float64Array, W: number, H: number,
+  fmin: number, fmax: number, zScale: number
+): THREE.Mesh {
+  const denom = fmax > fmin ? fmax - fmin : 1.0
+  const vertCount = W * H
+
+  const positions = new Float32Array(vertCount * 3)
+  const normals   = new Float32Array(vertCount * 3)
+  const uvs       = new Float32Array(vertCount * 2)
+
+  // Build vertex positions: XZ on the grid, Y = field value * zScale
+  for (let row = 0; row < H; row++) {
+    for (let col = 0; col < W; col++) {
+      const idx = row * W + col
+      const x = (col / (W - 1)) - 0.5
+      const z = (row / (H - 1)) - 0.5
+      const f01 = (f64[idx] - fmin) / denom
+      const y = f01 * zScale
+
+      positions[idx * 3 + 0] = x
+      positions[idx * 3 + 1] = y
+      positions[idx * 3 + 2] = z
+
+      uvs[idx * 2 + 0] = col / (W - 1)
+      uvs[idx * 2 + 1] = 1.0 - row / (H - 1)
+    }
+  }
+
+  // Compute smooth normals via cross product of neighbors
+  for (let row = 0; row < H; row++) {
+    for (let col = 0; col < W; col++) {
+      const idx = row * W + col
+
+      // Finite differences for gradient
+      const col0 = Math.max(0, col - 1)
+      const col1 = Math.min(W - 1, col + 1)
+      const row0 = Math.max(0, row - 1)
+      const row1 = Math.min(H - 1, row + 1)
+
+      const dxdy = (f64[row * W + col1] - f64[row * W + col0]) / (col1 - col0) * zScale / denom
+      const dzdy = (f64[row1 * W + col] - f64[row0 * W + col]) / (row1 - row0) * zScale / denom
+
+      // Normal = cross((-dx, 1, 0), (0, dz, -1)) normalized
+      // Tangent along X: (1, dxdy, 0); tangent along Z: (0, dzdy, 1)
+      // Normal = (1,dxdy,0) × (0,dzdy,1) = (dxdy*1 - 0*dzdy, 0*0 - 1*1, 1*dzdy - dxdy*0)
+      //        = (dxdy, -1, dzdy) → negate to point up: (-dxdy, 1, -dzdy)
+      const nx = -dxdy
+      const ny = 1.0
+      const nz = -dzdy
+      const len = Math.sqrt(nx * nx + ny * ny + nz * nz)
+
+      normals[idx * 3 + 0] = nx / len
+      normals[idx * 3 + 1] = ny / len
+      normals[idx * 3 + 2] = nz / len
+    }
+  }
+
+  // Build indices (two triangles per grid cell)
+  const idxArr = new Uint32Array((W - 1) * (H - 1) * 6)
+  let ii = 0
+  for (let row = 0; row < H - 1; row++) {
+    for (let col = 0; col < W - 1; col++) {
+      const a = row * W + col
+      const b = row * W + col + 1
+      const c = (row + 1) * W + col
+      const d = (row + 1) * W + col + 1
+      idxArr[ii++] = a; idxArr[ii++] = c; idxArr[ii++] = b
+      idxArr[ii++] = b; idxArr[ii++] = c; idxArr[ii++] = d
+    }
+  }
+
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  geo.setAttribute('normal',   new THREE.BufferAttribute(normals,   3))
+  geo.setAttribute('uv',       new THREE.BufferAttribute(uvs,       2))
+  geo.setIndex(new THREE.BufferAttribute(idxArr, 1))
+
+  const mat = new THREE.MeshStandardMaterial({
+    color:     0xf0a030,
+    roughness: 0.6,
+    metalness: 0.1,
+    side:      THREE.DoubleSide,
+  })
+
+  const mesh = new THREE.Mesh(geo, mat)
+  mesh.userData.fieldMin = fmin
+  mesh.userData.fieldMax = fmax
+  return mesh
+}
+
+// Rebuild Y coordinates in place when zScale changes, without a new fetch.
+function applyZScaleInPlace(zScale: number) {
+  if (!hsMesh || !cachedField || cachedW === 0) return
+
+  const geo = hsMesh.geometry
+  const pos = geo.getAttribute('position') as THREE.BufferAttribute
+  const W = cachedW
+  const H = cachedH
+  const fmin = hsMesh.userData.fieldMin
+  const fmax = hsMesh.userData.fieldMax
+  const denom = fmax > fmin ? fmax - fmin : 1.0
+
+  for (let row = 0; row < H; row++) {
+    for (let col = 0; col < W; col++) {
+      const idx = row * W + col
+      const f01 = (cachedField[idx] - fmin) / denom
+      pos.setY(idx, f01 * zScale)
+    }
+  }
+  pos.needsUpdate = true
+  geo.computeVertexNormals()
+}
+
 // ── Watchers ──────────────────────────────────────────────────────────────────
 
 watch(() => props.glbUrl, url => {
@@ -231,10 +396,30 @@ watch(() => props.voxelData, data => {
   else clearVoxels()
 })
 
+watch(() => props.hsFieldData, data => {
+  if (data) buildHsField(data, props.zScale ?? 0.1)
+  else clearHsMesh()
+})
+
+watch(() => props.zScale, zs => {
+  if (zs !== undefined && hsMesh && cachedField) {
+    applyZScaleInPlace(zs)
+  }
+})
+
+watch(() => props.viewMode, mode => {
+  applyViewMode(mode)
+})
+
+watch(isLight, () => {
+  renderer?.setClearColor(clearColor(), 1)
+})
+
 onMounted(() => {
   initThree()
-  if (props.glbUrl)    loadGlb(props.glbUrl)
-  if (props.voxelData) buildVoxels(props.voxelData)
+  if (props.glbUrl)      loadGlb(props.glbUrl)
+  if (props.voxelData)   buildVoxels(props.voxelData)
+  if (props.hsFieldData) buildHsField(props.hsFieldData, props.zScale ?? 0.1)
 })
 
 onBeforeUnmount(() => {
@@ -244,6 +429,7 @@ onBeforeUnmount(() => {
   renderer?.dispose()
   clearMesh()
   clearVoxels()
+  clearHsMesh()
 })
 </script>
 
@@ -253,7 +439,7 @@ onBeforeUnmount(() => {
     <div v-if="loading" class="overlay">
       <span class="spinner">computing…</span>
     </div>
-    <div v-if="!glbUrl && !voxelData && !loading" class="overlay">
+    <div v-if="!glbUrl && !voxelData && !hsFieldData && !loading" class="overlay">
       <span class="hint">no mesh — select mode and compute</span>
     </div>
   </div>

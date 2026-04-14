@@ -183,10 +183,16 @@ static void dispatch_fp64(const MapParams& p, cv::Mat& out) {
         case Variant::Bird:       render_variant<Variant::Bird>(p, out);       break;
         case Variant::Mask:       render_variant<Variant::Mask>(p, out);       break;
         case Variant::Ship:       render_variant<Variant::Ship>(p, out);       break;
+        case Variant::SinZ:       render_variant<Variant::SinZ>(p, out);       break;
+        case Variant::CosZ:       render_variant<Variant::CosZ>(p, out);       break;
+        case Variant::ExpZ:       render_variant<Variant::ExpZ>(p, out);       break;
+        case Variant::SinhZ:      render_variant<Variant::SinhZ>(p, out);      break;
+        case Variant::CoshZ:      render_variant<Variant::CoshZ>(p, out);      break;
+        case Variant::TanZ:       render_variant<Variant::TanZ>(p, out);       break;
     }
 }
 
-// Dispatch fx64 variants
+// Dispatch fx64 variants (trig variants fall back to fp64 via apply_trig)
 static void dispatch_fx64(const MapParams& p, cv::Mat& out) {
     switch (p.variant) {
         case Variant::Mandelbrot: render_variant_fx64<Variant::Mandelbrot>(p, out); break;
@@ -199,6 +205,13 @@ static void dispatch_fx64(const MapParams& p, cv::Mat& out) {
         case Variant::Bird:       render_variant_fx64<Variant::Bird>(p, out);       break;
         case Variant::Mask:       render_variant_fx64<Variant::Mask>(p, out);       break;
         case Variant::Ship:       render_variant_fx64<Variant::Ship>(p, out);       break;
+        // Trig variants: apply_trig already casts Fx64 → double internally.
+        case Variant::SinZ:       render_variant_fx64<Variant::SinZ>(p, out);       break;
+        case Variant::CosZ:       render_variant_fx64<Variant::CosZ>(p, out);       break;
+        case Variant::ExpZ:       render_variant_fx64<Variant::ExpZ>(p, out);       break;
+        case Variant::SinhZ:      render_variant_fx64<Variant::SinhZ>(p, out);      break;
+        case Variant::CoshZ:      render_variant_fx64<Variant::CoshZ>(p, out);      break;
+        case Variant::TanZ:       render_variant_fx64<Variant::TanZ>(p, out);       break;
     }
 }
 
@@ -213,10 +226,15 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
     // Fall through to OpenMP which has access to IterResult.norm.
     const bool needs_norm = p.smooth;
 
-    // CUDA path: all 10 variants, Julia mode, metrics 0-3 (not MinPairwiseDist=4).
+    // Trig variants need scalar (std::cmath) — skip AVX-512 and CUDA for them.
+    const bool scalar_fallback = variant_needs_scalar_fallback(p.variant);
+
+    // CUDA path: all 10 polynomial variants, Julia mode, metrics 0-3 (not MinPairwiseDist=4).
+    // Trig variants fall to OpenMP (scalar_fallback).
     // smooth coloring (needs IterResult.norm) still falls to OpenMP.
 #if USE_CUDA
     const bool can_cuda = !needs_norm
+                       && !scalar_fallback
                        && (p.engine == "cuda" || p.engine == "auto" || p.engine == "hybrid")
                        && (static_cast<int>(p.metric) < 4)  // excludes MinPairwiseDist
                        && fsd_cuda::cuda_available();
@@ -246,12 +264,14 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
     }
 #endif
 
-    // AVX-512 path: all 10 variants, Julia mode, metrics 0-3 (fp64).
+    // AVX-512 path: all 10 polynomial variants, Julia mode, metrics 0-3 (fp64).
     // For fx64 (IFMA52): Mandelbrot-only variant is supported; non-Mandelbrot
     // variants fall through to scalar OpenMP for correctness.
     // MinPairwiseDist (metric 4) is excluded: O(N²) orbit buffer not vectorised.
     // Smooth coloring needs per-pixel norm from IterResult — falls to OpenMP.
+    // Trig variants need std::cmath — skip AVX-512 (scalar_fallback).
     const bool can_avx_base = !needs_norm
+                           && !scalar_fallback
                            && (p.engine == "avx512" || p.engine == "auto" || p.engine == "hybrid")
                            && (static_cast<int>(p.metric) < 4)
                            && avx512_available();

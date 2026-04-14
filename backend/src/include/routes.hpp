@@ -24,6 +24,8 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
 
 // HS heightfield mesh + transition 3D mesh.
 std::string hsMeshRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body);
+// HS raw field data (float64[W*H]) for frontend-rendered height mesh.
+std::string hsFieldRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body);
 std::string transitionMeshRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body);
 // Voxel grid (Minecraft-style) for the transition renderer.
 std::string transitionVoxelsRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body);

@@ -19,7 +19,7 @@ namespace {
 // Populate `field` with per-pixel metric values using the same iterate<>
 // core as the map kernel. Field is row-major: field[row * N + col].
 template <Variant V>
-void computeField(const HsMeshParams& p, std::vector<double>& field) {
+void computeFieldImpl(const HsMeshParams& p, std::vector<double>& field) {
     const int N = p.resolution;
     field.assign(N * N, 0.0);
     const double span = p.scale;
@@ -62,23 +62,31 @@ void computeField(const HsMeshParams& p, std::vector<double>& field) {
     }
 }
 
-void dispatch(const HsMeshParams& p, std::vector<double>& field) {
+} // namespace
+
+// Public: compute raw metric field. Used by both buildHsMesh and hsFieldRoute.
+void computeHsField(const HsMeshParams& p, std::vector<double>& field) {
     using V = Variant;
     switch (p.variant) {
-        case V::Mandelbrot: computeField<V::Mandelbrot>(p, field); break;
-        case V::Tri:        computeField<V::Tri>       (p, field); break;
-        case V::Boat:       computeField<V::Boat>      (p, field); break;
-        case V::Duck:       computeField<V::Duck>      (p, field); break;
-        case V::Bell:       computeField<V::Bell>      (p, field); break;
-        case V::Fish:       computeField<V::Fish>      (p, field); break;
-        case V::Vase:       computeField<V::Vase>      (p, field); break;
-        case V::Bird:       computeField<V::Bird>      (p, field); break;
-        case V::Mask:       computeField<V::Mask>      (p, field); break;
-        case V::Ship:       computeField<V::Ship>      (p, field); break;
+        case V::Mandelbrot: computeFieldImpl<V::Mandelbrot>(p, field); break;
+        case V::Tri:        computeFieldImpl<V::Tri>       (p, field); break;
+        case V::Boat:       computeFieldImpl<V::Boat>      (p, field); break;
+        case V::Duck:       computeFieldImpl<V::Duck>      (p, field); break;
+        case V::Bell:       computeFieldImpl<V::Bell>      (p, field); break;
+        case V::Fish:       computeFieldImpl<V::Fish>      (p, field); break;
+        case V::Vase:       computeFieldImpl<V::Vase>      (p, field); break;
+        case V::Bird:       computeFieldImpl<V::Bird>      (p, field); break;
+        case V::Mask:       computeFieldImpl<V::Mask>      (p, field); break;
+        case V::Ship:       computeFieldImpl<V::Ship>      (p, field); break;
+        case V::SinZ:       computeFieldImpl<V::SinZ>      (p, field); break;
+        case V::CosZ:       computeFieldImpl<V::CosZ>      (p, field); break;
+        case V::ExpZ:       computeFieldImpl<V::ExpZ>      (p, field); break;
+        case V::SinhZ:      computeFieldImpl<V::SinhZ>     (p, field); break;
+        case V::CoshZ:      computeFieldImpl<V::CoshZ>     (p, field); break;
+        case V::TanZ:       computeFieldImpl<V::TanZ>      (p, field); break;
+        default:            computeFieldImpl<V::Mandelbrot>(p, field); break;
     }
 }
-
-} // namespace
 
 Mesh buildHsMesh(const HsMeshParams& p) {
     const int N = std::max(4, std::min(4096, p.resolution));
@@ -86,7 +94,7 @@ Mesh buildHsMesh(const HsMeshParams& p) {
     std::vector<double> field;
     HsMeshParams pp = p;
     pp.resolution = N;
-    dispatch(pp, field);
+    computeHsField(pp, field);
 
     // Normalize field to [0, 1] for visual consistency.
     double lo = std::numeric_limits<double>::infinity();
