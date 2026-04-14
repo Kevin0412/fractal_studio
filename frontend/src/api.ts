@@ -160,7 +160,7 @@ export interface TransitionVoxelRequest {
   centerY?: number
   centerZ?: number
   extent?: number
-  resolution?: number   // default 64, max 256
+  resolution?: number   // default 64, max 512
   iso?: number
   iterations?: number
 }
@@ -169,14 +169,12 @@ export interface TransitionVoxelResponse {
   runId: string
   status: string
   resolution: number
-  isoLevel: number
   extent: number
-  centerX: number
-  centerY: number
-  centerZ: number
-  insideCount: number
+  faceCount: number
   generatedMs: number
-  fieldB64: string      // base64 Uint8Array, length = resolution³; 0=outside, 1-255=inside depth
+  posB64: string    // float32[faceCount * 4 * 3] — world-space vertex positions
+  normB64: string   // int8[faceCount * 3] — one outward normal per face
+  depthB64: string  // uint8[faceCount] — depth byte (1=deep interior, 255=near surface)
 }
 
 export interface VideoZoomRequest {

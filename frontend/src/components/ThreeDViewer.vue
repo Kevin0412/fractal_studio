@@ -131,6 +131,11 @@ async function loadGlb(url: string) {
 }
 
 // ── Voxels ────────────────────────────────────────────────────────────────────
+// Face culling and CCW winding are computed in the C++ backend.
+// The response carries three compact base64 arrays:
+//   posB64   — float32[faceCount * 4 * 3]   vertex positions (world space)
+//   normB64  — int8[faceCount * 3]           one outward normal per face
+//   depthB64 — uint8[faceCount]              depth byte (1=deep, 255=surface)
 
 function clearVoxels() {
   if (voxelMesh && scene) {
@@ -141,88 +146,70 @@ function clearVoxels() {
   }
 }
 
-// 6 face definitions: neighbour delta, outward normal, 4 corner offsets (half-cell units).
-// Winding is CCW when viewed from outside (back-face culling compatible).
-const FACE_DEFS = [
-  { d: [ 1, 0, 0], n: [ 1, 0, 0], v: [[ 0.5,-0.5,-0.5],[ 0.5,-0.5, 0.5],[ 0.5, 0.5, 0.5],[ 0.5, 0.5,-0.5]] },
-  { d: [-1, 0, 0], n: [-1, 0, 0], v: [[-0.5,-0.5, 0.5],[-0.5,-0.5,-0.5],[-0.5, 0.5,-0.5],[-0.5, 0.5, 0.5]] },
-  { d: [ 0, 1, 0], n: [ 0, 1, 0], v: [[-0.5, 0.5,-0.5],[-0.5, 0.5, 0.5],[ 0.5, 0.5, 0.5],[ 0.5, 0.5,-0.5]] },
-  { d: [ 0,-1, 0], n: [ 0,-1, 0], v: [[-0.5,-0.5, 0.5],[-0.5,-0.5,-0.5],[ 0.5,-0.5,-0.5],[ 0.5,-0.5, 0.5]] },
-  { d: [ 0, 0, 1], n: [ 0, 0, 1], v: [[-0.5,-0.5, 0.5],[ 0.5,-0.5, 0.5],[ 0.5, 0.5, 0.5],[-0.5, 0.5, 0.5]] },
-  { d: [ 0, 0,-1], n: [ 0, 0,-1], v: [[ 0.5,-0.5,-0.5],[-0.5,-0.5,-0.5],[-0.5, 0.5,-0.5],[ 0.5, 0.5,-0.5]] },
-] as const
-
 const DARK   = new THREE.Color(0x1a0800)
 const BRIGHT = new THREE.Color(0xf0a030)
 const TMP    = new THREE.Color()
 
+function decodeB64Bytes(b64: string): Uint8Array {
+  const bin = atob(b64)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
+}
+
 function buildVoxels(data: TransitionVoxelResponse) {
   clearMesh(); clearVoxels()
 
-  const N      = data.resolution
-  const extent = data.extent
+  // Decode the three compact arrays from the backend
+  const posBytes   = decodeB64Bytes(data.posB64)
+  const normBytes  = decodeB64Bytes(data.normB64)
+  const depthBytes = decodeB64Bytes(data.depthB64)
 
-  // Decode base64 → Uint8Array (byte=0 outside, 1-255 inside/depth)
-  const binStr = atob(data.fieldB64)
-  const bytes  = new Uint8Array(binStr.length)
-  for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i)
+  const faceCount  = depthBytes.length
+  if (faceCount === 0) return
 
-  // Inline accessor — returns true if the voxel at (xi,yi,zi) is OUTSIDE.
-  // Out-of-bounds coords are treated as outside (open boundary).
-  function isOutside(xi: number, yi: number, zi: number): boolean {
-    if (xi < 0 || xi >= N || yi < 0 || yi >= N || zi < 0 || zi >= N) return true
-    return bytes[xi + N * (yi + N * zi)] === 0
-  }
+  // posF32: positions are already in world space, 4 vertices × 3 floats per face
+  const posF32 = new Float32Array(posBytes.buffer, posBytes.byteOffset, posBytes.byteLength / 4)
 
-  const cellSize = (extent * 2) / N
-  const origin   = -extent + cellSize * 0.5   // center of voxel [0,0,0]
-
-  // Geometry buffers — grown dynamically.
-  const pos: number[] = []
-  const nor: number[] = []
-  const col: number[] = []
-  const idx: number[] = []
-
-  for (let zi = 0; zi < N; zi++) {
-    for (let yi = 0; yi < N; yi++) {
-      for (let xi = 0; xi < N; xi++) {
-        const depth = bytes[xi + N * (yi + N * zi)]
-        if (depth === 0) continue   // outside — skip entirely
-
-        // Voxel center in world space
-        const cx = origin + xi * cellSize
-        const cy = origin + yi * cellSize
-        const cz = origin + zi * cellSize
-
-        // Depth → amber color (power curve keeps surface bright)
-        const t = (depth - 1) / 254
-        TMP.copy(DARK).lerp(BRIGHT, Math.pow(t, 0.55))
-        const { r, g, b } = TMP
-
-        for (const face of FACE_DEFS) {
-          // Skip this face if the neighbour in that direction is also inside.
-          if (!isOutside(xi + face.d[0], yi + face.d[1], zi + face.d[2])) continue
-
-          // Emit 4 vertices + 2 triangles for this exposed face.
-          const base = pos.length / 3
-          for (const [vx, vy, vz] of face.v) {
-            pos.push(cx + vx * cellSize, cy + vy * cellSize, cz + vz * cellSize)
-            nor.push(face.n[0], face.n[1], face.n[2])
-            col.push(r, g, b)
-          }
-          idx.push(base, base + 1, base + 2,   base, base + 2, base + 3)
-        }
-      }
+  // Normals: int8 per-face (3 components) → expand to per-vertex float (×4)
+  const norF32 = new Float32Array(faceCount * 4 * 3)
+  const normI8 = new Int8Array(normBytes.buffer, normBytes.byteOffset, normBytes.byteLength)
+  for (let f = 0; f < faceCount; f++) {
+    const nx = normI8[f * 3 + 0]
+    const ny = normI8[f * 3 + 1]
+    const nz = normI8[f * 3 + 2]
+    for (let v = 0; v < 4; v++) {
+      norF32[(f * 4 + v) * 3 + 0] = nx
+      norF32[(f * 4 + v) * 3 + 1] = ny
+      norF32[(f * 4 + v) * 3 + 2] = nz
     }
   }
 
-  if (pos.length === 0) return
+  // Colors: depth byte → amber lerp, expand to per-vertex (×4)
+  const colF32 = new Float32Array(faceCount * 4 * 3)
+  for (let f = 0; f < faceCount; f++) {
+    const t = Math.pow((depthBytes[f] - 1) / 254, 0.55)
+    TMP.copy(DARK).lerp(BRIGHT, t)
+    for (let v = 0; v < 4; v++) {
+      colF32[(f * 4 + v) * 3 + 0] = TMP.r
+      colF32[(f * 4 + v) * 3 + 1] = TMP.g
+      colF32[(f * 4 + v) * 3 + 2] = TMP.b
+    }
+  }
+
+  // Indices: 0,1,2,0,2,3 per face; use Uint32 to handle > 64k vertices
+  const idxArr = new Uint32Array(faceCount * 6)
+  for (let f = 0; f < faceCount; f++) {
+    const b = f * 4
+    idxArr[f * 6 + 0] = b;     idxArr[f * 6 + 1] = b + 1; idxArr[f * 6 + 2] = b + 2
+    idxArr[f * 6 + 3] = b;     idxArr[f * 6 + 4] = b + 2; idxArr[f * 6 + 5] = b + 3
+  }
 
   const geo = new THREE.BufferGeometry()
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
-  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(nor, 3))
-  geo.setAttribute('color',    new THREE.Float32BufferAttribute(col, 3))
-  geo.setIndex(idx)
+  geo.setAttribute('position', new THREE.BufferAttribute(posF32,  3))
+  geo.setAttribute('normal',   new THREE.BufferAttribute(norF32,  3))
+  geo.setAttribute('color',    new THREE.BufferAttribute(colF32,  3))
+  geo.setIndex(new THREE.BufferAttribute(idxArr, 1))
 
   voxelMesh = new THREE.Mesh(
     geo,

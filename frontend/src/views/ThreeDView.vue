@@ -81,7 +81,7 @@ async function computeTransitionVoxels() {
       iterations: txIter.value,
     })
     voxelData.value = r
-    info.value = `${r.insideCount.toLocaleString()} voxels · ${r.resolution}³ grid · ${r.generatedMs.toFixed(0)}ms`
+    info.value = `${r.faceCount.toLocaleString()} faces · ${r.resolution}³ grid · ${r.generatedMs.toFixed(0)}ms`
   } catch (e: any) {
     error.value = e?.message ?? String(e)
     info.value  = ''
@@ -193,7 +193,7 @@ function compute() {
         <div class="group">
           <label>{{ t('three_resolution') }}</label>
           <input v-if="txRMode === 'voxel'"
-                 type="number" v-model.number="txRes" min="16" max="256" step="16" />
+                 type="number" v-model.number="txRes" min="16" max="512" step="16" />
           <input v-else
                  type="number" v-model.number="txRes" min="32" max="1024" step="32" />
           <span class="num dim">{{ txRMode === 'voxel' ? txRes + '³ vox' : txRes + '³ MC' }}</span>
