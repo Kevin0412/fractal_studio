@@ -47,6 +47,7 @@ enum class Variant {
     SinhZ       = 13, // sinh(z) + c
     CoshZ       = 14, // cosh(z) + c
     TanZ        = 15, // tan(z) + c
+    Custom      = 100, // user-compiled formula via dlopen; step fn in MapParams::custom_step_fn
 };
 
 // ─── complex trig helpers (double only) ──────────────────────────────────────
@@ -121,6 +122,7 @@ inline const char* variant_name(Variant v) {
         case Variant::SinhZ:      return "sinh_z";
         case Variant::CoshZ:      return "cosh_z";
         case Variant::TanZ:       return "tan_z";
+        case Variant::Custom:     return "custom";
     }
     return "mandelbrot";
 }

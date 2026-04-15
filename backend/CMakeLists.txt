@@ -48,6 +48,7 @@ add_executable(fractal_studio_backend
     src/api/routes_points.cpp
     src/api/routes_artifacts.cpp
     src/api/routes_benchmark.cpp
+    src/api/routes_variants.cpp
 
     # Native compute
     src/compute/map_kernel.cpp
@@ -103,6 +104,7 @@ endif()
 target_link_libraries(fractal_studio_backend PRIVATE
     sqlite3
     ${OpenCV_LIBS}
+    dl          # dlopen/dlsym for custom variant shared libraries
 )
 
 target_compile_options(fractal_studio_backend PRIVATE

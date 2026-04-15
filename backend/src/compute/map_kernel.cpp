@@ -26,8 +26,10 @@
 #  include <omp.h>
 #endif
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 namespace fsd::compute {
@@ -189,6 +191,7 @@ static void dispatch_fp64(const MapParams& p, cv::Mat& out) {
         case Variant::SinhZ:      render_variant<Variant::SinhZ>(p, out);      break;
         case Variant::CoshZ:      render_variant<Variant::CoshZ>(p, out);      break;
         case Variant::TanZ:       render_variant<Variant::TanZ>(p, out);       break;
+        default: break;  // Variant::Custom is intercepted before this dispatch
     }
 }
 
@@ -212,12 +215,327 @@ static void dispatch_fx64(const MapParams& p, cv::Mat& out) {
         case Variant::SinhZ:      render_variant_fx64<Variant::SinhZ>(p, out);      break;
         case Variant::CoshZ:      render_variant_fx64<Variant::CoshZ>(p, out);      break;
         case Variant::TanZ:       render_variant_fx64<Variant::TanZ>(p, out);       break;
+        default: break;  // Variant::Custom is intercepted before this dispatch
     }
 }
+
+// ─── Custom variant renderer (OpenMP, function pointer) ──────────────────────
+//
+// Only used when p.variant == Variant::Custom && p.custom_step_fn != nullptr.
+// Falls back to escape metric colorization (min_abs/max_abs/envelope/pairwise
+// are not tracked since the custom step fn has no access to orbit buffers).
+
+static MapStats render_custom_openmp(const MapParams& p, cv::Mat& out) {
+    if (out.empty() || out.rows != p.height || out.cols != p.width || out.type() != CV_8UC3) {
+        out.create(p.height, p.width, CV_8UC3);
+    }
+
+    CustomStepFn fn = p.custom_step_fn;
+
+    const int W = p.width, H = p.height;
+    const double aspect  = static_cast<double>(W) / static_cast<double>(H);
+    const double span_im = p.scale;
+    const double span_re = p.scale * aspect;
+    const double re_min  = p.center_re - span_re * 0.5;
+    const double im_max  = p.center_im + span_im * 0.5;
+    const double bail2   = p.bailout * p.bailout;
+    const double jre     = p.julia_re;
+    const double jim     = p.julia_im;
+
+    const auto t0 = std::chrono::steady_clock::now();
+
+    #pragma omp parallel for schedule(dynamic, 4)
+    for (int y = 0; y < H; y++) {
+        uint8_t* row = out.ptr<uint8_t>(y);
+        const double im_c = im_max - (static_cast<double>(y) + 0.5) / H * span_im;
+        for (int x = 0; x < W; x++) {
+            const double re_c = re_min + (static_cast<double>(x) + 0.5) / W * span_re;
+
+            double zr, zi, cr, ci;
+            if (p.julia) { zr = re_c; zi = im_c; cr = jre; ci = jim; }
+            else          { zr = 0.0; zi = 0.0;  cr = re_c; ci = im_c; }
+
+            int   it    = 0;
+            double norm2 = 0.0;
+            for (; it < p.iterations; it++) {
+                double nr = 0.0, ni = 0.0;
+                fn(zr, zi, cr, ci, &nr, &ni);
+                zr = nr; zi = ni;
+                norm2 = zr * zr + zi * zi;
+                if (norm2 > bail2) break;
+            }
+
+            const bool escaped = (norm2 > bail2);
+            uint8_t* px = row + 3 * x;
+            colorize_escape_bgr(
+                escaped ? it : p.iterations,
+                p.iterations,
+                p.colormap,
+                escaped ? norm2 : 0.0,
+                p.smooth,
+                px[0], px[1], px[2]
+            );
+        }
+    }
+
+    const auto t1 = std::chrono::steady_clock::now();
+    MapStats s;
+    s.elapsed_ms  = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    s.pixel_count = W * H;
+    s.scalar_used = "fp64";
+    s.engine_used = "openmp";
+    return s;
+}
+
+// Field variant for custom formula — fills FieldOutput with escape metric data.
+static MapStats render_custom_field_openmp(const MapParams& p, FieldOutput& fo) {
+    fo.width  = p.width;
+    fo.height = p.height;
+    fo.metric = Metric::Escape;  // custom always uses escape metric for field
+
+    CustomStepFn fn = p.custom_step_fn;
+
+    const int W = p.width, H = p.height;
+    const double aspect  = static_cast<double>(W) / static_cast<double>(H);
+    const double span_im = p.scale;
+    const double span_re = p.scale * aspect;
+    const double re_min  = p.center_re - span_re * 0.5;
+    const double im_max  = p.center_im + span_im * 0.5;
+    const double bail2   = p.bailout * p.bailout;
+    const double jre     = p.julia_re;
+    const double jim     = p.julia_im;
+
+    fo.iter_u32.assign(static_cast<size_t>(W) * H, 0u);
+    fo.norm_f32.assign(static_cast<size_t>(W) * H, 0.0f);
+
+    const auto t0 = std::chrono::steady_clock::now();
+
+    #pragma omp parallel for schedule(dynamic, 4)
+    for (int y = 0; y < H; y++) {
+        const double im_c = im_max - (static_cast<double>(y) + 0.5) / H * span_im;
+        for (int x = 0; x < W; x++) {
+            const double re_c = re_min + (static_cast<double>(x) + 0.5) / W * span_re;
+
+            double zr, zi, cr, ci;
+            if (p.julia) { zr = re_c; zi = im_c; cr = jre; ci = jim; }
+            else          { zr = 0.0; zi = 0.0;  cr = re_c; ci = im_c; }
+
+            int   it    = 0;
+            double norm2 = 0.0;
+            for (; it < p.iterations; it++) {
+                double nr = 0.0, ni = 0.0;
+                fn(zr, zi, cr, ci, &nr, &ni);
+                zr = nr; zi = ni;
+                norm2 = zr * zr + zi * zi;
+                if (norm2 > bail2) break;
+            }
+
+            const bool escaped = (norm2 > bail2);
+            const size_t idx = static_cast<size_t>(y) * W + x;
+            fo.iter_u32[idx] = escaped ? static_cast<uint32_t>(it) : static_cast<uint32_t>(p.iterations);
+            fo.norm_f32[idx] = escaped ? static_cast<float>(norm2) : 0.0f;
+        }
+    }
+
+    const auto t1 = std::chrono::steady_clock::now();
+    MapStats s;
+    s.elapsed_ms  = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    s.pixel_count = W * H;
+    s.scalar_used = "fp64";
+    s.engine_used = "openmp";
+    fo.scalar_used  = "fp64";
+    fo.engine_used  = "openmp";
+    return s;
+}
+
+// ─── Raw field renderer (always OpenMP, no colorization) ─────────────────────
+
+namespace {
+
+// Extract the raw metric value from an IterResult for non-escape metrics.
+inline double extract_raw_field(const IterResult& r, Metric m) {
+    switch (m) {
+        case Metric::MinAbs:
+            return std::isfinite(r.min_abs) ? r.min_abs : 0.0;
+        case Metric::MaxAbs:
+            return r.max_abs;
+        case Metric::Envelope:
+            return std::isfinite(r.min_abs) ? 0.5 * (r.min_abs + r.max_abs) : 0.0;
+        case Metric::MinPairwiseDist:
+            return std::isfinite(r.extra) ? r.extra : 0.0;
+        default:
+            return 0.0;
+    }
+}
+
+template <Variant V, typename S>
+void field_variant_impl(const MapParams& p, FieldOutput& out) {
+    const int W = p.width;
+    const int H = p.height;
+    const double aspect  = static_cast<double>(W) / static_cast<double>(H);
+    const double span_im = p.scale;
+    const double span_re = p.scale * aspect;
+    const double re_min  = p.center_re - span_re * 0.5;
+    const double im_max  = p.center_im + span_im * 0.5;
+    const double bail2   = p.bailout * p.bailout;
+
+    const S jre = scalar_from_double<S>(p.julia_re);
+    const S jim = scalar_from_double<S>(p.julia_im);
+    const Cx<S> c_const{jre, jim};
+
+    const bool is_escape = (p.metric == Metric::Escape);
+    if (is_escape) {
+        out.iter_u32.assign(static_cast<size_t>(W) * H, 0u);
+        out.norm_f32.assign(static_cast<size_t>(W) * H, 0.0f);
+    } else {
+        out.field_f64.assign(static_cast<size_t>(W) * H, 0.0);
+    }
+
+    #pragma omp parallel
+    {
+        std::vector<Cx<S>> orbit;
+        orbit.reserve(static_cast<size_t>(p.pairwise_cap));
+
+        #pragma omp for schedule(dynamic, 4)
+        for (int y = 0; y < H; y++) {
+            const double im_d = im_max - (static_cast<double>(y) + 0.5) / H * span_im;
+            const S im = scalar_from_double<S>(im_d);
+            for (int x = 0; x < W; x++) {
+                const double re_d = re_min + (static_cast<double>(x) + 0.5) / W * span_re;
+                const S re = scalar_from_double<S>(re_d);
+
+                Cx<S> z0, c;
+                if (p.julia) {
+                    z0 = Cx<S>{re, im};
+                    c  = c_const;
+                } else {
+                    z0 = Cx<S>{scalar_from_double<S>(0.0), scalar_from_double<S>(0.0)};
+                    c  = Cx<S>{re, im};
+                }
+
+                const IterResult r = iterate<V, S>(
+                    z0, c, p.iterations, bail2, p.metric, p.pairwise_cap, orbit
+                );
+
+                const size_t idx = static_cast<size_t>(y) * W + x;
+                if (is_escape) {
+                    out.iter_u32[idx] = r.escaped
+                        ? static_cast<uint32_t>(r.iter)
+                        : static_cast<uint32_t>(p.iterations);
+                    out.norm_f32[idx] = r.escaped ? static_cast<float>(r.norm) : 0.0f;
+                } else {
+                    out.field_f64[idx] = extract_raw_field(r, p.metric);
+                }
+            }
+        }
+    }
+
+    if (!is_escape) {
+        double lo =  std::numeric_limits<double>::infinity();
+        double hi = -std::numeric_limits<double>::infinity();
+        for (double v : out.field_f64) {
+            if (std::isfinite(v)) {
+                if (v < lo) lo = v;
+                if (v > hi) hi = v;
+            }
+        }
+        out.field_min = std::isfinite(lo) ? lo : 0.0;
+        out.field_max = std::isfinite(hi) ? hi : 1.0;
+    }
+}
+
+template <Variant V>
+void field_variant_fp64(const MapParams& p, FieldOutput& out) {
+    field_variant_impl<V, double>(p, out);
+}
+
+template <Variant V>
+void field_variant_fx64(const MapParams& p, FieldOutput& out) {
+    field_variant_impl<V, Fx64>(p, out);
+}
+
+void dispatch_field_fp64(const MapParams& p, FieldOutput& out) {
+    switch (p.variant) {
+        case Variant::Mandelbrot: field_variant_fp64<Variant::Mandelbrot>(p, out); break;
+        case Variant::Tri:        field_variant_fp64<Variant::Tri>       (p, out); break;
+        case Variant::Boat:       field_variant_fp64<Variant::Boat>      (p, out); break;
+        case Variant::Duck:       field_variant_fp64<Variant::Duck>      (p, out); break;
+        case Variant::Bell:       field_variant_fp64<Variant::Bell>      (p, out); break;
+        case Variant::Fish:       field_variant_fp64<Variant::Fish>      (p, out); break;
+        case Variant::Vase:       field_variant_fp64<Variant::Vase>      (p, out); break;
+        case Variant::Bird:       field_variant_fp64<Variant::Bird>      (p, out); break;
+        case Variant::Mask:       field_variant_fp64<Variant::Mask>      (p, out); break;
+        case Variant::Ship:       field_variant_fp64<Variant::Ship>      (p, out); break;
+        case Variant::SinZ:       field_variant_fp64<Variant::SinZ>      (p, out); break;
+        case Variant::CosZ:       field_variant_fp64<Variant::CosZ>      (p, out); break;
+        case Variant::ExpZ:       field_variant_fp64<Variant::ExpZ>      (p, out); break;
+        case Variant::SinhZ:      field_variant_fp64<Variant::SinhZ>     (p, out); break;
+        case Variant::CoshZ:      field_variant_fp64<Variant::CoshZ>     (p, out); break;
+        case Variant::TanZ:       field_variant_fp64<Variant::TanZ>      (p, out); break;
+        default: break;  // Variant::Custom intercepted before this dispatch
+    }
+}
+
+void dispatch_field_fx64(const MapParams& p, FieldOutput& out) {
+    switch (p.variant) {
+        case Variant::Mandelbrot: field_variant_fx64<Variant::Mandelbrot>(p, out); break;
+        case Variant::Tri:        field_variant_fx64<Variant::Tri>       (p, out); break;
+        case Variant::Boat:       field_variant_fx64<Variant::Boat>      (p, out); break;
+        case Variant::Duck:       field_variant_fx64<Variant::Duck>      (p, out); break;
+        case Variant::Bell:       field_variant_fx64<Variant::Bell>      (p, out); break;
+        case Variant::Fish:       field_variant_fx64<Variant::Fish>      (p, out); break;
+        case Variant::Vase:       field_variant_fx64<Variant::Vase>      (p, out); break;
+        case Variant::Bird:       field_variant_fx64<Variant::Bird>      (p, out); break;
+        case Variant::Mask:       field_variant_fx64<Variant::Mask>      (p, out); break;
+        case Variant::Ship:       field_variant_fx64<Variant::Ship>      (p, out); break;
+        case Variant::SinZ:       field_variant_fx64<Variant::SinZ>      (p, out); break;
+        case Variant::CosZ:       field_variant_fx64<Variant::CosZ>      (p, out); break;
+        case Variant::ExpZ:       field_variant_fx64<Variant::ExpZ>      (p, out); break;
+        case Variant::SinhZ:      field_variant_fx64<Variant::SinhZ>     (p, out); break;
+        case Variant::CoshZ:      field_variant_fx64<Variant::CoshZ>     (p, out); break;
+        case Variant::TanZ:       field_variant_fx64<Variant::TanZ>      (p, out); break;
+        default: break;  // Variant::Custom intercepted before this dispatch
+    }
+}
+
+} // anonymous namespace (field kernels)
+
+MapStats render_map_field(const MapParams& p, FieldOutput& fo) {
+    // Custom variant: use function-pointer path (always OpenMP).
+    if (p.variant == Variant::Custom && p.custom_step_fn) {
+        return render_custom_field_openmp(p, fo);
+    }
+
+    fo.width  = p.width;
+    fo.height = p.height;
+    fo.metric = p.metric;
+
+    const bool fx = use_fx64(p);
+    const auto t0 = std::chrono::steady_clock::now();
+
+    if (fx) dispatch_field_fx64(p, fo);
+    else    dispatch_field_fp64(p, fo);
+
+    const auto t1 = std::chrono::steady_clock::now();
+    MapStats s;
+    s.elapsed_ms  = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    s.pixel_count = p.width * p.height;
+    s.scalar_used = fx ? "fx64" : "fp64";
+    s.engine_used = "openmp";
+    fo.scalar_used = s.scalar_used;
+    return s;
+}
+
+// ─── Colorized map renderer ───────────────────────────────────────────────────
 
 MapStats render_map(const MapParams& p, cv::Mat& out) {
     if (out.empty() || out.rows != p.height || out.cols != p.width || out.type() != CV_8UC3) {
         out.create(p.height, p.width, CV_8UC3);
+    }
+
+    // Custom variant: bypass CUDA/AVX and go straight to OpenMP.
+    if (p.variant == Variant::Custom && p.custom_step_fn) {
+        return render_custom_openmp(p, out);
     }
 
     const bool fx  = use_fx64(p);

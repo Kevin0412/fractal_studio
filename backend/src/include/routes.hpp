@@ -15,12 +15,19 @@ std::string systemHardwareRoute();
 // Body is JSON; response is JSON describing the generated artifact.
 std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body);
 
+// Raw field data (no colorization) — high-frequency tile endpoint, no artifact storage.
+std::string mapFieldRoute(const std::filesystem::path& repoRoot, const std::string& body);
+
 // ln-map renderer (Phase 1 ships this; Phase 2 adds the video exporter that
 // consumes its output).
 std::string lnMapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body);
 
 // Video export (ln-map → mp4). Real implementation in Phase 2.
 std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body);
+
+// Unified export: renders ln-map + final frame + zoom video in one request.
+// Julia-aware: when julia=true, ln-map samples z₀ space with fixed c.
+std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body);
 
 // HS heightfield mesh + transition 3D mesh.
 std::string hsMeshRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body);
@@ -37,6 +44,16 @@ std::string specialPointsListRoute(const std::filesystem::path& repoRoot, const 
 
 // Benchmark
 std::string benchmarkRoute(const std::string& body);
+
+// Custom variants (dynamic formula compile via g++ + dlopen)
+std::string variantCompileRoute(const std::filesystem::path& repoRoot, const std::string& body);
+std::string variantListRoute(const std::filesystem::path& repoRoot);
+std::string variantDeleteRoute(const std::filesystem::path& repoRoot, const std::string& body);
+
+// Registry lookup — returns the step_fn pointer for a compiled custom variant.
+// Returns nullptr if the hash is unknown or compilation failed.
+// Called from routes_map.cpp when variant string starts with "custom:".
+void* lookupCustomFn(const std::filesystem::path& repoRoot, const std::string& hash);
 
 // Runs
 std::string runsListRoute(const std::filesystem::path& repoRoot, const std::string& query);

@@ -4,8 +4,8 @@ import MapCanvas from '../components/MapCanvas.vue'
 import SpecialPointList from '../components/SpecialPointList.vue'
 import {
   api, VARIANTS, METRICS, COLORMAPS, VARIANT_LABELS,
-  type Variant, type Metric, type ColorMap, type SpecialPoint,
-  type LnMapResponse,
+  type Metric, type ColorMap, type SpecialPoint,
+  type VideoExportResponse, type CustomVariant,
 } from '../api'
 import type { StatusState } from '../types'
 import { t, lang } from '../i18n'
@@ -36,10 +36,62 @@ const centerIm   = ref( 0.0)
 const scale      = ref( 3.0)
 const iterations = ref(1024)
 
-const variant  = ref<Variant>('mandelbrot')
+const variant  = ref<string>('mandelbrot')  // Variant literal or "custom:HASH"
 const metric   = ref<Metric>('escape')
 const colorMap = ref<ColorMap>('classic_cos')
 const smooth   = ref(false)
+
+// ── Custom variants ───────────────────────────────────────────────────────────
+const customVariants     = ref<CustomVariant[]>([])
+const showCustomPanel    = ref(false)
+const customFormula      = ref('z^2 + c')
+const customName         = ref('my_variant')
+const customBailout      = ref(4.0)
+const customCompiling    = ref(false)
+const customCompileMsg   = ref('')
+
+async function loadCustomVariants() {
+  try {
+    const r = await api.variantList()
+    customVariants.value = r.custom
+  } catch {}
+}
+
+async function compileCustom() {
+  customCompiling.value = true
+  customCompileMsg.value = ''
+  try {
+    const r = await api.variantCompile(customFormula.value, customName.value, customBailout.value)
+    if (r.ok && r.variantId) {
+      await loadCustomVariants()
+      variant.value        = r.variantId
+      showCustomPanel.value = false
+      customCompileMsg.value = ''
+    } else {
+      customCompileMsg.value = r.error ?? 'compile failed'
+    }
+  } catch (e: any) {
+    customCompileMsg.value = e?.message ?? 'error'
+  } finally {
+    customCompiling.value = false
+  }
+}
+
+async function deleteCustom(variantId: string) {
+  await api.variantDelete(variantId)
+  await loadCustomVariants()
+  if (variant.value === variantId) variant.value = 'mandelbrot'
+}
+
+function onVariantSelect(val: string) {
+  if (val === '__new_custom__') {
+    showCustomPanel.value = true
+    // keep previous variant active until compile succeeds
+  } else {
+    variant.value = val
+    showCustomPanel.value = false
+  }
+}
 
 const transitionOn = ref(false)
 const thetaDeg     = ref(0)
@@ -100,6 +152,8 @@ function syncStatus() {
 watch([centerRe, centerIm, scale, iterations, variant, metric, lastMs], syncStatus, { immediate: true })
 
 onMounted(() => {
+  loadCustomVariants()
+
   const pending = sessionStorage.getItem('fs_pending_center')
   if (pending) {
     try {
@@ -140,81 +194,75 @@ function onImportPoint(p: SpecialPoint) {
   scale.value    = 0.01
 }
 
-function exportPng() {
-  if (!lastArtifactId.value) return
-  window.open(api.artifactDownloadUrl(lastArtifactId.value), '_blank')
-}
-
-// ── ln-map & video export ─────────────────────────────────────────────────────
-const lnBusy         = ref(false)
-const lnStatus       = ref('')
-const lastLnArtifact = ref<LnMapResponse | null>(null)
-
-async function exportLnMap() {
-  lnBusy.value  = true
-  lnStatus.value = 'rendering ln-map…'
-  lastLnArtifact.value = null
+async function exportPng() {
   try {
-    const resp = await api.lnMap({
-      centerRe: centerRe.value,
-      centerIm: centerIm.value,
-      widthS: 960,
-      depthOctaves: 20,
-      variant: variant.value,
-      colorMap: colorMap.value,
-      iterations: Math.max(iterations.value, 2048),
-    })
-    lastLnArtifact.value = resp
-    lnStatus.value = `ln-map: ${resp.widthS}×${resp.heightT}, ${resp.generatedMs.toFixed(0)}ms`
+    const resp = await api.mapRender({
+      centerRe:   centerRe.value,
+      centerIm:   centerIm.value,
+      scale:      scale.value,
+      width:      1920, height: 1080,
+      iterations: iterations.value,
+      variant:    variant.value,
+      metric:     metric.value,
+      colorMap:   colorMap.value,
+      smooth:     smooth.value,
+      julia:      juliaOn.value,
+      juliaRe:    juliaRe.value,
+      juliaIm:    juliaIm.value,
+      transitionTheta: transitionOn.value ? thetaDeg.value * Math.PI / 180 : undefined,
+    }) as any
     window.open(api.artifactDownloadUrl(resp.artifactId), '_blank')
   } catch (e: any) {
-    lnStatus.value = 'failed: ' + (e?.message || e)
-  } finally {
-    lnBusy.value = false
+    console.error('export PNG failed:', e)
   }
 }
 
-const videoModalOpen  = ref(false)
-const videoFps        = ref(30)
-const videoDuration   = ref(8.0)
-const videoWidth      = ref(720)
-const videoHeight     = ref(720)
-const videoBusy       = ref(false)
-const videoStatus     = ref('')
-const videoArtifactId = ref('')
+// ── Unified video export (ln-map + final frame + video in one dialog) ─────────
+const exportModalOpen = ref(false)
+const exportWidthS    = ref(960)
+const exportDepth     = ref(20)
+const exportFps       = ref(30)
+const exportDuration  = ref(8.0)
+const exportW         = ref(720)
+const exportH         = ref(720)
+const exportBusy      = ref(false)
+const exportStatus    = ref('')
+const exportResult    = ref<VideoExportResponse | null>(null)
 
-function openVideoModal() {
-  if (!lastLnArtifact.value) return
-  videoModalOpen.value  = true
-  videoStatus.value     = ''
-  videoArtifactId.value = ''
+function openExportModal() {
+  exportModalOpen.value = true
+  exportStatus.value    = ''
+  exportResult.value    = null
 }
 
-async function exportVideo() {
-  if (!lastLnArtifact.value) return
-  videoBusy.value   = true
-  videoStatus.value = 'generating video…'
-  videoArtifactId.value = ''
+async function runExport() {
+  exportBusy.value   = true
+  exportStatus.value = 'rendering… (ln-map + final frame + video)'
+  exportResult.value = null
   try {
-    const resp = await api.videoZoom({
-      lnMapArtifactId: lastLnArtifact.value.artifactId,
-      fps: videoFps.value,
-      durationSec: videoDuration.value,
-      width: videoWidth.value,
-      height: videoHeight.value,
+    const resp = await api.videoExport({
+      centerRe:     centerRe.value,
+      centerIm:     centerIm.value,
+      julia:        juliaOn.value,
+      juliaRe:      juliaRe.value,
+      juliaIm:      juliaIm.value,
+      variant:      variant.value,
+      colorMap:     colorMap.value,
+      iterations:   Math.max(iterations.value, 2048),
+      widthS:       exportWidthS.value,
+      depthOctaves: exportDepth.value,
+      fps:          exportFps.value,
+      durationSec:  exportDuration.value,
+      width:        exportW.value,
+      height:       exportH.value,
     })
-    videoArtifactId.value = resp.artifactId
-    videoStatus.value = `${resp.frameCount} frames · ${resp.generatedMs.toFixed(0)}ms`
+    exportResult.value  = resp
+    exportStatus.value  = `${resp.frameCount} frames · ${resp.generatedMs.toFixed(0)} ms`
   } catch (e: any) {
-    videoStatus.value = 'failed: ' + (e?.message || e)
+    exportStatus.value = 'failed: ' + (e?.message || e)
   } finally {
-    videoBusy.value = false
+    exportBusy.value = false
   }
-}
-
-function downloadVideo() {
-  if (!videoArtifactId.value) return
-  window.open(api.artifactDownloadUrl(videoArtifactId.value), '_blank')
 }
 </script>
 
@@ -225,8 +273,15 @@ function downloadVideo() {
     <div class="controls">
       <div class="group">
         <label>{{ t('variant') }}</label>
-        <select v-model="variant" :disabled="transitionOn">
+        <select :value="variant" @change="onVariantSelect(($event.target as HTMLSelectElement).value)" :disabled="transitionOn">
           <option v-for="v in VARIANTS" :key="v" :value="v">{{ VARIANT_LABELS[v][lang] }}</option>
+          <template v-if="customVariants.length">
+            <option disabled>──────</option>
+            <option v-for="cv in customVariants" :key="cv.variantId" :value="cv.variantId">
+              ✦ {{ cv.name }}
+            </option>
+          </template>
+          <option value="__new_custom__">{{ t('custom_new') }}</option>
         </select>
       </div>
 
@@ -297,13 +352,38 @@ function downloadVideo() {
       <div class="spacer"></div>
 
       <button @click="resetView" :title="t('reset')">⌂ {{ t('reset') }}</button>
-      <button @click="exportPng" :disabled="!lastArtifactId">{{ t('export_png') }}</button>
-      <button @click="exportLnMap" :disabled="lnBusy">{{ t('export_lnmap') }}</button>
-      <button @click="openVideoModal" :disabled="!lastLnArtifact" title="Export zoom video">video →</button>
+      <button @click="exportPng">{{ t('export_png') }}</button>
+      <button @click="openExportModal">{{ t('export_video') }}</button>
     </div>
 
-    <!-- ── ln-map status strip ───────────────────────────────────────────── -->
-    <div v-if="lnStatus" class="ln-status mono">{{ lnStatus }}</div>
+    <!-- ── Custom formula editor ─────────────────────────────────────────── -->
+    <div v-if="showCustomPanel" class="custom-panel">
+      <div class="custom-header mono">
+        <span>{{ t('custom_new') }}</span>
+        <button class="custom-close" @click="showCustomPanel = false">✕</button>
+      </div>
+      <div class="custom-hint mono">{{ t('custom_hint') }}</div>
+      <div class="custom-row">
+        <label>{{ t('custom_formula') }}</label>
+        <input v-model="customFormula" class="formula-input mono" placeholder="z^2 + c" spellcheck="false" />
+        <label style="margin-left:12px">{{ t('custom_name') }}</label>
+        <input v-model="customName" placeholder="my_variant" style="width:120px" />
+        <label style="margin-left:12px">{{ t('custom_bailout') }}</label>
+        <input type="number" v-model.number="customBailout" min="0.1" max="1000000" step="1" style="width:80px" />
+        <button class="btn-compile" @click="compileCustom" :disabled="customCompiling">
+          {{ customCompiling ? t('loading') : t('custom_compile') }}
+        </button>
+      </div>
+      <div v-if="customCompileMsg" class="custom-msg mono">{{ customCompileMsg }}</div>
+      <div v-if="customVariants.length" class="custom-list">
+        <div v-for="cv in customVariants" :key="cv.variantId" class="custom-item mono">
+          <span class="cv-name">{{ cv.name }}</span>
+          <span class="cv-formula">{{ cv.formula }}</span>
+          <button class="cv-use" @click="variant = cv.variantId; showCustomPanel = false">use</button>
+          <button class="cv-del" @click="deleteCustom(cv.variantId)">{{ t('custom_delete') }}</button>
+        </div>
+      </div>
+    </div>
 
     <!-- ── Julia info strip ─────────────────────────────────────────────── -->
     <div v-if="juliaOn" class="julia-strip mono">
@@ -337,7 +417,7 @@ function downloadVideo() {
           <!-- Left: Mandelbrot / variant — click picks julia c -->
           <div class="pane">
             <div class="pane-header mono">
-              <span class="pane-title">{{ t('julia_left') }}: {{ VARIANT_LABELS[variant][lang] }}</span>
+              <span class="pane-title">{{ t('julia_left') }}: {{ (VARIANT_LABELS as any)[variant]?.[lang] ?? variant }}</span>
               <span class="pane-meta">
                 {{ t('center') }}: {{ centerRe.toPrecision(10) }} + {{ centerIm.toPrecision(10) }}i
                 &nbsp;·&nbsp;{{ t('scale') }}: {{ scale.toPrecision(6) }}
@@ -383,42 +463,53 @@ function downloadVideo() {
       </template>
     </div>
 
-    <!-- ── Video export modal ────────────────────────────────────────────── -->
+    <!-- ── Unified video export modal ───────────────────────────────────── -->
     <Teleport to="body">
-      <div v-if="videoModalOpen" class="modal-backdrop" @click.self="videoModalOpen = false">
+      <div v-if="exportModalOpen" class="modal-backdrop" @click.self="exportModalOpen = false">
         <div class="modal">
-          <div class="modal-title">{{ t('video_title') }}</div>
+          <div class="modal-title">
+            {{ juliaOn ? t('export_julia_video') : t('export_video') }}
+          </div>
+          <div v-if="juliaOn" class="mrow source mono" style="margin-bottom:6px">
+            Julia c: {{ juliaRe.toPrecision(8) }} + {{ juliaIm.toPrecision(8) }}i
+          </div>
           <div class="modal-body">
             <div class="mrow">
+              <label>{{ t('video_strip_width') }}</label>
+              <input type="number" v-model.number="exportWidthS" min="128" max="4096" step="64" />
+            </div>
+            <div class="mrow">
+              <label>{{ t('video_depth') }}</label>
+              <input type="number" v-model.number="exportDepth" min="1" max="60" step="1" />
+            </div>
+            <div class="mrow">
               <label>{{ t('video_fps') }}</label>
-              <input type="number" v-model.number="videoFps" min="1" max="60" step="1" />
+              <input type="number" v-model.number="exportFps" min="1" max="60" step="1" />
             </div>
             <div class="mrow">
               <label>{{ t('video_duration') }}</label>
-              <input type="number" v-model.number="videoDuration" min="1" max="300" step="1" />
+              <input type="number" v-model.number="exportDuration" min="1" max="300" step="1" />
             </div>
             <div class="mrow">
               <label>{{ t('video_width') }}</label>
-              <input type="number" v-model.number="videoWidth" min="128" max="1920" step="64" />
+              <input type="number" v-model.number="exportW" min="128" max="1920" step="64" />
             </div>
             <div class="mrow">
               <label>{{ t('video_height') }}</label>
-              <input type="number" v-model.number="videoHeight" min="128" max="1080" step="64" />
-            </div>
-            <div v-if="lastLnArtifact" class="mrow source mono">
-              {{ t('video_source') }}: {{ lastLnArtifact.artifactId }}<br/>
-              {{ lastLnArtifact.widthS }}×{{ lastLnArtifact.heightT }} · {{ lastLnArtifact.depthOctaves }} oct
+              <input type="number" v-model.number="exportH" min="128" max="1080" step="64" />
             </div>
           </div>
           <div class="modal-footer">
-            <button @click="videoModalOpen = false" class="btn-cancel">{{ t('video_cancel') }}</button>
-            <button @click="exportVideo" :disabled="videoBusy" class="btn-go">
-              {{ videoBusy ? t('loading') : t('video_render') }}
+            <button @click="exportModalOpen = false" class="btn-cancel">{{ t('video_cancel') }}</button>
+            <button @click="runExport" :disabled="exportBusy" class="btn-go">
+              {{ exportBusy ? t('loading') : t('video_render') }}
             </button>
           </div>
-          <div v-if="videoStatus" class="modal-status mono">{{ videoStatus }}</div>
-          <div v-if="videoArtifactId" class="modal-footer">
-            <button @click="downloadVideo" class="btn-go">{{ t('video_download') }}</button>
+          <div v-if="exportStatus" class="modal-status mono">{{ exportStatus }}</div>
+          <div v-if="exportResult" class="modal-body" style="gap:6px">
+            <a :href="api.baseUrl + exportResult.videoDownloadUrl"    class="dl-link" download>↓ {{ t('video_download') }}</a>
+            <a :href="api.baseUrl + exportResult.lnMapDownloadUrl"    class="dl-link" download>↓ ln-map PNG</a>
+            <a :href="api.baseUrl + exportResult.finalFrameDownloadUrl" class="dl-link" download>↓ {{ t('export_png') }}</a>
           </div>
         </div>
       </div>
@@ -463,16 +554,6 @@ function downloadVideo() {
 .theta-row input[type="range"] { flex: 1; }
 
 .spacer { flex: 1; }
-
-/* ── ln-map status ── */
-.ln-status {
-  padding: 5px 14px;
-  color: var(--text-dim);
-  font-size: var(--fs-label);
-  border-bottom: 1px solid var(--rule);
-  background: var(--bg-raised);
-  flex-shrink: 0;
-}
 
 /* ── Julia strip ── */
 .julia-strip {
@@ -624,4 +705,106 @@ function downloadVideo() {
 }
 .btn-go:disabled { opacity: 0.5; cursor: default; }
 .modal-status { font-size: 10px; color: var(--text-dim); }
+.dl-link {
+  display: block;
+  padding: 5px 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: none;
+}
+.dl-link:hover { text-decoration: underline; }
+
+/* ── Custom formula panel ── */
+.custom-panel {
+  background: var(--panel);
+  border-bottom: 1px solid var(--rule);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.custom-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.custom-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+}
+.custom-close:hover { color: var(--text); }
+.custom-hint {
+  font-size: 10px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.custom-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.custom-row label {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+.formula-input {
+  flex: 1;
+  min-width: 180px;
+}
+.btn-compile {
+  background: var(--accent);
+  color: #000;
+  border: none;
+  padding: 5px 14px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-compile:disabled { opacity: 0.5; cursor: default; }
+.custom-msg {
+  font-size: 10px;
+  color: var(--bad);
+  white-space: pre-wrap;
+}
+.custom-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px solid var(--rule);
+  padding-top: 6px;
+}
+.custom-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+}
+.cv-name { color: var(--accent); min-width: 100px; }
+.cv-formula { color: var(--text-dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-use, .cv-del {
+  background: none;
+  border: 1px solid var(--rule);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.cv-use:hover { color: var(--accent); border-color: var(--accent); }
+.cv-del:hover { color: var(--bad);    border-color: var(--bad); }
 </style>

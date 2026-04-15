@@ -51,18 +51,18 @@ const dict: Dict = {
   julia_right:      { en: 'Right: Julia',     zh: '右侧：Julia' },
 
   // ── Export ──────────────────────────────────────────────────────────────
-  export_png:       { en: 'Export PNG',       zh: '导出 PNG' },
-  export_lnmap:     { en: 'Export ln-map',    zh: '导出对数图' },
-  export_video:     { en: 'Video →',          zh: '视频 →' },
-  video_fps:        { en: 'FPS',              zh: '帧率' },
-  video_duration:   { en: 'Duration (s)',     zh: '时长（秒）' },
-  video_width:      { en: 'Width px',         zh: '宽度（像素）' },
-  video_height:     { en: 'Height px',        zh: '高度（像素）' },
-  video_render:     { en: 'Render',           zh: '渲染' },
-  video_cancel:     { en: 'Cancel',           zh: '取消' },
-  video_download:   { en: 'Download mp4',     zh: '下载 mp4' },
-  video_title:      { en: 'Export zoom video', zh: '导出缩放视频' },
-  video_source:     { en: 'source',           zh: '来源' },
+  export_png:           { en: 'Export PNG',           zh: '导出 PNG' },
+  export_video:         { en: 'Export Video',         zh: '导出视频' },
+  export_julia_video:   { en: 'Export Julia Video',   zh: '导出 Julia 视频' },
+  video_fps:            { en: 'FPS',                  zh: '帧率' },
+  video_duration:       { en: 'Duration (s)',         zh: '时长（秒）' },
+  video_width:          { en: 'Width px',             zh: '宽度（像素）' },
+  video_height:         { en: 'Height px',            zh: '高度（像素）' },
+  video_strip_width:    { en: 'Strip width px',       zh: '条带宽度（像素）' },
+  video_depth:          { en: 'Depth (octaves)',      zh: '深度（倍频程）' },
+  video_render:         { en: 'Render',               zh: '渲染' },
+  video_cancel:         { en: 'Cancel',               zh: '取消' },
+  video_download:       { en: 'Download video',       zh: '下载视频' },
 
   // ── Special points ──────────────────────────────────────────────────────
   points_k:         { en: 'Pre-period k',     zh: '前周期 k' },
@@ -127,6 +127,17 @@ const dict: Dict = {
   cmap_tri765:      { en: 'Tri-765',          zh: 'Tri-765' },
   cmap_grayscale:   { en: 'Grayscale',        zh: '灰度' },
   cmap_hs_rainbow:  { en: 'HS Rainbow',       zh: '隐结构彩虹' },
+
+  // ── Custom variants ──────────────────────────────────────────────────────
+  custom_formula:   { en: 'Formula',          zh: '公式' },
+  custom_name:      { en: 'Name',             zh: '名称' },
+  custom_bailout:   { en: 'Bailout',          zh: '逃逸值' },
+  custom_compile:   { en: 'Compile',          zh: '编译' },
+  custom_delete:    { en: 'Delete',           zh: '删除' },
+  custom_compiled:  { en: 'Compiled',         zh: '已编译' },
+  custom_new:       { en: 'New custom…',      zh: '新建自定义…' },
+  custom_hint:      { en: 'z and c are complex. Functions: sin cos tan exp log pow sqrt abs conj sinh cosh tanh. ^ = power.',
+                       zh: 'z 和 c 为复数。函数：sin cos tan exp log pow sqrt abs conj sinh cosh tanh。^ = 幂运算。' },
 
   // ── Generic ─────────────────────────────────────────────────────────────
   render:           { en: 'Render',           zh: '渲染' },

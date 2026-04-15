@@ -36,6 +36,16 @@ struct ArtifactRow {
     std::string metaJson;
 };
 
+// User-compiled custom fractal variant.
+struct CustomVariantRecord {
+    std::string hash;      // FNV-1a hex of formula+bailout — also the DB primary key
+    std::string name;      // human-readable label
+    std::string formula;   // the step formula (e.g. "sin(z)*z + c")
+    double      bailout;   // escape radius
+    std::string soPath;    // absolute path to the compiled .so
+    std::string createdAt; // ISO-8601 UTC
+};
+
 class Db {
 public:
     explicit Db(std::filesystem::path dbPath);
@@ -55,6 +65,12 @@ public:
     std::vector<ArtifactRow> listArtifacts(const std::string& runId) const;
     std::vector<ArtifactRow> listArtifactsByKind(const std::string& kind, int limit) const;
     ArtifactRow getArtifactById(long long rowId) const;
+
+    // Custom variants
+    void insertCustomVariant(const CustomVariantRecord& r) const;
+    std::vector<CustomVariantRecord> listCustomVariants() const;
+    bool getCustomVariantByHash(const std::string& hash, CustomVariantRecord& out) const;
+    void deleteCustomVariant(const std::string& hash) const;
 
 private:
     std::filesystem::path dbPath_;

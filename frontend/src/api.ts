@@ -70,7 +70,7 @@ export interface MapRenderRequest {
   width: number
   height: number
   iterations: number
-  variant?: Variant
+  variant?: Variant | string   // Variant literal or "custom:HASH"
   metric?: Metric
   colorMap?: ColorMap
   smooth?: boolean           // ln-smooth continuous coloring (μ = iter + 1 − log₂(log₂(|z|²)))
@@ -102,6 +102,41 @@ export interface SpecialPoint {
   imag: number
   sourceMode: string
   createdAt: string
+}
+
+export interface MapFieldRequest {
+  centerRe: number
+  centerIm: number
+  scale: number
+  width: number
+  height: number
+  iterations: number
+  variant?: Variant | string   // Variant literal or "custom:HASH"
+  metric?: Metric
+  bailout?: number
+  julia?: boolean
+  juliaRe?: number
+  juliaIm?: number
+  engine?: string
+  scalarType?: string
+}
+
+// Raw field response — no colorization applied.
+// Escape metric:    iterB64 (uint32[W*H]) + finalMagB64 (float32[W*H] |z|²)
+// Non-escape metric: fieldB64 (float64[W*H]) + fieldMin + fieldMax
+export interface MapFieldResponse {
+  status: string
+  width: number
+  height: number
+  metric: string
+  maxIter?: number
+  iterB64?: string
+  finalMagB64?: string
+  fieldB64?: string
+  fieldMin?: number
+  fieldMax?: number
+  generatedMs: number
+  scalarUsed?: string
 }
 
 export interface LnMapRequest {
@@ -207,6 +242,42 @@ export interface TransitionVoxelResponse {
   depthB64: string  // uint8[faceCount] — depth byte (1=deep interior, 255=near surface)
 }
 
+// Unified export: ln-map + final frame + video in one request.
+export interface VideoExportRequest {
+  centerRe: number
+  centerIm: number
+  julia?: boolean
+  juliaRe?: number
+  juliaIm?: number
+  variant?: Variant | string
+  colorMap?: ColorMap
+  iterations?: number
+  widthS?: number
+  depthOctaves?: number
+  fps?: number
+  durationSec?: number
+  width?: number
+  height?: number
+}
+
+export interface VideoExportResponse {
+  runId: string
+  status: string
+  videoArtifactId: string
+  videoUrl: string
+  videoDownloadUrl: string
+  lnMapArtifactId: string
+  lnMapDownloadUrl: string
+  finalFrameArtifactId: string
+  finalFrameDownloadUrl: string
+  frameCount: number
+  fps: number
+  durationSec: number
+  width: number
+  height: number
+  generatedMs: number
+}
+
 export interface VideoZoomRequest {
   lnMapArtifactId: string
   fps?: number
@@ -260,6 +331,35 @@ export interface ArtifactRow {
   contentPath: string
 }
 
+export interface CustomVariant {
+  variantId:  string   // "custom:HASH"
+  name:       string
+  formula:    string
+  bailout:    number
+  createdAt:  string
+  loaded:     boolean
+}
+
+export interface BuiltinVariantInfo {
+  variantId: string
+  name:      string
+  builtin:   true
+}
+
+export interface VariantListResponse {
+  builtin: BuiltinVariantInfo[]
+  custom:  CustomVariant[]
+}
+
+export interface VariantCompileResponse {
+  ok:        boolean
+  variantId?: string
+  name?:     string
+  hash?:     string
+  cached?:   boolean
+  error?:    string
+}
+
 // ---- API methods ----
 
 export const api = {
@@ -268,8 +368,9 @@ export const api = {
   systemCheck: () => getJson<{ openmp: boolean; cuda: boolean }>('/api/system/check'),
   hardware:    () => getJson<Hardware>('/api/system/hardware'),
 
-  mapRender:  (req: MapRenderRequest) => postJson<MapRenderResponse>('/api/map/render', req),
-  lnMap:      (req: LnMapRequest)     => postJson<LnMapResponse>('/api/map/ln', req),
+  mapRender:  (req: MapRenderRequest)  => postJson<MapRenderResponse>('/api/map/render', req),
+  mapField:   (req: MapFieldRequest)   => postJson<MapFieldResponse>('/api/map/field', req),
+  lnMap:      (req: LnMapRequest)      => postJson<LnMapResponse>('/api/map/ln', req),
 
   specialPointsAuto: (k: number, p: number, pointType?: string) =>
     postJson<{ mode: string; k: number; p: number; count: number; points: SpecialPoint[] }>(
@@ -287,7 +388,8 @@ export const api = {
   hsField: (req: HsFieldRequest) => postJson<HsFieldResponse>('/api/hs/field', req),
   transitionMesh:   (req: TransitionMeshRequest)  => postJson<MeshResponse>('/api/transition/mesh', req),
   transitionVoxels: (req: TransitionVoxelRequest) => postJson<TransitionVoxelResponse>('/api/transition/voxels', req),
-  videoZoom: (req: VideoZoomRequest) => postJson<VideoZoomResponse>('/api/video/zoom', req),
+  videoZoom:   (req: VideoZoomRequest)   => postJson<VideoZoomResponse>('/api/video/zoom', req),
+  videoExport: (req: VideoExportRequest) => postJson<VideoExportResponse>('/api/video/export', req),
 
   runs: (limit = 50) => getJson<{ items: RunRow[] }>(`/api/runs?limit=${limit}`),
 
@@ -304,4 +406,11 @@ export const api = {
 
   artifactDownloadUrl: (artifactId: string) =>
     `${BASE}/api/artifacts/download?artifactId=${encodeURIComponent(artifactId)}`,
+
+  variantList:    () =>
+    getJson<VariantListResponse>('/api/variants'),
+  variantCompile: (formula: string, name: string, bailout: number) =>
+    postJson<VariantCompileResponse>('/api/variants/compile', { formula, name, bailout }),
+  variantDelete:  (variantId: string) =>
+    postJson<{ ok: boolean }>('/api/variants/delete', { variantId }),
 }

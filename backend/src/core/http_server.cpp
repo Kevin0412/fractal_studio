@@ -71,8 +71,10 @@ std::string HttpServer::handleRequest(const std::string& request) const {
 
     // Map (native)
     if (method == "POST" && path == "/api/map/render") return makeHttpResponse(200, mapRenderRoute(repoRoot_, runner_, body));
+    if (method == "POST" && path == "/api/map/field")  return makeHttpResponse(200, mapFieldRoute(repoRoot_, body));
     if (method == "POST" && path == "/api/map/ln")     return makeHttpResponse(200, lnMapRenderRoute(repoRoot_, runner_, body));
     if (method == "POST" && path == "/api/video/zoom")       return makeHttpResponse(200, zoomVideoRoute(repoRoot_, runner_, body));
+    if (method == "POST" && path == "/api/video/export")     return makeHttpResponse(200, videoExportRoute(repoRoot_, runner_, body));
     if (method == "POST" && path == "/api/hs/mesh")              return makeHttpResponse(200, hsMeshRoute(repoRoot_, runner_, body));
     if (method == "POST" && path == "/api/hs/field")             return makeHttpResponse(200, hsFieldRoute(repoRoot_, runner_, body));
     if (method == "POST" && path == "/api/transition/mesh")      return makeHttpResponse(200, transitionMeshRoute(repoRoot_, runner_, body));
@@ -85,6 +87,11 @@ std::string HttpServer::handleRequest(const std::string& request) const {
 
     // Benchmark
     if (method == "POST" && path == "/api/benchmark") return makeHttpResponse(200, benchmarkRoute(body));
+
+    // Custom variants
+    if (method == "POST" && path == "/api/variants/compile") return makeHttpResponse(200, variantCompileRoute(repoRoot_, body));
+    if (method == "GET"  && path == "/api/variants")         return makeHttpResponse(200, variantListRoute(repoRoot_));
+    if (method == "POST" && path == "/api/variants/delete")  return makeHttpResponse(200, variantDeleteRoute(repoRoot_, body));
 
     // Runs
     if (method == "GET"  && path == "/api/runs") return makeHttpResponse(200, runsListRoute(repoRoot_, query));

@@ -16,6 +16,8 @@
 #include "../compute/colormap.hpp"
 
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <stdexcept>
 
@@ -23,15 +25,30 @@ namespace fsd {
 
 namespace {
 
-compute::Variant parseVariant(const std::string& s) {
+// Resolve a variant string into (Variant enum, optional custom step fn).
+// Custom variants use the "custom:HASH" prefix and look up the dlopen registry.
+struct VariantResolved {
+    compute::Variant      var;
+    compute::CustomStepFn fn = nullptr;  // non-null only for Variant::Custom
+};
+
+VariantResolved resolveVariant(const std::string& s, const std::filesystem::path& repoRoot) {
+    if (s.rfind("custom:", 0) == 0) {
+        const std::string hash = s.substr(7);
+        void* raw = lookupCustomFn(repoRoot, hash);
+        if (!raw) throw std::runtime_error("custom variant not found or compile failed: " + hash);
+        compute::CustomStepFn fn;
+        std::memcpy(&fn, &raw, sizeof(fn));
+        return {compute::Variant::Custom, fn};
+    }
     compute::Variant v;
-    if (compute::variant_from_name(s.c_str(), v)) return v;
-    // Backwards compat with old "variety" integer.
+    if (compute::variant_from_name(s.c_str(), v)) return {v, nullptr};
+    // Backwards compat with old integer IDs.
     try {
         int i = std::stoi(s);
-        if (i >= 0 && i <= 9) return static_cast<compute::Variant>(i);
+        if (i >= 0 && i <= 15) return {static_cast<compute::Variant>(i), nullptr};
     } catch (...) {}
-    return compute::Variant::Mandelbrot;
+    return {compute::Variant::Mandelbrot, nullptr};
 }
 
 compute::Metric parseMetric(const std::string& s) {
@@ -49,7 +66,6 @@ compute::Colormap parseColormap(const std::string& s) {
 } // namespace
 
 std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body) {
-    (void)repoRoot;
     const Json j = parseJsonBody(body);
 
     const double cRe     = j.value("centerRe", -0.75);
@@ -110,6 +126,7 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
             elapsed = stats.elapsed_ms;
             artifactName = "transition.png";
         } else {
+            const auto vr = resolveVariant(variantStr, repoRoot);
             compute::MapParams p;
             p.center_re  = cRe;
             p.center_im  = cIm;
@@ -118,7 +135,8 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
             p.height     = height;
             p.iterations = iters;
             p.bailout    = bailout;
-            p.variant    = parseVariant(variantStr);
+            p.variant    = vr.var;
+            p.custom_step_fn = vr.fn;
             p.metric     = parseMetric(metricStr);
             p.colormap   = parseColormap(colormapStr);
             p.julia      = julia;
@@ -178,6 +196,92 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
             {"transitionActive", hasTheta},
         }},
     };
+    return resp.dump();
+}
+
+// ─── /api/map/field — raw field data (no colorization) ───────────────────────
+//
+// Returns base64-encoded raw metric values so the browser can colorize
+// instantly on colormap change without re-fetching.
+//
+// Escape metric:    uint32[W*H] iter counts  (iterB64)
+//                   float32[W*H] |z|² at escape, 0 if bounded  (finalMagB64)
+// Non-escape metric: float64[W*H] raw values  (fieldB64) + fieldMin, fieldMax
+//
+// This endpoint is intentionally run-store-free (high-frequency tile calls):
+// no artifacts are written and no run row is created.
+
+std::string mapFieldRoute(const std::filesystem::path& repoRoot, const std::string& body) {
+    const Json j = parseJsonBody(body);
+
+    const double cRe     = j.value("centerRe",  -0.75);
+    const double cIm     = j.value("centerIm",   0.0);
+    const double scale   = j.value("scale",      3.0);
+    const int width      = j.value("width",      256);
+    const int height     = j.value("height",     256);
+    const int iters      = j.value("iterations", 1024);
+    const double bailout = j.value("bailout",    2.0);
+
+    const std::string variantStr  = j.value("variant",    std::string("mandelbrot"));
+    const std::string metricStr   = j.value("metric",     std::string("escape"));
+    const bool julia              = j.value("julia",      false);
+    const double juliaRe          = j.value("juliaRe",    0.0);
+    const double juliaIm          = j.value("juliaIm",    0.0);
+    const std::string scalarType  = j.value("scalarType", std::string("auto"));
+    const std::string engine      = j.value("engine",     std::string("auto"));
+
+    if (!(scale > 0.0) || !std::isfinite(scale))   throw std::runtime_error("invalid scale");
+    if (width  < 1 || width  > 4096)               throw std::runtime_error("invalid width");
+    if (height < 1 || height > 4096)               throw std::runtime_error("invalid height");
+    if (iters  < 1 || iters  > 1000000)            throw std::runtime_error("invalid iterations");
+    if (!std::isfinite(cRe) || !std::isfinite(cIm)) throw std::runtime_error("invalid center");
+
+    const auto vr2 = resolveVariant(variantStr, repoRoot);
+    compute::MapParams p;
+    p.center_re  = cRe;
+    p.center_im  = cIm;
+    p.scale      = scale;
+    p.width      = width;
+    p.height     = height;
+    p.iterations = iters;
+    p.bailout    = bailout;
+    p.variant    = vr2.var;
+    p.custom_step_fn = vr2.fn;
+    p.metric     = parseMetric(metricStr);
+    p.julia      = julia;
+    p.julia_re   = juliaRe;
+    p.julia_im   = juliaIm;
+    p.scalar_type = scalarType;
+    p.engine      = engine;
+
+    compute::FieldOutput fo;
+    const auto stats = compute::render_map_field(p, fo);
+
+    Json resp = {
+        {"status",      "completed"},
+        {"width",       width},
+        {"height",      height},
+        {"metric",      metricStr},
+        {"generatedMs", stats.elapsed_ms},
+        {"scalarUsed",  stats.scalar_used},
+        {"maxIter",     iters},
+    };
+
+    if (fo.metric == compute::Metric::Escape) {
+        resp["iterB64"]     = base64Encode(
+            reinterpret_cast<const uint8_t*>(fo.iter_u32.data()),
+            fo.iter_u32.size() * sizeof(uint32_t));
+        resp["finalMagB64"] = base64Encode(
+            reinterpret_cast<const uint8_t*>(fo.norm_f32.data()),
+            fo.norm_f32.size() * sizeof(float));
+    } else {
+        resp["fieldB64"]  = base64Encode(
+            reinterpret_cast<const uint8_t*>(fo.field_f64.data()),
+            fo.field_f64.size() * sizeof(double));
+        resp["fieldMin"]  = fo.field_min;
+        resp["fieldMax"]  = fo.field_max;
+    }
+
     return resp.dump();
 }
 

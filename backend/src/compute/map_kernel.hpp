@@ -12,9 +12,15 @@
 
 #include <opencv2/core.hpp>
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 namespace fsd::compute {
+
+// Function pointer type for user-compiled custom iteration step.
+// Signature: step_fn(zr, zi, cr, ci, &zr_out, &zi_out)
+using CustomStepFn = void(*)(double, double, double, double, double*, double*);
 
 struct MapParams {
     // Center in parameter space and axis-aligned scale:
@@ -50,6 +56,11 @@ struct MapParams {
     // "cuda" (GPU kernel, Phase 3.3). Silently falls back to openmp if
     // requested engine is unavailable.
     std::string engine = "openmp";
+
+    // Custom variant: only set when variant == Variant::Custom.
+    // Points to the step_fn symbol from a dlopen'd shared library.
+    // Always uses OpenMP (no CUDA/AVX512 for custom formulas).
+    CustomStepFn custom_step_fn = nullptr;
 };
 
 struct MapStats {
@@ -62,5 +73,27 @@ struct MapStats {
 // Render a map into `out` (allocated BGR CV_8UC3 of size height x width).
 // Returns stats including which scalar type and engine were actually used.
 MapStats render_map(const MapParams& p, cv::Mat& out);
+
+// Raw field output — no colorization.
+// Escape metric  → iter_u32[W*H] (uint32 iter count) + norm_f32[W*H] (float32 |z|² at escape, 0 if bounded).
+// Non-escape     → field_f64[W*H] (float64 raw metric value) + field_min/field_max.
+// Always uses the OpenMP path (CUDA/AVX paths output BGR and can't easily expose raw data).
+struct FieldOutput {
+    int    width  = 0;
+    int    height = 0;
+    Metric metric = Metric::Escape;
+    // Escape metric arrays (only populated when metric == Escape):
+    std::vector<uint32_t> iter_u32;   // [W*H]
+    std::vector<float>    norm_f32;   // [W*H], |z|² at escape; 0.0 if bounded
+    // Non-escape metric array (only populated when metric != Escape):
+    std::vector<double>   field_f64;  // [W*H]
+    double field_min = 0.0;
+    double field_max = 1.0;
+    double elapsed_ms  = 0.0;
+    std::string scalar_used;
+    std::string engine_used = "openmp";
+};
+
+MapStats render_map_field(const MapParams& p, FieldOutput& out);
 
 } // namespace fsd::compute

@@ -112,6 +112,16 @@ void Db::ensureSchema() const {
 
     execSql(h.db, "CREATE INDEX IF NOT EXISTS idx_artifacts_run ON artifacts(run_id);");
     execSql(h.db, "CREATE INDEX IF NOT EXISTS idx_artifacts_kind ON artifacts(kind);");
+
+    execSql(h.db,
+        "CREATE TABLE IF NOT EXISTS custom_variants ("
+        "hash TEXT PRIMARY KEY,"
+        "name TEXT NOT NULL,"
+        "formula TEXT NOT NULL,"
+        "bailout REAL NOT NULL,"
+        "so_path TEXT NOT NULL,"
+        "created_at TEXT NOT NULL"
+        ");");
 }
 
 void Db::insertSpecialPoint(const SpecialPointRecord& record) const {
@@ -321,6 +331,67 @@ ArtifactRow Db::getArtifactById(long long rowId) const {
     a.path     = safeText(stmt.get(), 3);
     a.metaJson = safeText(stmt.get(), 4);
     return a;
+}
+
+void Db::insertCustomVariant(const CustomVariantRecord& r) const {
+    DbHandle h(dbPath_);
+    Statement stmt(h.db,
+        "INSERT OR REPLACE INTO custom_variants (hash, name, formula, bailout, so_path, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?);");
+    checkSqlite(sqlite3_bind_text  (stmt.get(), 1, r.hash.c_str(),      -1, SQLITE_TRANSIENT), h.db);
+    checkSqlite(sqlite3_bind_text  (stmt.get(), 2, r.name.c_str(),      -1, SQLITE_TRANSIENT), h.db);
+    checkSqlite(sqlite3_bind_text  (stmt.get(), 3, r.formula.c_str(),   -1, SQLITE_TRANSIENT), h.db);
+    checkSqlite(sqlite3_bind_double(stmt.get(), 4, r.bailout),                                  h.db);
+    checkSqlite(sqlite3_bind_text  (stmt.get(), 5, r.soPath.c_str(),    -1, SQLITE_TRANSIENT), h.db);
+    checkSqlite(sqlite3_bind_text  (stmt.get(), 6, r.createdAt.c_str(), -1, SQLITE_TRANSIENT), h.db);
+    checkSqlite(sqlite3_step(stmt.get()), h.db);
+}
+
+std::vector<CustomVariantRecord> Db::listCustomVariants() const {
+    DbHandle h(dbPath_);
+    Statement stmt(h.db,
+        "SELECT hash, name, formula, bailout, so_path, created_at "
+        "FROM custom_variants ORDER BY created_at DESC LIMIT 200;");
+    std::vector<CustomVariantRecord> rows;
+    while (true) {
+        const int rc = sqlite3_step(stmt.get());
+        if (rc == SQLITE_DONE) break;
+        checkSqlite(rc, h.db);
+        CustomVariantRecord r;
+        r.hash      = safeText(stmt.get(), 0);
+        r.name      = safeText(stmt.get(), 1);
+        r.formula   = safeText(stmt.get(), 2);
+        r.bailout   = sqlite3_column_double(stmt.get(), 3);
+        r.soPath    = safeText(stmt.get(), 4);
+        r.createdAt = safeText(stmt.get(), 5);
+        rows.push_back(r);
+    }
+    return rows;
+}
+
+bool Db::getCustomVariantByHash(const std::string& hash, CustomVariantRecord& out) const {
+    DbHandle h(dbPath_);
+    Statement stmt(h.db,
+        "SELECT hash, name, formula, bailout, so_path, created_at "
+        "FROM custom_variants WHERE hash = ?;");
+    checkSqlite(sqlite3_bind_text(stmt.get(), 1, hash.c_str(), -1, SQLITE_TRANSIENT), h.db);
+    const int rc = sqlite3_step(stmt.get());
+    if (rc == SQLITE_DONE) return false;
+    checkSqlite(rc, h.db);
+    out.hash      = safeText(stmt.get(), 0);
+    out.name      = safeText(stmt.get(), 1);
+    out.formula   = safeText(stmt.get(), 2);
+    out.bailout   = sqlite3_column_double(stmt.get(), 3);
+    out.soPath    = safeText(stmt.get(), 4);
+    out.createdAt = safeText(stmt.get(), 5);
+    return true;
+}
+
+void Db::deleteCustomVariant(const std::string& hash) const {
+    DbHandle h(dbPath_);
+    Statement stmt(h.db, "DELETE FROM custom_variants WHERE hash = ?;");
+    checkSqlite(sqlite3_bind_text(stmt.get(), 1, hash.c_str(), -1, SQLITE_TRANSIENT), h.db);
+    checkSqlite(sqlite3_step(stmt.get()), h.db);
 }
 
 std::string nowIso8601() {
