@@ -136,6 +136,11 @@ static std::string generateZoomVideo(
     const int stripH    = strip.rows;
     const int s         = stripW;
 
+    // Extend strip by 1 column (wrap col 0 → col s) so bilinear interpolation
+    // near θ=0/2π never falls off the edge into BORDER_CONSTANT black.
+    cv::Mat stripWrap;
+    cv::copyMakeBorder(strip, stripWrap, 0, 0, 0, 1, cv::BORDER_WRAP);
+
     const std::filesystem::path mp4 = outDir / (baseName + ".mp4");
     const int fourcc = cv::VideoWriter::fourcc('m', 'p', '4', 'v');
     cv::VideoWriter writer(mp4.string(), fourcc, static_cast<double>(fps), cv::Size(W, H), true);
@@ -212,8 +217,8 @@ static std::string generateZoomVideo(
             }
         }
 
-        cv::remap(strip,    stripFrame, mapX,  mapY,  cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(0,0,0));
-        cv::remap(finalImg, finalFrame, fmapX, fmapY, cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(0,0,0));
+        cv::remap(stripWrap, stripFrame, mapX,  mapY,  cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(0,0,0));
+        cv::remap(finalImg,  finalFrame, fmapX, fmapY, cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(0,0,0));
 
         for (int y = 0; y < H; y++) {
             const uint8_t* sp = stripFrame.ptr<uint8_t>(y);
@@ -378,6 +383,10 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
             }
         }
 
+        // Extend strip by 1 column for seamless θ=0/2π bilinear wrapping.
+        cv::Mat stripWrap;
+        cv::copyMakeBorder(strip, stripWrap, 0, 0, 0, 1, cv::BORDER_WRAP);
+
         cv::Mat frame(H, W, CV_8UC3);
         cv::Mat stripFrame(H, W, CV_8UC3);   // sampled from ln-map strip
         cv::Mat finalFrame(H, W, CV_8UC3);   // sampled from final cartesian image
@@ -438,13 +447,11 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
                 }
             }
 
-            // Remap strip (angular axis wraps, row axis is constant-black).
-            cv::remap(strip,    stripFrame, mapX,  mapY,
+            // Remap strip (use stripWrap — col s wraps to col 0, no seam at θ=0).
+            cv::remap(stripWrap, stripFrame, mapX,  mapY,
                       cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(0,0,0));
-            // BORDER_WRAP on columns only: strip columns wrap naturally since col is
-            // already in [0,s) and BORDER_WRAP handles the fractional part correctly.
             // Remap final image (BORDER_CONSTANT → black outside).
-            cv::remap(finalImg, finalFrame, fmapX, fmapY,
+            cv::remap(finalImg,  finalFrame, fmapX, fmapY,
                       cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(0,0,0));
 
             // Composite: strip takes priority where its row was valid.
@@ -526,14 +533,16 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
     const std::string colormapStr = j.value("colorMap", std::string("classic_cos"));
     const int    iters      = j.value("iterations", 2048);
     const double bailout    = j.value("bailout",   2.0);
-    const int    s          = j.value("widthS",    960);
     const double depth      = j.value("depthOctaves", 20.0);
     const int    fps        = j.value("fps",       30);
     const double durSec     = j.value("durationSec", 8.0);
     const int    W          = j.value("width",     720);
     const int    H          = j.value("height",    720);
+    // Strip width defaults to video width if not specified; ensure it's ≥ video width
+    // so bilinear sampling from strip to output pixels doesn't lose resolution.
+    const int    s          = std::max(j.value("widthS", W), W);
 
-    if (s < 128 || s > 8192)                throw std::runtime_error("invalid widthS (128..8192)");
+    if (s < 128 || s > 16384)               throw std::runtime_error("invalid widthS (128..16384)");
     if (depth < 1.0 || depth > 80.0)        throw std::runtime_error("invalid depthOctaves (1..80)");
     if (fps < 1 || fps > 120)               throw std::runtime_error("invalid fps (1..120)");
     if (durSec <= 0 || durSec > 300)        throw std::runtime_error("invalid durationSec (0..300)");

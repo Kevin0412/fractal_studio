@@ -219,7 +219,6 @@ async function exportPng() {
 
 // ── Unified video export (ln-map + final frame + video in one dialog) ─────────
 const exportModalOpen = ref(false)
-const exportWidthS    = ref(960)
 const exportDepth     = ref(20)
 const exportFps       = ref(30)
 const exportDuration  = ref(8.0)
@@ -249,7 +248,6 @@ async function runExport() {
       variant:      variant.value,
       colorMap:     colorMap.value,
       iterations:   Math.max(iterations.value, 2048),
-      widthS:       exportWidthS.value,
       depthOctaves: exportDepth.value,
       fps:          exportFps.value,
       durationSec:  exportDuration.value,
@@ -474,10 +472,6 @@ async function runExport() {
             Julia c: {{ juliaRe.toPrecision(8) }} + {{ juliaIm.toPrecision(8) }}i
           </div>
           <div class="modal-body">
-            <div class="mrow">
-              <label>{{ t('video_strip_width') }}</label>
-              <input type="number" v-model.number="exportWidthS" min="128" max="4096" step="64" />
-            </div>
             <div class="mrow">
               <label>{{ t('video_depth') }}</label>
               <input type="number" v-model.number="exportDepth" min="1" max="60" step="1" />
