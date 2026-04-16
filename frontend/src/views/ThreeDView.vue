@@ -5,10 +5,8 @@ import { api, VARIANTS, VARIANT_LABELS, type Variant, type HsStage, type Transit
 import { t, lang } from '../i18n'
 
 type Mode = 'hs' | 'transition'
-type TxRenderMode = 'mesh' | 'voxel'
 
-const mode    = ref<Mode>('hs')
-const txRMode = ref<TxRenderMode>('voxel')  // default to voxel for M↔B
+const mode = ref<Mode>('hs')
 
 // HS mode params
 const hsMetric  = ref<HsStage>('min_abs')
@@ -24,18 +22,17 @@ const hsZSign = ref<1 | -1>(1)           // 1 = convex (height up), -1 = concave
 const hsZExp  = ref(-1.0)                 // log10 magnitude: range -15..0 → 10^exp
 const hsZScale = computed(() => hsZSign.value * Math.pow(10, hsZExp.value))
 
-// Transition mode params
-const txRes   = ref(64)
-const txTheta = ref(0.0)
-const txIso   = ref(0.48)
-const txIter  = ref(128)
-const txCenterRe = ref(-0.75)
-const txCenterIm = ref(0.0)
-const txScale    = ref(3.0)
+// Transition mode params — voxel-only
+const txRes      = ref(64)
+const txIso      = ref(0.48)
+const txIter     = ref(128)
+const txCenterX  = ref(0.0)
+const txCenterY  = ref(0.0)
+const txCenterZ  = ref(0.0)
+const txExtent   = ref(2.0)
 
 // State
 const hsFieldData  = ref<HsFieldResponse | null>(null)
-const glbUrl       = ref<string | null>(null)
 const voxelData    = ref<TransitionVoxelResponse | null>(null)
 const stlUrl       = ref<string | null>(null)
 const loading      = ref(false)
@@ -115,17 +112,20 @@ async function exportHsStl() {
   }
 }
 
-// ── Transition compute ────────────────────────────────────────────────────────
+// ── Transition voxel compute ──────────────────────────────────────────────────
 
 async function computeTransitionVoxels() {
   loading.value   = true
   error.value     = ''
   info.value      = 'computing voxel field…'
-  glbUrl.value    = null
   voxelData.value = null
   stlUrl.value    = null
   try {
     const r = await api.transitionVoxels({
+      centerX:    txCenterX.value,
+      centerY:    txCenterY.value,
+      centerZ:    txCenterZ.value,
+      extent:     txExtent.value,
       resolution: txRes.value,
       iso:        txIso.value,
       iterations: txIter.value,
@@ -140,41 +140,35 @@ async function computeTransitionVoxels() {
   }
 }
 
-async function computeTransitionMesh() {
-  loading.value   = true
-  error.value     = ''
-  info.value      = 'marching cubes…'
-  glbUrl.value    = null
-  voxelData.value = null
-  stlUrl.value    = null
+// ── Transition STL export (marching cubes mesh) ───────────────────────────────
+
+async function exportTxStl() {
+  stlLoading.value = true
+  error.value  = ''
+  stlUrl.value = null
   try {
-    const r = await api.transitionMesh({
-      centerRe:   txCenterRe.value,
-      centerIm:   txCenterIm.value,
-      scale:      txScale.value,
+    const r: MeshResponse = await api.transitionMesh({
+      centerX:    txCenterX.value,
+      centerY:    txCenterY.value,
+      centerZ:    txCenterZ.value,
+      extent:     txExtent.value,
       resolution: txRes.value,
-      theta:      txTheta.value,
       iso:        txIso.value,
       iterations: txIter.value,
     })
-    glbUrl.value = api.artifactContentUrl(r.glbArtifactId)
     stlUrl.value = api.artifactDownloadUrl(r.stlArtifactId)
-    info.value = `${r.vertexCount} verts · ${r.triangleCount} tri · field ${(r.fieldMs ?? 0).toFixed(0)}ms · MC ${(r.mcMs ?? 0).toFixed(0)}ms`
   } catch (e: any) {
     error.value = e?.message ?? String(e)
-    info.value  = ''
   } finally {
-    loading.value = false
+    stlLoading.value = false
   }
 }
 
 function compute() {
   if (mode.value === 'hs') {
     computeHsField()
-  } else if (txRMode.value === 'voxel') {
-    computeTransitionVoxels()
   } else {
-    computeTransitionMesh()
+    computeTransitionVoxels()
   }
 }
 
@@ -184,6 +178,18 @@ watch(mode, (m) => {
     computeHsField()
   }
 })
+
+// ── HS pan/zoom from ThreeDViewer ─────────────────────────────────────────────
+// ndx/ndy are normalized screen deltas (fraction of canvas width/height).
+// Drag right (ndx > 0) → content follows finger → center moves right → Re decreases.
+function onHsPan(ndx: number, ndy: number) {
+  hsCenterRe.value -= ndx * hsScale.value
+  hsCenterIm.value += ndy * hsScale.value  // screen Y down = Im up
+}
+
+function onHsZoom(factor: number) {
+  hsScale.value = Math.max(1e-10, hsScale.value * factor)
+}
 </script>
 
 <template>
@@ -255,36 +261,47 @@ watch(mode, (m) => {
         </a>
       </template>
 
-      <!-- Transition params -->
+      <!-- Transition params (voxel only) -->
       <template v-else>
-        <!-- Render-mode toggle: voxel (Minecraft) vs smooth mesh -->
-        <div class="mode-row" style="margin-bottom:10px">
-          <button :class="['mode-btn', txRMode === 'voxel' ? 'active' : '']" @click="txRMode = 'voxel'">⬜ VOXEL</button>
-          <button :class="['mode-btn', txRMode === 'mesh'  ? 'active' : '']" @click="txRMode = 'mesh'">◈ MESH</button>
-        </div>
-
         <div class="group">
-          <label>
-            {{ t('three_iso') }}
-            <span class="dim"> ({{ txRMode === 'voxel' ? 'core depth' : 'surface' }})</span>
-          </label>
+          <label>{{ t('three_iso') }} <span class="dim">(core depth)</span></label>
           <input type="range" min="0.05" max="0.48" step="0.01" v-model.number="txIso" />
-          <span class="num">{{ txIso.toFixed(2) }}{{ txRMode === 'voxel' ? (txIso >= 0.45 ? ' (all)' : '') : '' }}</span>
+          <span class="num">{{ txIso.toFixed(2) }}{{ txIso >= 0.45 ? ' (all)' : '' }}</span>
         </div>
         <div class="group">
           <label>{{ t('three_resolution') }}</label>
-          <input v-if="txRMode === 'voxel'"
-                 type="number" v-model.number="txRes" min="16" step="16" />
-          <input v-else
-                 type="number" v-model.number="txRes" min="32" max="1024" step="32" />
-          <span class="num dim">{{ txRMode === 'voxel' ? txRes + '³ vox' : txRes + '³ MC' }}</span>
+          <input type="number" v-model.number="txRes" min="16" step="16" />
+          <span class="num dim">{{ txRes }}³ vox</span>
         </div>
         <div class="group">
           <label>{{ t('iterations') }}</label>
           <input type="number" v-model.number="txIter" min="32" max="2000" step="32" />
         </div>
 
-        <!-- STL export for M↔B mesh mode -->
+        <!-- Center and extent -->
+        <div class="rule"></div>
+        <div class="group">
+          <label>CENTER X</label>
+          <input type="number" v-model.number="txCenterX" step="0.1" />
+        </div>
+        <div class="group">
+          <label>CENTER Y</label>
+          <input type="number" v-model.number="txCenterY" step="0.1" />
+        </div>
+        <div class="group">
+          <label>CENTER Z</label>
+          <input type="number" v-model.number="txCenterZ" step="0.1" />
+        </div>
+        <div class="group">
+          <label>EXTENT</label>
+          <input type="number" v-model.number="txExtent" min="0.1" step="0.1" />
+        </div>
+
+        <!-- STL export -->
+        <div class="rule"></div>
+        <button class="stl-btn" @click="exportTxStl" :disabled="stlLoading">
+          {{ stlLoading ? (lang === 'en' ? 'Exporting…' : '导出中…') : (lang === 'en' ? 'Export STL' : '导出 STL') }}
+        </button>
         <a v-if="stlUrl" :href="stlUrl" download class="stl-link mono">
           {{ lang === 'en' ? '⬇ download STL' : '⬇ 下载 STL' }}
         </a>
@@ -301,12 +318,14 @@ watch(mode, (m) => {
     <!-- Viewer canvas -->
     <div class="viewer">
       <ThreeDViewer
-        :glbUrl="glbUrl"
+        :glbUrl="null"
         :voxelData="voxelData"
         :hsFieldData="hsFieldData"
         :zScale="hsZScale"
         :viewMode="mode"
-        :loading="loading" />
+        :loading="loading"
+        @pan="onHsPan"
+        @zoom="onHsZoom" />
     </div>
   </div>
 </template>

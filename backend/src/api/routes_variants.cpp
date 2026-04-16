@@ -298,6 +298,7 @@ void ensureDbLoadedLocked(const std::filesystem::path& repoRoot) {
     g_dbLoaded = true;
 
     Db db(repoRoot / "fractal_studio.db");
+    db.ensureSchema();
     try {
         const auto rows = db.listCustomVariants();
         for (const auto& r : rows) {
@@ -460,6 +461,7 @@ std::string variantListRoute(const std::filesystem::path& repoRoot) {
 
     // Custom variants from DB
     Db db(repoRoot / "fractal_studio.db");
+    db.ensureSchema();
     const auto rows = db.listCustomVariants();
     Json custom = Json::array();
     for (const auto& r : rows) {

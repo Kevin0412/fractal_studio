@@ -25,6 +25,11 @@ const props = defineProps<{
   loading?: boolean
 }>()
 
+const emit = defineEmits<{
+  (e: 'pan',  ndx: number, ndy: number): void
+  (e: 'zoom', factor: number): void
+}>()
+
 const canvasEl = ref<HTMLCanvasElement | null>(null)
 
 let renderer: THREE.WebGLRenderer | null = null
@@ -41,6 +46,39 @@ let cachedField:  Float64Array | null = null
 let cachedW = 0, cachedH = 0
 
 let ro: ResizeObserver | null = null
+
+// ── HS pan/zoom interaction state ─────────────────────────────────────────────
+let hsDragging = false
+let hsDragStartX = 0
+let hsDragStartY = 0
+
+function onHsPointerDown(e: PointerEvent) {
+  hsDragging   = true
+  hsDragStartX = e.clientX
+  hsDragStartY = e.clientY
+  ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+}
+
+function onHsPointerMove(e: PointerEvent) {
+  if (!hsDragging || !renderer) return
+  const dx = e.clientX - hsDragStartX
+  const dy = e.clientY - hsDragStartY
+  hsDragStartX = e.clientX
+  hsDragStartY = e.clientY
+  const el = renderer.domElement
+  emit('pan', dx / el.clientWidth, dy / el.clientHeight)
+}
+
+function onHsPointerUp(e: PointerEvent) {
+  hsDragging = false
+  ;(e.target as HTMLElement).releasePointerCapture(e.pointerId)
+}
+
+function onHsWheel(e: WheelEvent) {
+  e.preventDefault()
+  const factor = Math.pow(0.9, e.deltaY / 100)
+  emit('zoom', factor)
+}
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 
@@ -78,14 +116,25 @@ function initThree() {
 }
 
 function applyViewMode(mode?: 'hs' | 'transition') {
-  if (!controls || !camera) return
+  if (!controls || !camera || !renderer) return
+  const el = renderer.domElement
   if (mode === 'hs') {
-    controls.enableRotate = false
-    camera.position.set(0, 3.0, 0.5)
+    // Disable OrbitControls; use custom pointer events for complex-plane pan/zoom
+    controls.enabled = false
+    el.addEventListener('pointerdown', onHsPointerDown)
+    el.addEventListener('pointermove', onHsPointerMove)
+    el.addEventListener('pointerup',   onHsPointerUp)
+    el.addEventListener('wheel',       onHsWheel, { passive: false })
+    camera.position.set(0, 3.0, 0.0)
     controls.target.set(0, 0, 0)
     controls.update()
   } else {
-    controls.enableRotate = true
+    // Re-enable OrbitControls; remove custom HS listeners
+    controls.enabled = true
+    el.removeEventListener('pointerdown', onHsPointerDown)
+    el.removeEventListener('pointermove', onHsPointerMove)
+    el.removeEventListener('pointerup',   onHsPointerUp)
+    el.removeEventListener('wheel',       onHsWheel)
     camera.position.set(0, 0.8, 3.2)
     controls.target.set(0, 0, 0)
     controls.update()
@@ -425,6 +474,13 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (animId !== null) cancelAnimationFrame(animId)
   ro?.disconnect()
+  if (renderer) {
+    const el = renderer.domElement
+    el.removeEventListener('pointerdown', onHsPointerDown)
+    el.removeEventListener('pointermove', onHsPointerMove)
+    el.removeEventListener('pointerup',   onHsPointerUp)
+    el.removeEventListener('wheel',       onHsWheel)
+  }
   controls?.dispose()
   renderer?.dispose()
   clearMesh()

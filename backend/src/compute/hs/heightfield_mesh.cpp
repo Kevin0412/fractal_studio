@@ -141,6 +141,96 @@ Mesh buildHsMesh(const HsMeshParams& p) {
         }
     }
 
+    // ── Closed-base: north/south/east/west walls + bottom ────────────────
+    // Coordinate system recap: X=col/(N-1)−0.5, Y=−(row/(N-1)−0.5), Z=f01×heightScale
+    // top surface winding is CCW from +Z so top normals point +Z.
+    // Walls and bottom need outward normals; winding verified by cross-product.
+
+    auto topX = [&](int col) -> float {
+        return static_cast<float>(static_cast<double>(col) / static_cast<double>(N - 1) - 0.5);
+    };
+    auto topY = [&](int row) -> float {
+        return static_cast<float>(-(static_cast<double>(row) / static_cast<double>(N - 1) - 0.5));
+    };
+
+    // North wall (row=0, Y=+0.5) — outward normal +Y
+    {
+        const float yw = topY(0);
+        const uint32_t bBase = static_cast<uint32_t>(mesh.vertices.size());
+        for (int col = 0; col < N; col++)
+            mesh.vertices.push_back({topX(col), yw, 0.0f});
+        for (int col = 0; col < N - 1; col++) {
+            const uint32_t tc  = static_cast<uint32_t>(col);
+            const uint32_t tc1 = static_cast<uint32_t>(col + 1);
+            const uint32_t bc  = bBase + col;
+            const uint32_t bc1 = bBase + col + 1;
+            mesh.indices.push_back(tc);  mesh.indices.push_back(tc1); mesh.indices.push_back(bc);
+            mesh.indices.push_back(tc1); mesh.indices.push_back(bc1); mesh.indices.push_back(bc);
+        }
+    }
+
+    // South wall (row=N-1, Y=−0.5) — outward normal −Y (reversed winding)
+    {
+        const float yw = topY(N - 1);
+        const uint32_t bBase = static_cast<uint32_t>(mesh.vertices.size());
+        for (int col = 0; col < N; col++)
+            mesh.vertices.push_back({topX(col), yw, 0.0f});
+        for (int col = 0; col < N - 1; col++) {
+            const uint32_t tc  = static_cast<uint32_t>((N - 1) * N + col);
+            const uint32_t tc1 = static_cast<uint32_t>((N - 1) * N + col + 1);
+            const uint32_t bc  = bBase + col;
+            const uint32_t bc1 = bBase + col + 1;
+            mesh.indices.push_back(tc1); mesh.indices.push_back(tc);  mesh.indices.push_back(bc1);
+            mesh.indices.push_back(tc);  mesh.indices.push_back(bc);  mesh.indices.push_back(bc1);
+        }
+    }
+
+    // East wall (col=N-1, X=+0.5) — outward normal +X
+    {
+        const float xw = topX(N - 1);
+        const uint32_t bBase = static_cast<uint32_t>(mesh.vertices.size());
+        for (int row = 0; row < N; row++)
+            mesh.vertices.push_back({xw, topY(row), 0.0f});
+        for (int row = 0; row < N - 1; row++) {
+            const uint32_t tc  = static_cast<uint32_t>(row       * N + (N - 1));
+            const uint32_t tc1 = static_cast<uint32_t>((row + 1) * N + (N - 1));
+            const uint32_t bc  = bBase + row;
+            const uint32_t bc1 = bBase + row + 1;
+            mesh.indices.push_back(tc);  mesh.indices.push_back(tc1); mesh.indices.push_back(bc);
+            mesh.indices.push_back(tc1); mesh.indices.push_back(bc1); mesh.indices.push_back(bc);
+        }
+    }
+
+    // West wall (col=0, X=−0.5) — outward normal −X (reversed winding)
+    {
+        const float xw = topX(0);
+        const uint32_t bBase = static_cast<uint32_t>(mesh.vertices.size());
+        for (int row = 0; row < N; row++)
+            mesh.vertices.push_back({xw, topY(row), 0.0f});
+        for (int row = 0; row < N - 1; row++) {
+            const uint32_t tc  = static_cast<uint32_t>(row       * N);
+            const uint32_t tc1 = static_cast<uint32_t>((row + 1) * N);
+            const uint32_t bc  = bBase + row;
+            const uint32_t bc1 = bBase + row + 1;
+            mesh.indices.push_back(tc1); mesh.indices.push_back(tc);  mesh.indices.push_back(bc1);
+            mesh.indices.push_back(tc);  mesh.indices.push_back(bc);  mesh.indices.push_back(bc1);
+        }
+    }
+
+    // Bottom face (Z=0) — outward normal −Z (CW from above)
+    {
+        const uint32_t bNW = static_cast<uint32_t>(mesh.vertices.size());
+        mesh.vertices.push_back({-0.5f,  0.5f, 0.0f}); // NW
+        const uint32_t bNE = static_cast<uint32_t>(mesh.vertices.size());
+        mesh.vertices.push_back({ 0.5f,  0.5f, 0.0f}); // NE
+        const uint32_t bSE = static_cast<uint32_t>(mesh.vertices.size());
+        mesh.vertices.push_back({ 0.5f, -0.5f, 0.0f}); // SE
+        const uint32_t bSW = static_cast<uint32_t>(mesh.vertices.size());
+        mesh.vertices.push_back({-0.5f, -0.5f, 0.0f}); // SW
+        mesh.indices.push_back(bNW); mesh.indices.push_back(bNE); mesh.indices.push_back(bSE);
+        mesh.indices.push_back(bNW); mesh.indices.push_back(bSE); mesh.indices.push_back(bSW);
+    }
+
     return mesh;
 }
 

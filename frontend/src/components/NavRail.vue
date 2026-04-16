@@ -33,7 +33,7 @@ const items = [
     </button>
 
     <button class="theme-btn nav-item" @click="toggleTheme" :title="isLight ? 'Switch to dark mode' : 'Switch to light mode'">
-      <span class="glyph mono">{{ isLight ? 'DK' : 'LT' }}</span>
+      <span class="glyph theme-icon">{{ isLight ? '☀' : '☽' }}</span>
       <span class="tip">{{ isLight ? t('nav_dark') : t('nav_light') }}</span>
     </button>
   </nav>
@@ -96,6 +96,12 @@ const items = [
   font-size: 11px;
   letter-spacing: 0.02em;
   text-transform: uppercase;
+}
+
+.theme-icon {
+  font-size: 16px;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .tip {

@@ -211,11 +211,11 @@ export interface MeshResponse {
 }
 
 export interface TransitionMeshRequest {
-  centerRe?: number
-  centerIm?: number
-  scale?: number
+  centerX?: number
+  centerY?: number
+  centerZ?: number
+  extent?: number
   resolution?: number
-  theta?: number
   iso?: number
   iterations?: number
 }
