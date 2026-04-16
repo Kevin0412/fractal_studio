@@ -15,10 +15,10 @@
   **双窗格 Julia 探索器** — 左侧点选 c 值并重定中心，右侧独立视口展示对应 Julia 集
 - **Mandelbrot ↔ Burning Ship transition** — continuous 3D rotation in the (x, y, z) iteration space, controlled by a θ slider
   **Mandelbrot ↔ Burning Ship 过渡** — 在 (x, y, z) 迭代空间通过 θ 滑块连续旋转
-- **3D viewer** — HS height fields rendered live in three.js with map-like drag-to-pan and scroll-to-zoom (updates the complex-plane center); M↔B transition rendered as Minecraft-style voxels with adjustable center X/Y/Z, extent, and STL export
-  **三维查看器** — HS 高度场在 three.js 中实时渲染，支持类地图拖拽平移与滚轮缩放（更新复数平面中心）；M↔B 过渡以 Minecraft 体素渲染，支持中心 X/Y/Z 与范围调整及 STL 导出
-- **Ln-map zoom video export** — render a single logarithmic strip image once, generate arbitrarily long smooth zoom videos from it (zero fractal re-computation per video)
-  **对数图缩放视频导出** — 仅渲染一次对数条带图，可无限次生成不同时长的缩放视频（无需重复计算分形）
+- **3D viewer** — HS height fields rendered live in three.js with map-like drag-to-pan and scroll-to-zoom (updates the complex-plane center); STL export honours the frontend concave/convex setting and z-scale exponent; M↔B transition rendered as Minecraft-style voxels with adjustable center X/Y/Z, extent, and voxel-face STL export (each quad face split into two triangles); camera and lighting scale automatically with `extent`
+  **三维查看器** — HS 高度场在 three.js 中实时渲染，支持类地图拖拽平移与滚轮缩放（更新复数平面中心）；STL 导出遵循前端凹凸设置与 z 轴缩放指数；M↔B 过渡以 Minecraft 体素渲染，支持中心 X/Y/Z 与范围调整及体素面 STL 导出（每个四边形面拆分为两个三角形）；相机与光源随 `extent` 自动缩放
+- **Ln-map zoom video export** — render a single logarithmic strip image once, generate arbitrarily long smooth zoom videos from it (zero fractal re-computation per video); strip width automatically matches the video output resolution for sharp results
+  **对数图缩放视频导出** — 仅渲染一次对数条带图，可无限次生成不同时长的缩放视频（无需重复计算分形）；条带宽度自动匹配视频输出分辨率以保证清晰度
 - **Dark instrumentation UI** — near-black canvas, amber accent, monospace numerics, bilingual EN/中文
   **暗色仪表盘界面** — 近黑色画布、琥珀色主题、等宽数字显示，中英文双语
 - **Multi-engine rendering** — select CUDA, AVX-512, OpenMP, or hybrid per render
@@ -151,13 +151,13 @@ All endpoints are `POST /api/...` with JSON body or `GET /api/...` with query pa
 |---|---|
 | `POST /api/map/render` | Render a fractal map image / 渲染分形图 |
 | `POST /api/map/ln` | Render a logarithmic strip image for zoom video / 渲染对数条带图 |
-| `POST /api/special-points/auto` | Auto-solve periodic/preperiodic points (k, p) / 自动求解周期/前周期点 |
+| `POST /api/special-points/auto` | Auto-solve periodic (k=0, hyperbolic centers) or preperiodic (k>0, Misiurewicz) points; lower-period factors fully divided out to avoid spurious roots / 自动求解周期（k=0，双曲点）或前周期（k>0，米点）特殊点；完整除去低阶因子以消除伪根 |
 | `POST /api/special-points/seed` | Newton-converge from a seed point / 从种子点牛顿迭代收敛 |
 | `GET  /api/special-points` | List computed special points / 列出已计算特殊点 |
 | `POST /api/hs/field` | Compute raw HS height field (float64 array) for 3D display / 计算 HS 原始高度场（float64 数组）用于三维显示 |
 | `POST /api/hs/mesh` | Compute HS height field → watertight STL mesh (top + 4 walls + base) / 计算 HS 高度场封闭 STL 网格（顶面+四侧面+底面） |
 | `POST /api/transition/mesh` | Compute 3D transition volume → marching-cubes STL mesh / 计算三维过渡体积 MC STL 网格 |
-| `POST /api/transition/voxels` | Compute voxel body (exposed faces only, backend-culled) / 计算体素体（仅暴露面，后端剔除） |
+| `POST /api/transition/voxels` | Compute voxel body (exposed faces only, backend-culled) + voxel-face STL artifact / 计算体素体（仅暴露面，后端剔除）并生成体素面 STL 产物 |
 | `POST /api/video/zoom` | Generate zoom video from an existing ln-map artifact / 从对数图生成缩放视频 |
 | `GET  /api/runs` | Run history / 运行历史 |
 | `GET  /api/artifacts` | Artifact list + download URLs / 产物列表与下载链接 |
