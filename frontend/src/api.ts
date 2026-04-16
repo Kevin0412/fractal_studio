@@ -172,6 +172,7 @@ export interface HsMeshRequest {
   metric?: HsStage
   variant?: Variant
   iterations?: number
+  heightScale?: number
 }
 
 export interface HsFieldRequest {
@@ -237,6 +238,8 @@ export interface TransitionVoxelResponse {
   extent: number
   faceCount: number
   generatedMs: number
+  stlArtifactId?: string
+  stlUrl?: string
   posB64: string    // float32[faceCount * 4 * 3] — world-space vertex positions
   normB64: string   // int8[faceCount * 3] — one outward normal per face
   depthB64: string  // uint8[faceCount] — depth byte (1=deep interior, 255=near surface)

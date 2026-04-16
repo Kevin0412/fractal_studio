@@ -180,15 +180,21 @@ Poly g_poly(int t0, int t1) {
     for (int factor : factors) {
         for (int t = 0; t <= t0; t++) {
             if (factor == t1 && t == t0) continue;
-            // Trial-divide out g(t, factor) if it divides fx exactly.
+            // Trial-divide out ALL copies of g(t, factor) from fx.
+            // A single division was not enough when g(k, p) has a higher-
+            // multiplicity factor (e.g. c³(c+2) needs c divided out 3 times).
             const Poly sub = g_poly(t, factor);
             if (sub.degree() <= 0) continue;
-            auto qr = poly_divmod(fx, sub);
-            bool remainder_zero = true;
-            for (const auto& c : qr.second.coeffs) {
-                if (std::abs(c) > 1e-9) { remainder_zero = false; break; }
+            while (true) {
+                auto qr = poly_divmod(fx, sub);
+                bool remainder_zero = true;
+                for (const auto& c : qr.second.coeffs) {
+                    if (std::abs(c) > 1e-9) { remainder_zero = false; break; }
+                }
+                if (!remainder_zero) break;
+                fx = qr.first;
+                if (fx.degree() < sub.degree()) break;
             }
-            if (remainder_zero) fx = qr.first;
         }
     }
     return poly_trim(fx);

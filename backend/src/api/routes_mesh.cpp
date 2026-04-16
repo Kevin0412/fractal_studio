@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <stdexcept>
 #include <cstring>
@@ -354,6 +355,47 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
 
     const size_t faceCount = depU8.size();
 
+    // Write binary STL: each quad (4 verts) → 2 triangles.
+    // Binary STL: 80-byte header | uint32 triCount | per-tri: float[3] normal, float[3][3] verts, uint16=0
+    const std::filesystem::path stlPath =
+        std::filesystem::path(run.outputDir) / "transition_voxels.stl";
+    {
+        const uint32_t triCount = static_cast<uint32_t>(faceCount * 2);
+        std::ofstream stlOut(stlPath, std::ios::binary);
+        // 80-byte header
+        char header[80] = {};
+        std::memcpy(header, "fractal_studio voxel STL", 24);
+        stlOut.write(header, 80);
+        stlOut.write(reinterpret_cast<const char*>(&triCount), 4);
+        const uint16_t attr = 0;
+        for (size_t fi = 0; fi < faceCount; ++fi) {
+            // Normal (float32 × 3)
+            const float nx = static_cast<float>(normI8[fi * 3 + 0]);
+            const float ny = static_cast<float>(normI8[fi * 3 + 1]);
+            const float nz = static_cast<float>(normI8[fi * 3 + 2]);
+            // 4 vertices for this quad
+            const float* v = &posF32[fi * 12];
+            // Triangle 0: v0, v1, v2
+            stlOut.write(reinterpret_cast<const char*>(&nx), 4);
+            stlOut.write(reinterpret_cast<const char*>(&ny), 4);
+            stlOut.write(reinterpret_cast<const char*>(&nz), 4);
+            stlOut.write(reinterpret_cast<const char*>(v + 0), 12); // v0
+            stlOut.write(reinterpret_cast<const char*>(v + 3), 12); // v1
+            stlOut.write(reinterpret_cast<const char*>(v + 6), 12); // v2
+            stlOut.write(reinterpret_cast<const char*>(&attr), 2);
+            // Triangle 1: v0, v2, v3
+            stlOut.write(reinterpret_cast<const char*>(&nx), 4);
+            stlOut.write(reinterpret_cast<const char*>(&ny), 4);
+            stlOut.write(reinterpret_cast<const char*>(&nz), 4);
+            stlOut.write(reinterpret_cast<const char*>(v + 0),  12); // v0
+            stlOut.write(reinterpret_cast<const char*>(v + 6),  12); // v2
+            stlOut.write(reinterpret_cast<const char*>(v + 9),  12); // v3
+            stlOut.write(reinterpret_cast<const char*>(&attr), 2);
+        }
+    }
+    runner.addArtifact(run.id, Artifact{"transition-voxels", stlPath.string(), "stl"});
+
+    const std::string stlId = run.id + ":transition_voxels.stl";
     Json resp = {
         {"runId",       run.id},
         {"status",      "completed"},
@@ -361,6 +403,8 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
         {"extent",      p.extent},
         {"faceCount",   faceCount},
         {"generatedMs", elapsed},
+        {"stlArtifactId", stlId},
+        {"stlUrl",      "/api/artifacts/download?artifactId=" + stlId},
         {"posB64",   base64Encode(reinterpret_cast<const uint8_t*>(posF32.data()), posF32.size() * sizeof(float))},
         {"normB64",  base64Encode(reinterpret_cast<const uint8_t*>(normI8.data()), normI8.size())},
         {"depthB64", base64Encode(depU8.data(), depU8.size())},

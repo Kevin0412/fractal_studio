@@ -23,6 +23,7 @@ const props = defineProps<{
   zScale?: number
   viewMode?: 'hs' | 'transition'
   loading?: boolean
+  extent?: number
 }>()
 
 const emit = defineEmits<{
@@ -40,6 +41,8 @@ let animId:   number | null = null
 let meshGroup: THREE.Group | null = null
 let voxelMesh: THREE.Mesh | null = null
 let hsMesh:    THREE.Mesh | null = null
+let keyLight:  THREE.DirectionalLight | null = null
+let fillLight: THREE.DirectionalLight | null = null
 
 // Cache raw float64 field values for z-scale rebuildling without re-fetch
 let cachedField:  Float64Array | null = null
@@ -93,12 +96,12 @@ function initThree() {
   camera = new THREE.PerspectiveCamera(45, el.clientWidth / el.clientHeight, 0.001, 100)
   camera.position.set(0, 0.8, 3.2)
 
-  const key  = new THREE.DirectionalLight(0xd7dae0, 1.8)
-  key.position.set(1.5, 2, 2)
-  scene.add(key)
-  const fill = new THREE.DirectionalLight(0xd7dae0, 0.5)
-  fill.position.set(-2, 1, -1)
-  scene.add(fill)
+  keyLight = new THREE.DirectionalLight(0xd7dae0, 1.8)
+  keyLight.position.set(1.5, 2, 2)
+  scene.add(keyLight)
+  fillLight = new THREE.DirectionalLight(0xd7dae0, 0.5)
+  fillLight.position.set(-2, 1, -1)
+  scene.add(fillLight)
   scene.add(new THREE.AmbientLight(0xd7dae0, 0.25))
 
   controls = new OrbitControls(camera, renderer.domElement)
@@ -158,6 +161,22 @@ function loop() {
 function resetCamera() {
   controls!.reset()
   applyViewMode(props.viewMode)
+}
+
+// Position camera and lights for the voxel (M↔B) view based on extent.
+function positionForExtent(extent: number) {
+  if (!camera || !controls || !keyLight || !fillLight) return
+  const d = extent * 2.5
+  camera.position.set(d * 0.6, d * 0.5, d)
+  camera.near = extent * 0.001
+  camera.far  = extent * 20
+  camera.updateProjectionMatrix()
+  controls.minDistance = extent * 0.05
+  controls.maxDistance = extent * 15
+  controls.target.set(0, 0, 0)
+  controls.update()
+  keyLight.position.set(extent * 0.75, extent, extent)
+  fillLight.position.set(-extent, extent * 0.5, -extent * 0.5)
 }
 
 // ── GLB ──────────────────────────────────────────────────────────────────────
@@ -279,7 +298,8 @@ function buildVoxels(data: TransitionVoxelResponse) {
     new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0.05 })
   )
   scene!.add(voxelMesh)
-  resetCamera()
+  const ext = props.extent ?? data.resolution * 0.03
+  positionForExtent(ext)
 }
 
 // ── HS Height Field ───────────────────────────────────────────────────────────
@@ -327,7 +347,6 @@ function buildHsGeometry(
   const vertCount = W * H
 
   const positions = new Float32Array(vertCount * 3)
-  const normals   = new Float32Array(vertCount * 3)
   const uvs       = new Float32Array(vertCount * 2)
 
   // Build vertex positions: XZ on the grid, Y = field value * zScale
@@ -348,35 +367,6 @@ function buildHsGeometry(
     }
   }
 
-  // Compute smooth normals via cross product of neighbors
-  for (let row = 0; row < H; row++) {
-    for (let col = 0; col < W; col++) {
-      const idx = row * W + col
-
-      // Finite differences for gradient
-      const col0 = Math.max(0, col - 1)
-      const col1 = Math.min(W - 1, col + 1)
-      const row0 = Math.max(0, row - 1)
-      const row1 = Math.min(H - 1, row + 1)
-
-      const dxdy = (f64[row * W + col1] - f64[row * W + col0]) / (col1 - col0) * zScale / denom
-      const dzdy = (f64[row1 * W + col] - f64[row0 * W + col]) / (row1 - row0) * zScale / denom
-
-      // Normal = cross((-dx, 1, 0), (0, dz, -1)) normalized
-      // Tangent along X: (1, dxdy, 0); tangent along Z: (0, dzdy, 1)
-      // Normal = (1,dxdy,0) × (0,dzdy,1) = (dxdy*1 - 0*dzdy, 0*0 - 1*1, 1*dzdy - dxdy*0)
-      //        = (dxdy, -1, dzdy) → negate to point up: (-dxdy, 1, -dzdy)
-      const nx = -dxdy
-      const ny = 1.0
-      const nz = -dzdy
-      const len = Math.sqrt(nx * nx + ny * ny + nz * nz)
-
-      normals[idx * 3 + 0] = nx / len
-      normals[idx * 3 + 1] = ny / len
-      normals[idx * 3 + 2] = nz / len
-    }
-  }
-
   // Build indices (two triangles per grid cell)
   const idxArr = new Uint32Array((W - 1) * (H - 1) * 6)
   let ii = 0
@@ -393,9 +383,9 @@ function buildHsGeometry(
 
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  geo.setAttribute('normal',   new THREE.BufferAttribute(normals,   3))
   geo.setAttribute('uv',       new THREE.BufferAttribute(uvs,       2))
   geo.setIndex(new THREE.BufferAttribute(idxArr, 1))
+  geo.computeVertexNormals()
 
   const mat = new THREE.MeshStandardMaterial({
     color:     0xf0a030,

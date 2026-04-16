@@ -96,13 +96,14 @@ async function exportHsStl() {
   stlUrl.value = null
   try {
     const r: MeshResponse = await api.hsMesh({
-      centerRe:   hsCenterRe.value,
-      centerIm:   hsCenterIm.value,
-      scale:      hsScale.value,
-      resolution: hsRes.value,
-      metric:     hsMetric.value,
-      variant:    hsVariant.value,
-      iterations: hsIter.value,
+      centerRe:    hsCenterRe.value,
+      centerIm:    hsCenterIm.value,
+      scale:       hsScale.value,
+      resolution:  hsRes.value,
+      metric:      hsMetric.value,
+      variant:     hsVariant.value,
+      iterations:  hsIter.value,
+      heightScale: Math.abs(hsZScale.value),
     })
     stlUrl.value = api.artifactDownloadUrl(r.stlArtifactId)
   } catch (e: any) {
@@ -131,6 +132,7 @@ async function computeTransitionVoxels() {
       iterations: txIter.value,
     })
     voxelData.value = r
+    stlUrl.value = r.stlUrl ?? null
     info.value = `${r.faceCount.toLocaleString()} faces · ${r.resolution}³ grid · ${r.generatedMs.toFixed(0)}ms`
   } catch (e: any) {
     error.value = e?.message ?? String(e)
@@ -140,14 +142,21 @@ async function computeTransitionVoxels() {
   }
 }
 
-// ── Transition STL export (marching cubes mesh) ───────────────────────────────
+// ── Transition STL export (voxel faces → STL) ────────────────────────────────
+// The voxels endpoint already generates the STL on the backend side.
+// If a voxel render already happened, its stlUrl is available immediately.
+// Otherwise we trigger a fresh voxel compute to get the STL.
 
 async function exportTxStl() {
+  if (voxelData.value?.stlUrl) {
+    stlUrl.value = voxelData.value.stlUrl
+    return
+  }
   stlLoading.value = true
   error.value  = ''
   stlUrl.value = null
   try {
-    const r: MeshResponse = await api.transitionMesh({
+    const r = await api.transitionVoxels({
       centerX:    txCenterX.value,
       centerY:    txCenterY.value,
       centerZ:    txCenterZ.value,
@@ -156,7 +165,9 @@ async function exportTxStl() {
       iso:        txIso.value,
       iterations: txIter.value,
     })
-    stlUrl.value = api.artifactDownloadUrl(r.stlArtifactId)
+    voxelData.value = r
+    stlUrl.value = r.stlUrl ?? null
+    info.value = `${r.faceCount.toLocaleString()} faces · ${r.resolution}³ grid · ${r.generatedMs.toFixed(0)}ms`
   } catch (e: any) {
     error.value = e?.message ?? String(e)
   } finally {
@@ -324,6 +335,7 @@ function onHsZoom(factor: number) {
         :zScale="hsZScale"
         :viewMode="mode"
         :loading="loading"
+        :extent="mode === 'transition' ? txExtent : undefined"
         @pan="onHsPan"
         @zoom="onHsZoom" />
     </div>
