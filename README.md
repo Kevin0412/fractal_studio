@@ -15,8 +15,8 @@
   **双窗格 Julia 探索器** — 左侧点选 c 值并重定中心，右侧独立视口展示对应 Julia 集
 - **Mandelbrot ↔ Burning Ship transition** — continuous 3D rotation in the (x, y, z) iteration space, controlled by a θ slider
   **Mandelbrot ↔ Burning Ship 过渡** — 在 (x, y, z) 迭代空间通过 θ 滑块连续旋转
-- **3D viewer** — HS height fields and transition volumes as Minecraft-style voxels or smooth marching-cubes meshes in three.js
-  **三维查看器** — HS 高度场与过渡体积以 Minecraft 体素或平滑 MC 网格在 three.js 中渲染
+- **3D viewer** — HS height fields rendered live in three.js with map-like drag-to-pan and scroll-to-zoom (updates the complex-plane center); M↔B transition rendered as Minecraft-style voxels with adjustable center X/Y/Z, extent, and STL export
+  **三维查看器** — HS 高度场在 three.js 中实时渲染，支持类地图拖拽平移与滚轮缩放（更新复数平面中心）；M↔B 过渡以 Minecraft 体素渲染，支持中心 X/Y/Z 与范围调整及 STL 导出
 - **Ln-map zoom video export** — render a single logarithmic strip image once, generate arbitrarily long smooth zoom videos from it (zero fractal re-computation per video)
   **对数图缩放视频导出** — 仅渲染一次对数条带图，可无限次生成不同时长的缩放视频（无需重复计算分形）
 - **Dark instrumentation UI** — near-black canvas, amber accent, monospace numerics, bilingual EN/中文
@@ -88,8 +88,8 @@ A 2D map at rotation angle θ around the x-axis maps screen pixel (u, v) to seed
 - θ = π/2 → Burning Ship (xz-plane) / Burning Ship（xz 平面）
 - 0 < θ < π/2 → continuous morphing bridge / 连续过渡桥接
 
-The 3D viewer can render the full volume as a Minecraft-style voxel model (only exposed faces are sent — no hidden geometry) or as a smooth marching-cubes mesh.
-三维查看器可将完整体积渲染为 Minecraft 风格体素模型（仅发送暴露面，无隐藏几何）或平滑 MC 网格。
+The 3D viewer renders the transition volume as a Minecraft-style voxel model (only exposed faces are sent — no hidden geometry). Center X/Y/Z and extent can be adjusted manually to explore different regions. STL export uses `POST /api/transition/mesh` (marching-cubes) to produce a watertight mesh for 3D printing.
+三维查看器将过渡体积渲染为 Minecraft 风格体素模型（仅发送暴露面，无隐藏几何）。可手动调整中心 X/Y/Z 与范围探索不同区域。STL 导出通过 `POST /api/transition/mesh`（MC 网格）生成可打印的封闭网格。
 
 ---
 
@@ -154,8 +154,9 @@ All endpoints are `POST /api/...` with JSON body or `GET /api/...` with query pa
 | `POST /api/special-points/auto` | Auto-solve periodic/preperiodic points (k, p) / 自动求解周期/前周期点 |
 | `POST /api/special-points/seed` | Newton-converge from a seed point / 从种子点牛顿迭代收敛 |
 | `GET  /api/special-points` | List computed special points / 列出已计算特殊点 |
-| `POST /api/hs/mesh` | Compute HS height field + marching-cubes mesh / 计算 HS 高度场网格 |
-| `POST /api/transition/mesh` | Compute 3D transition volume + marching-cubes mesh / 计算三维过渡体积网格 |
+| `POST /api/hs/field` | Compute raw HS height field (float64 array) for 3D display / 计算 HS 原始高度场（float64 数组）用于三维显示 |
+| `POST /api/hs/mesh` | Compute HS height field → watertight STL mesh (top + 4 walls + base) / 计算 HS 高度场封闭 STL 网格（顶面+四侧面+底面） |
+| `POST /api/transition/mesh` | Compute 3D transition volume → marching-cubes STL mesh / 计算三维过渡体积 MC STL 网格 |
 | `POST /api/transition/voxels` | Compute voxel body (exposed faces only, backend-culled) / 计算体素体（仅暴露面，后端剔除） |
 | `POST /api/video/zoom` | Generate zoom video from an existing ln-map artifact / 从对数图生成缩放视频 |
 | `GET  /api/runs` | Run history / 运行历史 |
@@ -231,10 +232,10 @@ fractal_studio/
         RunsView.vue          # run history + artifact downloads
         SystemView.vue        # hardware info
       components/
-        MapCanvas.vue         # WebGL tile renderer + pan/zoom
+        MapCanvas.vue         # full-frame renderer (api.mapRender at exact canvas px) + pan/zoom
         ThreeDViewer.vue      # three.js orbit viewer
         StatusRail.vue        # live CPU/GPU/render stats
-        NavRail.vue           # left nav (EN/ZH + dark/light toggle)
+        NavRail.vue           # left nav (EN/ZH + ☀/☽ dark/light toggle)
       api.ts                  # typed backend client
       i18n.ts                 # EN/中文 reactive store
 ```
