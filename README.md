@@ -244,4 +244,4 @@ fractal_studio/
 
 ## License / 许可
 
-Internal research tool. / 内部研究工具。
+MIT License.
