@@ -142,7 +142,9 @@ export interface MapFieldResponse {
 export interface LnMapRequest {
   centerRe: number
   centerIm: number
-  widthS: number
+  widthS?: number
+  width?: number
+  height?: number
   depthOctaves: number
   variant?: Variant
   colorMap?: ColorMap

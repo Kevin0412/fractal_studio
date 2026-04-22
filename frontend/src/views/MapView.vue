@@ -30,6 +30,24 @@ const COLORMAP_LABELS: Record<string, { en: string; zh: string }> = {
 
 const status = inject<StatusState>('status')!
 
+type ExportPreset = {
+  key: string
+  label: { en: string; zh: string }
+  width: number
+  height: number
+}
+
+const EXPORT_PRESETS: ExportPreset[] = [
+  { key: 'fhd',       label: { en: 'FHD 16:9',       zh: 'FHD 16:9' },       width: 1920, height: 1080 },
+  { key: 'qhd',       label: { en: 'QHD 16:9',       zh: 'QHD 16:9' },       width: 2560, height: 1440 },
+  { key: '4k',        label: { en: '4K UHD 16:9',    zh: '4K UHD 16:9' },    width: 3840, height: 2160 },
+  { key: 'wuxga',     label: { en: 'WUXGA 16:10',    zh: 'WUXGA 16:10' },    width: 1920, height: 1200 },
+  { key: 'wqxga',     label: { en: 'WQXGA 16:10',    zh: 'WQXGA 16:10' },    width: 2560, height: 1600 },
+  { key: 'uwqhd',     label: { en: 'UWQHD 21:9',     zh: 'UWQHD 21:9' },     width: 3440, height: 1440 },
+  { key: 'phone_fhd', label: { en: 'Phone 9:16 FHD', zh: '手机 9:16 FHD' },  width: 1080, height: 1920 },
+  { key: 'phone_qhd', label: { en: 'Phone 9:16 QHD', zh: '手机 9:16 QHD' },  width: 1440, height: 2560 },
+]
+
 // ── Left / Mandelbrot viewport ────────────────────────────────────────────────
 const centerRe   = ref(-0.75)
 const centerIm   = ref( 0.0)
@@ -194,13 +212,24 @@ function onImportPoint(p: SpecialPoint) {
   scale.value    = 0.01
 }
 
+const pngPresetKey = ref('fhd')
+const videoPresetKey = ref('fhd')
+
+const pngPreset = computed(() =>
+  EXPORT_PRESETS.find(p => p.key === pngPresetKey.value) ?? EXPORT_PRESETS[0]
+)
+const videoPreset = computed(() =>
+  EXPORT_PRESETS.find(p => p.key === videoPresetKey.value) ?? EXPORT_PRESETS[0]
+)
+
 async function exportPng() {
   try {
     const resp = await api.mapRender({
       centerRe:   centerRe.value,
       centerIm:   centerIm.value,
       scale:      scale.value,
-      width:      1920, height: 1080,
+      width:      pngPreset.value.width,
+      height:     pngPreset.value.height,
       iterations: iterations.value,
       variant:    variant.value,
       metric:     metric.value,
@@ -222,11 +251,16 @@ const exportModalOpen = ref(false)
 const exportDepth     = ref(20)
 const exportFps       = ref(30)
 const exportDuration  = ref(8.0)
-const exportW         = ref(720)
-const exportH         = ref(720)
+const exportW         = ref(1920)
+const exportH         = ref(1080)
 const exportBusy      = ref(false)
 const exportStatus    = ref('')
 const exportResult    = ref<VideoExportResponse | null>(null)
+
+watch(videoPreset, p => {
+  exportW.value = p.width
+  exportH.value = p.height
+}, { immediate: true })
 
 function openExportModal() {
   exportModalOpen.value = true
@@ -348,6 +382,15 @@ async function runExport() {
       </div>
 
       <div class="spacer"></div>
+
+      <div class="group export-preset-group">
+        <label>{{ lang === 'en' ? 'Wallpaper' : '壁纸尺寸' }}</label>
+        <select v-model="pngPresetKey">
+          <option v-for="p in EXPORT_PRESETS" :key="p.key" :value="p.key">
+            {{ p.label[lang] }} · {{ p.width }}×{{ p.height }}
+          </option>
+        </select>
+      </div>
 
       <button @click="resetView" :title="t('reset')">⌂ {{ t('reset') }}</button>
       <button @click="exportPng">{{ t('export_png') }}</button>
@@ -485,12 +528,20 @@ async function runExport() {
               <input type="number" v-model.number="exportDuration" min="1" max="300" step="1" />
             </div>
             <div class="mrow">
+              <label>{{ lang === 'en' ? 'Preset' : '预设' }}</label>
+              <select v-model="videoPresetKey">
+                <option v-for="p in EXPORT_PRESETS" :key="p.key" :value="p.key">
+                  {{ p.label[lang] }} · {{ p.width }}×{{ p.height }}
+                </option>
+              </select>
+            </div>
+            <div class="mrow">
               <label>{{ t('video_width') }}</label>
-              <input type="number" v-model.number="exportW" min="128" max="1920" step="64" />
+              <input type="number" v-model.number="exportW" min="128" max="3840" step="64" />
             </div>
             <div class="mrow">
               <label>{{ t('video_height') }}</label>
-              <input type="number" v-model.number="exportH" min="128" max="1080" step="64" />
+              <input type="number" v-model.number="exportH" min="128" max="2560" step="64" />
             </div>
           </div>
           <div class="modal-footer">
@@ -539,6 +590,7 @@ async function runExport() {
 }
 
 .group.transition-group { min-width: 200px; }
+.group.export-preset-group { min-width: 190px; }
 
 .theta-row {
   display: flex;

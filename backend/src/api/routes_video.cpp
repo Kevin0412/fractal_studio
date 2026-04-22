@@ -49,8 +49,28 @@ namespace fsd {
 namespace {
 
 constexpr double TAU     = 6.283185307179586;
+constexpr double PI      = 3.141592653589793;
 constexpr double LN_TWO  = 0.6931471805599453;
 constexpr double LN_FOUR = 1.3862943611198906;
+
+int roundUpToMultiple(int value, int multiple) {
+    if (multiple <= 1) return value;
+    const int rem = value % multiple;
+    return rem == 0 ? value : value + (multiple - rem);
+}
+
+int derivedMinStripWidth(int W, int H) {
+    const double diag = std::sqrt(static_cast<double>(W) * static_cast<double>(W)
+                                + static_cast<double>(H) * static_cast<double>(H));
+    const int minWidth = static_cast<int>(std::ceil(diag * PI));
+    return roundUpToMultiple(minWidth, 8);
+}
+
+int resolveStripWidth(const Json& j, int W, int H) {
+    const int derived = derivedMinStripWidth(W, H);
+    const int requested = j.value("widthS", derived);
+    return roundUpToMultiple(std::max(requested, derived), 8);
+}
 
 // ─── Julia-aware ln-strip renderer ───────────────────────────────────────────
 // When julia=true, z₀ = center + e^k·e^(iθ) and c = fixed (juliaRe+juliaIm·i).
@@ -120,10 +140,120 @@ void dispatch_ln_strip_full(
 #undef CASE
 }
 
+struct CanonicalPixel {
+    int ax;
+    int ay;
+    double ux;
+    double vy;
+    double r2;
+    double th;
+};
+
+CanonicalPixel canonicalPixelForSample(int x, int y, int W, int H, double aspect) {
+    const double ux0 = (2.0 * (x + 0.5) / W - 1.0) * aspect;
+    const double vy0 = -(2.0 * (y + 0.5) / H - 1.0);
+    const double axu = std::abs(ux0);
+    const double ayv = std::abs(vy0);
+    const double ux = std::max(axu, ayv);
+    const double vy = std::min(axu, ayv);
+    return {
+        std::max(x, W - 1 - x),
+        std::max(y, H - 1 - y),
+        ux,
+        vy,
+        ux * ux + vy * vy,
+        std::atan2(vy, ux),
+    };
+}
+
+std::vector<cv::Point> symmetricPoints(int x, int y, int W, int H) {
+    std::vector<cv::Point> pts;
+    pts.reserve(8);
+    const int xs[2] = {x, W - 1 - x};
+    const int ys[2] = {y, H - 1 - y};
+    for (int ix = 0; ix < 2; ++ix) {
+        for (int iy = 0; iy < 2; ++iy) {
+            const cv::Point p1(xs[ix], ys[iy]);
+            const cv::Point p2(ys[iy], xs[ix]);
+            bool seen = false;
+            for (const auto& p : pts) {
+                if (p == p1) { seen = true; break; }
+            }
+            if (!seen && p1.x >= 0 && p1.x < W && p1.y >= 0 && p1.y < H) pts.push_back(p1);
+            seen = false;
+            for (const auto& p : pts) {
+                if (p == p2) { seen = true; break; }
+            }
+            if (!seen && p2.x >= 0 && p2.x < W && p2.y >= 0 && p2.y < H) pts.push_back(p2);
+        }
+    }
+    return pts;
+}
+
+void renderWarpFrame8Way(
+    const cv::Mat& stripWrap,
+    const cv::Mat& finalImg,
+    int W, int H,
+    double kTop, double kTop_end,
+    cv::Mat& frame
+) {
+    const double aspect = static_cast<double>(W) / static_cast<double>(H);
+    const int stripH    = stripWrap.rows;
+    const int s         = stripWrap.cols - 1;
+    const double S      = std::exp(kTop - kTop_end);
+
+    for (int y = 0; y < H; ++y) {
+        uint8_t* dp = frame.ptr<uint8_t>(y);
+        for (int x = 0; x < W; ++x) {
+            dp[3*x+0] = 0;
+            dp[3*x+1] = 0;
+            dp[3*x+2] = 0;
+        }
+    }
+
+    const int xMax = (W + 1) / 2;
+    const int yMax = (H + 1) / 2;
+    for (int y = 0; y < yMax; ++y) {
+        for (int x = 0; x < xMax; ++x) {
+            const auto cp = canonicalPixelForSample(x, y, W, H, aspect);
+            const auto pts = symmetricPoints(x, y, W, H);
+
+            cv::Vec3b color(0, 0, 0);
+            bool fromStrip = false;
+            if (cp.r2 > 1e-30) {
+                const double lnR = 0.5 * std::log(cp.r2);
+                const double row = (LN_FOUR - kTop - lnR) * s / TAU;
+                const double col = cp.th / TAU * s;
+                if (row >= 0.0 && row < static_cast<double>(stripH) - 1.0) {
+                    cv::Mat mapX(1, 1, CV_32FC1), mapY(1, 1, CV_32FC1), sampled(1, 1, CV_8UC3);
+                    mapX.at<float>(0, 0) = static_cast<float>(col);
+                    mapY.at<float>(0, 0) = static_cast<float>(row);
+                    cv::remap(stripWrap, sampled, mapX, mapY, cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(0,0,0));
+                    color = sampled.at<cv::Vec3b>(0, 0);
+                    fromStrip = true;
+                }
+            }
+            if (!fromStrip) {
+                const double fu = cp.ux * S;
+                const double fv = cp.vy * S;
+                const double fx = (fu / aspect * 0.5 + 0.5) * W;
+                const double fy = (-fv * 0.5 + 0.5) * H;
+                cv::Mat mapX(1, 1, CV_32FC1), mapY(1, 1, CV_32FC1), sampled(1, 1, CV_8UC3);
+                mapX.at<float>(0, 0) = static_cast<float>(fx);
+                mapY.at<float>(0, 0) = static_cast<float>(fy);
+                cv::remap(finalImg, sampled, mapX, mapY, cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(0,0,0));
+                color = sampled.at<cv::Vec3b>(0, 0);
+            }
+
+            for (const auto& p : pts) {
+                cv::Vec3b& dst = frame.at<cv::Vec3b>(p.y, p.x);
+                dst = color;
+            }
+        }
+    }
+}
+
 // ─── Shared video generation helper ──────────────────────────────────────────
-// strip: ln-map BGR image (t × s).
-// finalImg: cartesian BGR image at kTop_end, same output size (H × W).
-// Returns the path actually written to.
 static std::string generateZoomVideo(
     const cv::Mat& strip,
     const cv::Mat& finalImg,
@@ -131,13 +261,6 @@ static std::string generateZoomVideo(
     double kTop_start, double kTop_end, double depthOctaves,
     const std::filesystem::path& outDir, const std::string& baseName
 ) {
-    const double aspect = static_cast<double>(W) / static_cast<double>(H);
-    const int stripW    = strip.cols;
-    const int stripH    = strip.rows;
-    const int s         = stripW;
-
-    // Extend strip by 1 column (wrap col 0 → col s) so bilinear interpolation
-    // near θ=0/2π never falls off the edge into BORDER_CONSTANT black.
     cv::Mat stripWrap;
     cv::copyMakeBorder(strip, stripWrap, 0, 0, 0, 1, cv::BORDER_WRAP);
 
@@ -146,101 +269,22 @@ static std::string generateZoomVideo(
     cv::VideoWriter writer(mp4.string(), fourcc, static_cast<double>(fps), cv::Size(W, H), true);
     if (!writer.isOpened()) {
         const std::filesystem::path avi = outDir / (baseName + ".avi");
-        writer.open(avi.string(), cv::VideoWriter::fourcc('M','J','P','G'),
-                    static_cast<double>(fps), cv::Size(W, H), true);
+        writer.open(avi.string(), cv::VideoWriter::fourcc('M','J','P','G'), static_cast<double>(fps), cv::Size(W, H), true);
         if (!writer.isOpened()) throw std::runtime_error("VideoWriter failed");
-        // continue with avi path; update variable via ref not possible here, so fall through
-    }
-
-    std::vector<float> pixUx(static_cast<size_t>(W) * H);
-    std::vector<float> pixVy(static_cast<size_t>(W) * H);
-    std::vector<float> pixR2(static_cast<size_t>(W) * H);
-    std::vector<float> pixTh(static_cast<size_t>(W) * H);
-    for (int y = 0; y < H; y++) {
-        const double vy = -(2.0 * (y + 0.5) / H - 1.0);
-        for (int x = 0; x < W; x++) {
-            const double ux = (2.0 * (x + 0.5) / W - 1.0) * aspect;
-            const double r2 = ux * ux + vy * vy;
-            double th = std::atan2(vy, ux);
-            if (th < 0.0) th += TAU;
-            const size_t idx = static_cast<size_t>(y) * W + x;
-            pixUx[idx] = static_cast<float>(ux);
-            pixVy[idx] = static_cast<float>(vy);
-            pixR2[idx] = static_cast<float>(r2);
-            pixTh[idx] = static_cast<float>(th);
-        }
     }
 
     cv::Mat frame(H, W, CV_8UC3);
-    cv::Mat stripFrame(H, W, CV_8UC3);
-    cv::Mat finalFrame(H, W, CV_8UC3);
-    cv::Mat mapX(H, W, CV_32FC1);
-    cv::Mat mapY(H, W, CV_32FC1);
-    cv::Mat fmapX(H, W, CV_32FC1);
-    cv::Mat fmapY(H, W, CV_32FC1);
-    std::vector<float> useStrip(static_cast<size_t>(W) * H, 0.0f);
-
     for (int f = 0; f < frameCount; f++) {
         const double tNorm = static_cast<double>(f) / std::max(1, frameCount - 1);
         const double kTop  = kTop_start - tNorm * depthOctaves * LN_TWO;
-        const double S     = std::exp(kTop - kTop_end);
-
-        for (int y = 0; y < H; y++) {
-            for (int x = 0; x < W; x++) {
-                const size_t idx = static_cast<size_t>(y) * W + x;
-                const double r2  = static_cast<double>(pixR2[idx]);
-                const double th  = static_cast<double>(pixTh[idx]);
-                const double ux  = static_cast<double>(pixUx[idx]);
-                const double vy_ = static_cast<double>(pixVy[idx]);
-
-                double row = -1.0;
-                if (r2 > 1e-30) {
-                    const double lnR = 0.5 * std::log(r2);
-                    row = (LN_FOUR - kTop - lnR) * s / TAU;
-                }
-                const double col = th / TAU * s;
-
-                if (row >= 0.0 && row < static_cast<double>(stripH) - 1.0) {
-                    mapX.at<float>(y, x) = static_cast<float>(col);
-                    mapY.at<float>(y, x) = static_cast<float>(row);
-                    useStrip[idx] = 1.0f;
-                } else {
-                    mapX.at<float>(y, x) = -1.0f;
-                    mapY.at<float>(y, x) = -1.0f;
-                    useStrip[idx] = 0.0f;
-                }
-
-                const double fu = ux * S;
-                const double fv = vy_ * S;
-                fmapX.at<float>(y, x) = static_cast<float>((fu / aspect * 0.5 + 0.5) * W);
-                fmapY.at<float>(y, x) = static_cast<float>((-fv * 0.5 + 0.5) * H);
-            }
-        }
-
-        cv::remap(stripWrap, stripFrame, mapX,  mapY,  cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(0,0,0));
-        cv::remap(finalImg,  finalFrame, fmapX, fmapY, cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(0,0,0));
-
-        for (int y = 0; y < H; y++) {
-            const uint8_t* sp = stripFrame.ptr<uint8_t>(y);
-            const uint8_t* fp = finalFrame.ptr<uint8_t>(y);
-            uint8_t*       dp = frame.ptr<uint8_t>(y);
-            for (int x = 0; x < W; x++) {
-                const size_t idx = static_cast<size_t>(y) * W + x;
-                if (useStrip[idx] > 0.5f) {
-                    dp[3*x]=sp[3*x]; dp[3*x+1]=sp[3*x+1]; dp[3*x+2]=sp[3*x+2];
-                } else {
-                    dp[3*x]=fp[3*x]; dp[3*x+1]=fp[3*x+1]; dp[3*x+2]=fp[3*x+2];
-                }
-            }
-        }
+        renderWarpFrame8Way(stripWrap, finalImg, W, H, kTop, kTop_end, frame);
         writer.write(frame);
     }
     writer.release();
-    // Return whichever path actually exists
     if (std::filesystem::exists(mp4)) return mp4.string();
     const std::filesystem::path avi = outDir / (baseName + ".avi");
     if (std::filesystem::exists(avi)) return avi.string();
-    return mp4.string();   // best guess
+    return mp4.string();
 }
 
 struct LnMapLookup {
@@ -362,116 +406,13 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
             mp4Path = outPath.string();
         }
 
-        // ── Pre-compute per-pixel normalised coords ───────────────────────────
-        // ux ∈ [-aspect, aspect],  vy ∈ [-1, +1]  (vy positive = up)
-        std::vector<float> pixUx(static_cast<size_t>(W) * H);
-        std::vector<float> pixVy(static_cast<size_t>(W) * H);
-        std::vector<float> pixR2(static_cast<size_t>(W) * H);
-        std::vector<float> pixTh(static_cast<size_t>(W) * H);
-        for (int y = 0; y < H; y++) {
-            const double vy = -(2.0 * (y + 0.5) / H - 1.0);
-            for (int x = 0; x < W; x++) {
-                const double ux = (2.0 * (x + 0.5) / W - 1.0) * aspect;
-                const double r2 = ux * ux + vy * vy;
-                double th = std::atan2(vy, ux);
-                if (th < 0.0) th += TAU;
-                const size_t idx = static_cast<size_t>(y) * W + x;
-                pixUx[idx] = static_cast<float>(ux);
-                pixVy[idx] = static_cast<float>(vy);
-                pixR2[idx] = static_cast<float>(r2);
-                pixTh[idx] = static_cast<float>(th);
-            }
-        }
-
-        // Extend strip by 1 column for seamless θ=0/2π bilinear wrapping.
         cv::Mat stripWrap;
         cv::copyMakeBorder(strip, stripWrap, 0, 0, 0, 1, cv::BORDER_WRAP);
-
         cv::Mat frame(H, W, CV_8UC3);
-        cv::Mat stripFrame(H, W, CV_8UC3);   // sampled from ln-map strip
-        cv::Mat finalFrame(H, W, CV_8UC3);   // sampled from final cartesian image
-        cv::Mat mapX(H, W, CV_32FC1);
-        cv::Mat mapY(H, W, CV_32FC1);
-        cv::Mat fmapX(H, W, CV_32FC1);
-        cv::Mat fmapY(H, W, CV_32FC1);
-        // Per-pixel flag: 1.0 = use strip, 0.0 = use final image
-        std::vector<float> useStrip(static_cast<size_t>(W) * H, 0.0f);
-
         for (int f = 0; f < frameCount; f++) {
             const double t = static_cast<double>(f) / std::max(1, frameCount - 1);
             const double kTop = kTop_start - t * depthOctaves * LN_TWO;
-
-            // Scale of current frame relative to final image.
-            // A pixel at norm-distance 1 is at world-radius e^kTop.
-            // In the final image the same world-radius is at norm-distance e^(kTop-kTop_end).
-            const double S = std::exp(kTop - kTop_end);  // > 1 early, = 1 at last frame
-
-            // Build strip and final-image remap tables.
-            for (int y = 0; y < H; y++) {
-                for (int x = 0; x < W; x++) {
-                    const size_t idx = static_cast<size_t>(y) * W + x;
-                    const double r2  = static_cast<double>(pixR2[idx]);
-                    const double th  = static_cast<double>(pixTh[idx]);
-                    const double ux  = static_cast<double>(pixUx[idx]);
-                    const double vy_ = static_cast<double>(pixVy[idx]);
-
-                    // ── Strip lookup ──
-                    double row = -1.0;
-                    if (r2 > 1e-30) {
-                        const double lnR_screen = 0.5 * std::log(r2);
-                        row = (LN_FOUR - kTop - lnR_screen) * s / TAU;
-                    }
-                    // column wraps (angular axis)
-                    const double col = th / TAU * s;
-
-                    if (row >= 0.0 && row < static_cast<double>(stripH) - 1.0) {
-                        mapX.at<float>(y, x) = static_cast<float>(col);
-                        mapY.at<float>(y, x) = static_cast<float>(row);
-                        useStrip[idx] = 1.0f;
-                    } else {
-                        mapX.at<float>(y, x) = -1.0f;  // out of strip → black via BORDER_CONSTANT
-                        mapY.at<float>(y, x) = -1.0f;
-                        useStrip[idx] = 0.0f;
-                    }
-
-                    // ── Final-image lookup ──
-                    // The pixel at (ux, vy) in the current frame is at normalised
-                    // position (ux*S, vy*S) in the final image.
-                    const double fu = ux * S;  // in [-aspect*S, +aspect*S]
-                    const double fv = vy_ * S; // in [-S, +S]
-                    // Map to final-image pixel coords: fu/aspect ∈ [-1,1] → [0,W]
-                    const double fx = (fu / aspect * 0.5 + 0.5) * W;
-                    const double fy = (-fv * 0.5 + 0.5) * H;
-                    fmapX.at<float>(y, x) = static_cast<float>(fx);
-                    fmapY.at<float>(y, x) = static_cast<float>(fy);
-                }
-            }
-
-            // Remap strip (use stripWrap — col s wraps to col 0, no seam at θ=0).
-            cv::remap(stripWrap, stripFrame, mapX,  mapY,
-                      cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(0,0,0));
-            // Remap final image (BORDER_CONSTANT → black outside).
-            cv::remap(finalImg,  finalFrame, fmapX, fmapY,
-                      cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(0,0,0));
-
-            // Composite: strip takes priority where its row was valid.
-            for (int y = 0; y < H; y++) {
-                const uint8_t* sp = stripFrame.ptr<uint8_t>(y);
-                const uint8_t* fp = finalFrame.ptr<uint8_t>(y);
-                uint8_t*       dp = frame.ptr<uint8_t>(y);
-                for (int x = 0; x < W; x++) {
-                    const size_t idx = static_cast<size_t>(y) * W + x;
-                    if (useStrip[idx] > 0.5f) {
-                        dp[3*x+0] = sp[3*x+0];
-                        dp[3*x+1] = sp[3*x+1];
-                        dp[3*x+2] = sp[3*x+2];
-                    } else {
-                        dp[3*x+0] = fp[3*x+0];
-                        dp[3*x+1] = fp[3*x+1];
-                        dp[3*x+2] = fp[3*x+2];
-                    }
-                }
-            }
+            renderWarpFrame8Way(stripWrap, finalImg, W, H, kTop, kTop_end, frame);
             writer.write(frame);
         }
 
@@ -538,9 +479,7 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
     const double durSec     = j.value("durationSec", 8.0);
     const int    W          = j.value("width",     720);
     const int    H          = j.value("height",    720);
-    // Strip width defaults to video width if not specified; ensure it's ≥ video width
-    // so bilinear sampling from strip to output pixels doesn't lose resolution.
-    const int    s          = std::max(j.value("widthS", W), W);
+    const int    s          = resolveStripWidth(j, W, H);
 
     if (s < 128 || s > 16384)               throw std::runtime_error("invalid widthS (128..16384)");
     if (depth < 1.0 || depth > 80.0)        throw std::runtime_error("invalid depthOctaves (1..80)");

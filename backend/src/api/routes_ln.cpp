@@ -39,8 +39,22 @@ namespace fsd {
 namespace {
 
 constexpr double TAU     = 6.283185307179586;
+constexpr double PI      = 3.141592653589793;
 constexpr double LN_TWO  = 0.6931471805599453;
 constexpr double LN_FOUR = 1.3862943611198906;
+
+int roundUpToMultiple(int value, int multiple) {
+    if (multiple <= 1) return value;
+    const int rem = value % multiple;
+    return rem == 0 ? value : value + (multiple - rem);
+}
+
+int derivedMinStripWidth(int W, int H) {
+    const double diag = std::sqrt(static_cast<double>(W) * static_cast<double>(W)
+                                + static_cast<double>(H) * static_cast<double>(H));
+    const int minWidth = static_cast<int>(std::ceil(diag * PI));
+    return roundUpToMultiple(minWidth, 8);
+}
 
 template <compute::Variant V>
 void render_ln_strip(
@@ -114,7 +128,13 @@ std::string lnMapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& r
 
     const double cr            = j.value("centerRe", 0.0);
     const double ci            = j.value("centerIm", 0.0);
-    const int    s             = j.value("widthS",   1920);
+    const int    outW          = j.value("width", 0);
+    const int    outH          = j.value("height", 0);
+    int s = j.value("widthS", 1920);
+    if (outW > 0 && outH > 0) {
+        s = std::max(s, derivedMinStripWidth(outW, outH));
+        s = roundUpToMultiple(s, 8);
+    }
     const double depthOctaves  = j.value("depthOctaves", 40.0);
     const std::string variantStr  = j.value("variant",  std::string("mandelbrot"));
     const std::string colormapStr = j.value("colorMap", std::string("classic_cos"));
