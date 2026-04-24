@@ -30,6 +30,8 @@ const txCenterX  = ref(0.0)
 const txCenterY  = ref(0.0)
 const txCenterZ  = ref(0.0)
 const txExtent   = ref(2.0)
+const txFrom     = ref<string>('mandelbrot')
+const txTo       = ref<string>('burning_ship')
 
 // State
 const hsFieldData  = ref<HsFieldResponse | null>(null)
@@ -41,6 +43,7 @@ const info         = ref('')
 const error        = ref('')
 
 const HS_METRICS: HsStage[] = ['min_abs', 'max_abs', 'envelope', 'min_pairwise_dist']
+const AXIS_TRANSITION_VARIANTS = VARIANTS.slice(0, 10)
 
 const HS_METRIC_LABELS: Record<HsStage, { en: string; zh: string }> = {
   min_abs:            { en: 'Min abs(z) (HS-base)',       zh: '最小 abs(z)（HS 基础）' },
@@ -130,10 +133,12 @@ async function computeTransitionVoxels() {
       resolution: txRes.value,
       iso:        txIso.value,
       iterations: txIter.value,
+      transitionFrom: txFrom.value,
+      transitionTo:   txTo.value,
     })
     voxelData.value = r
     stlUrl.value = r.stlUrl ?? null
-    info.value = `${r.faceCount.toLocaleString()} faces · ${r.resolution}³ grid · ${r.generatedMs.toFixed(0)}ms`
+    info.value = `${(r.voxelCount ?? 0).toLocaleString()} voxels · ${r.faceCount.toLocaleString()} faces · ${r.resolution}³ grid · ${r.generatedMs.toFixed(0)}ms`
   } catch (e: any) {
     error.value = e?.message ?? String(e)
     info.value  = ''
@@ -164,10 +169,12 @@ async function exportTxStl() {
       resolution: txRes.value,
       iso:        txIso.value,
       iterations: txIter.value,
+      transitionFrom: txFrom.value,
+      transitionTo:   txTo.value,
     })
     voxelData.value = r
     stlUrl.value = r.stlUrl ?? null
-    info.value = `${r.faceCount.toLocaleString()} faces · ${r.resolution}³ grid · ${r.generatedMs.toFixed(0)}ms`
+    info.value = `${(r.voxelCount ?? 0).toLocaleString()} voxels · ${r.faceCount.toLocaleString()} faces · ${r.resolution}³ grid · ${r.generatedMs.toFixed(0)}ms`
   } catch (e: any) {
     error.value = e?.message ?? String(e)
   } finally {
@@ -274,6 +281,18 @@ function onHsZoom(factor: number) {
 
       <!-- Transition params (voxel only) -->
       <template v-else>
+        <div class="group">
+          <label>{{ t('variant') }} A</label>
+          <select v-model="txFrom">
+            <option v-for="v in AXIS_TRANSITION_VARIANTS" :key="'tx-from-' + v" :value="v">{{ VARIANT_LABELS[v][lang] }}</option>
+          </select>
+        </div>
+        <div class="group">
+          <label>{{ t('variant') }} B</label>
+          <select v-model="txTo">
+            <option v-for="v in AXIS_TRANSITION_VARIANTS" :key="'tx-to-' + v" :value="v">{{ VARIANT_LABELS[v][lang] }}</option>
+          </select>
+        </div>
         <div class="group">
           <label>{{ t('three_iso') }} <span class="dim">(core depth)</span></label>
           <input type="range" min="0.05" max="0.48" step="0.01" v-model.number="txIso" />

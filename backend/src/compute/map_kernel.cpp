@@ -261,8 +261,10 @@ static MapStats render_custom_openmp(const MapParams& p, cv::Mat& out) {
                 double nr = 0.0, ni = 0.0;
                 fn(zr, zi, cr, ci, &nr, &ni);
                 zr = nr; zi = ni;
-                norm2 = zr * zr + zi * zi;
-                if (norm2 > bail2) break;
+                const bool finite_z = std::isfinite(zr) && std::isfinite(zi);
+                norm2 = finite_z ? (zr * zr + zi * zi)
+                                 : std::numeric_limits<double>::infinity();
+                if (!finite_z || norm2 > bail2) break;
             }
 
             const bool escaped = (norm2 > bail2);
@@ -326,8 +328,10 @@ static MapStats render_custom_field_openmp(const MapParams& p, FieldOutput& fo) 
                 double nr = 0.0, ni = 0.0;
                 fn(zr, zi, cr, ci, &nr, &ni);
                 zr = nr; zi = ni;
-                norm2 = zr * zr + zi * zi;
-                if (norm2 > bail2) break;
+                const bool finite_z = std::isfinite(zr) && std::isfinite(zi);
+                norm2 = finite_z ? (zr * zr + zi * zi)
+                                 : std::numeric_limits<double>::infinity();
+                if (!finite_z || norm2 > bail2) break;
             }
 
             const bool escaped = (norm2 > bail2);

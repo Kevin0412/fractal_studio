@@ -15,6 +15,7 @@
 #include "../compute/escape_time.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -48,14 +49,17 @@ std::string hsMeshRoute(const std::filesystem::path&, JobRunner& runner, const s
     p.scale     = j.value("scale",       3.0);
     p.resolution = j.value("resolution", 192);
     p.iterations = j.value("iterations", 512);
-    p.bailout    = j.value("bailout",    2.0);
     p.heightScale = j.value("heightScale", 0.6);
     p.heightClamp = j.value("heightClamp", 2.0);
     p.variant = parseVariant(j.value("variant", std::string("mandelbrot")));
+    p.bailout = j.contains("bailout") && !j["bailout"].is_null()
+        ? j.value("bailout", 2.0)
+        : compute::variant_default_bailout(p.variant);
     p.metric  = parseMetric (j.value("metric",  std::string("min_abs")));
 
     if (p.resolution < 8 || p.resolution > 4096) throw std::runtime_error("invalid resolution");
     if (p.iterations < 1 || p.iterations > 1000000) throw std::runtime_error("invalid iterations");
+    if (!(p.bailout > 0.0) || !std::isfinite(p.bailout)) throw std::runtime_error("invalid bailout");
 
     auto run = runner.createRun("hs-mesh", body);
     runner.setStatus(run.id, "running");
@@ -116,13 +120,16 @@ std::string hsFieldRoute(const std::filesystem::path&, JobRunner& runner, const 
     p.scale       = j.value("scale",         3.0);
     p.resolution  = j.value("resolution",   192);
     p.iterations  = j.value("iterations",   512);
-    p.bailout     = j.value("bailout",       2.0);
     p.heightClamp = j.value("heightClamp",   2.0);
     p.variant = parseVariant(j.value("variant", std::string("mandelbrot")));
+    p.bailout = j.contains("bailout") && !j["bailout"].is_null()
+        ? j.value("bailout", 2.0)
+        : compute::variant_default_bailout(p.variant);
     p.metric  = parseMetric (j.value("metric",  std::string("min_abs")));
 
     if (p.resolution < 8 || p.resolution > 4096) throw std::runtime_error("invalid resolution");
     if (p.iterations < 1 || p.iterations > 1000000) throw std::runtime_error("invalid iterations");
+    if (!(p.bailout > 0.0) || !std::isfinite(p.bailout)) throw std::runtime_error("invalid bailout");
 
     auto run = runner.createRun("hs-field", body);
     runner.setStatus(run.id, "running");
@@ -187,10 +194,13 @@ std::string transitionMeshRoute(const std::filesystem::path&, JobRunner& runner,
     p.resolution = j.value("resolution", 96);
     p.iterations = j.value("iterations", 256);
     p.bailout   = j.value("bailout",   2.0);
+    p.from_variant = parseVariant(j.value("transitionFrom", std::string("mandelbrot")));
+    p.to_variant   = parseVariant(j.value("transitionTo",   std::string("burning_ship")));
     const double iso = j.value("iso",  0.5);
 
     if (p.resolution < 8 || p.resolution > 1024) throw std::runtime_error("invalid resolution");
     if (p.iterations < 1 || p.iterations > 10000) throw std::runtime_error("invalid iterations");
+    if (!(p.bailout > 0.0) || !std::isfinite(p.bailout)) throw std::runtime_error("invalid bailout");
 
     auto run = runner.createRun("transition-mesh", body);
     runner.setStatus(run.id, "running");
@@ -266,10 +276,13 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
     p.resolution = j.value("resolution", 64);
     p.iterations = j.value("iterations", 128);
     p.bailout    = j.value("bailout",    2.0);
+    p.from_variant = parseVariant(j.value("transitionFrom", std::string("mandelbrot")));
+    p.to_variant   = parseVariant(j.value("transitionTo",   std::string("burning_ship")));
     const float iso = static_cast<float>(j.value("iso", 0.48));
 
     if (p.resolution < 4 || p.resolution > 1024) throw std::runtime_error("resolution out of range [4,1024]");
     if (p.iterations < 1 || p.iterations > 10000) throw std::runtime_error("invalid iterations");
+    if (!(p.bailout > 0.0) || !std::isfinite(p.bailout)) throw std::runtime_error("invalid bailout");
 
     auto run = runner.createRun("transition-voxels", body);
     runner.setStatus(run.id, "running");
@@ -291,10 +304,12 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
     // Binary inside/outside volume + per-voxel depth byte
     std::vector<uint8_t> vol(static_cast<size_t>(N) * N * N, 0);
     std::vector<uint8_t> dep(static_cast<size_t>(N) * N * N, 0);
+    size_t voxelCount = 0;
     for (int i = 0; i < N * N * N; ++i) {
         const float v = field.data[i];
         if (v < iso) {
             vol[i] = 1;
+            voxelCount++;
             dep[i] = static_cast<uint8_t>(1 + static_cast<int>(v / iso * 254.0f));
         }
     }
@@ -401,6 +416,7 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
         {"status",      "completed"},
         {"resolution",  N},
         {"extent",      p.extent},
+        {"voxelCount",  voxelCount},
         {"faceCount",   faceCount},
         {"generatedMs", elapsed},
         {"stlArtifactId", stlId},

@@ -139,7 +139,6 @@ std::string lnMapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& r
     const std::string variantStr  = j.value("variant",  std::string("mandelbrot"));
     const std::string colormapStr = j.value("colorMap", std::string("classic_cos"));
     const int iters            = j.value("iterations", 4096);
-    const double bailout       = j.value("bailout",    2.0);
 
     if (s < 128 || s > 8192)               throw std::runtime_error("invalid widthS (128..8192)");
     if (depthOctaves < 1.0 || depthOctaves > 80.0) throw std::runtime_error("invalid depthOctaves (1..80)");
@@ -151,6 +150,10 @@ std::string lnMapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& r
 
     compute::Variant v;
     if (!compute::variant_from_name(variantStr.c_str(), v)) v = compute::Variant::Mandelbrot;
+    const double bailout = j.contains("bailout") && !j["bailout"].is_null()
+        ? j.value("bailout", 2.0)
+        : compute::variant_default_bailout(v);
+    if (!(bailout > 0.0) || !std::isfinite(bailout)) throw std::runtime_error("invalid bailout");
     compute::Colormap cm;
     if (!compute::colormap_from_name(colormapStr.c_str(), cm)) cm = compute::Colormap::ClassicCos;
 
@@ -184,6 +187,7 @@ std::string lnMapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& r
             {"variant",      variantStr},
             {"colorMap",     colormapStr},
             {"iterations",   iters},
+            {"bailout",      bailout},
         };
         const std::filesystem::path sidecarPath =
             std::filesystem::path(run.outputDir) / "ln_map.json";

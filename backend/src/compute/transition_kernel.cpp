@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 
 namespace fsd::compute {
 
@@ -32,6 +33,7 @@ struct OrbitPt { double x, y, z; };
 inline TransitionIterResult iterate_transition(
     double x0, double y0, double z0,
     int max_iter, double bail2,
+    Variant from_variant, Variant to_variant,
     Metric metric, int pairwise_cap,
     std::vector<OrbitPt>& orbit
 ) {
@@ -53,11 +55,18 @@ inline TransitionIterResult iterate_transition(
     }
 
     for (int i = 0; i < max_iter; i++) {
-        const double nx = x*x - y*y - z*z + x0;
-        const double ny = 2.0 * x * y + y0;
-        const double nz = 2.0 * std::fabs(x * z) + z0;
+        const double x2 = x * x;
+        const double nx =
+            variant_transition_real_projection(from_variant, x2, y * y)
+          + variant_transition_real_projection(to_variant,   x2, z * z)
+          - x2 + x0;
+        const double ny = variant_transition_imag_projection(from_variant, x, y) + y0;
+        const double nz = variant_transition_imag_projection(to_variant,   x, z) + z0;
         x = nx; y = ny; z = nz;
-        const double n2 = x*x + y*y + z*z;
+        const bool finite_xyz = std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
+        const double n2 = finite_xyz
+            ? (x*x + y*y + z*z)
+            : std::numeric_limits<double>::infinity();
         if (n2 < mn) mn = n2;
         if (n2 > mx) mx = n2;
 
@@ -65,7 +74,7 @@ inline TransitionIterResult iterate_transition(
             orbit.push_back({x, y, z});
         }
 
-        if (n2 > bail2) {
+        if (!finite_xyz || n2 > bail2) {
             r.iter = i;
             r.norm = n2;
             r.escaped = true;
@@ -101,6 +110,11 @@ inline TransitionIterResult iterate_transition(
 } // namespace
 
 MapStats render_transition(const TransitionParams& p, cv::Mat& out) {
+    if (!variant_supports_axis_transition(p.from_variant) ||
+        !variant_supports_axis_transition(p.to_variant)) {
+        throw std::runtime_error("transition variants must be quadratic Mandelbrot-family variants");
+    }
+
     if (out.empty() || out.rows != p.height || out.cols != p.width || out.type() != CV_8UC3) {
         out.create(p.height, p.width, CV_8UC3);
     }
@@ -136,6 +150,7 @@ MapStats render_transition(const TransitionParams& p, cv::Mat& out) {
 
             const TransitionIterResult r =
                 iterate_transition(x0, y0, z0, p.iterations, bail2,
+                                   p.from_variant, p.to_variant,
                                    p.metric, p.pairwise_cap, orbit);
 
             uint8_t* px = row + 3 * x;

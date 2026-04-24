@@ -16,6 +16,8 @@ const props = defineProps<{
   colorMap: ColorMap
   smooth?: boolean
   transitionTheta: number | null
+  transitionFrom?: string
+  transitionTo?: string
   julia?: boolean
   juliaRe?: number
   juliaIm?: number
@@ -67,6 +69,8 @@ async function renderFrame() {
     juliaIm:    props.juliaIm ?? 0,
   }
   if (props.transitionTheta !== null) (req as any).transitionTheta = props.transitionTheta
+  if (props.transitionFrom)           (req as any).transitionFrom  = props.transitionFrom
+  if (props.transitionTo)             (req as any).transitionTo    = props.transitionTo
   if (props.engine)                   (req as any).engine           = props.engine
   if (props.scalarType)               (req as any).scalarType       = props.scalarType
 
@@ -108,6 +112,7 @@ watch(() => [
   props.variant, props.metric, props.colorMap, props.smooth,
   props.iterations, props.julia, props.juliaRe, props.juliaIm,
   props.engine, props.scalarType, props.transitionTheta,
+  props.transitionFrom, props.transitionTo,
   domW.value, domH.value,
 ], () => scheduleRender())
 

@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -28,6 +29,7 @@
 #include <iomanip>
 #include <map>
 #include <mutex>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -132,6 +134,48 @@ std::filesystem::path soPath(const std::filesystem::path& repoRoot, const std::s
 
 std::filesystem::path cppPath(const std::string& hash) {
     return std::filesystem::temp_directory_path() / ("fsd_custom_" + hash + ".cpp");
+}
+
+std::string formulaKey(std::string s) {
+    std::string out;
+    out.reserve(s.size());
+    for (unsigned char ch : s) {
+        if (!std::isspace(ch)) out.push_back(static_cast<char>(std::tolower(ch)));
+    }
+    return out;
+}
+
+double multibrotBailoutForPower(int power) {
+    if (power < 2) return 2.0;
+    return std::pow(2.0, 1.0 / static_cast<double>(power - 1));
+}
+
+double inferFormulaBailout(const std::string& formula) {
+    const std::string s = formulaKey(formula);
+    if (s == "z*z+c") return 2.0;
+    if (s == "z*z*z+c") return multibrotBailoutForPower(3);
+
+    const std::string prefix = "z^";
+    const std::string suffix = "+c";
+    if (s.rfind(prefix, 0) == 0 && s.size() > prefix.size() + suffix.size()
+        && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0) {
+        const std::string exp = s.substr(prefix.size(), s.size() - prefix.size() - suffix.size());
+        if (!exp.empty() && std::all_of(exp.begin(), exp.end(), [](unsigned char ch) { return std::isdigit(ch); })) {
+            return multibrotBailoutForPower(std::stoi(exp));
+        }
+    }
+
+    const std::string powPrefix = "pow(z,";
+    const std::string powSuffix = ")+c";
+    if (s.rfind(powPrefix, 0) == 0 && s.size() > powPrefix.size() + powSuffix.size()
+        && s.compare(s.size() - powSuffix.size(), powSuffix.size(), powSuffix) == 0) {
+        const std::string exp = s.substr(powPrefix.size(), s.size() - powPrefix.size() - powSuffix.size());
+        if (!exp.empty() && std::all_of(exp.begin(), exp.end(), [](unsigned char ch) { return std::isdigit(ch); })) {
+            return multibrotBailoutForPower(std::stoi(exp));
+        }
+    }
+
+    return 2.0;
 }
 
 // ─── Compile a formula into a shared library ──────────────────────────────────
@@ -354,6 +398,18 @@ void* lookupCustomFn(const std::filesystem::path& repoRoot, const std::string& h
     return p;
 }
 
+double lookupCustomBailout(const std::filesystem::path& repoRoot, const std::string& hash) {
+    std::lock_guard<std::mutex> lock(g_mu);
+    ensureDbLoadedLocked(repoRoot);
+
+    Db db(repoRoot / "fractal_studio.db");
+    CustomVariantRecord rec;
+    if (!db.getCustomVariantByHash(hash, rec)) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return rec.bailout;
+}
+
 // ─── Route: POST /api/variants/compile ───────────────────────────────────────
 
 std::string variantCompileRoute(const std::filesystem::path& repoRoot, const std::string& body) {
@@ -361,7 +417,9 @@ std::string variantCompileRoute(const std::filesystem::path& repoRoot, const std
 
     const std::string formula = j.value("formula", std::string(""));
     const std::string name    = j.value("name",    std::string("custom"));
-    const double bailout      = j.value("bailout", 4.0);
+    const double bailout      = j.contains("bailout") && !j["bailout"].is_null()
+        ? j.value("bailout", 2.0)
+        : inferFormulaBailout(formula);
 
     if (formula.empty()) throw std::runtime_error("formula is required");
     if (bailout <= 0.0 || bailout > 1e6) throw std::runtime_error("bailout must be in (0, 1e6]");
@@ -381,7 +439,7 @@ std::string variantCompileRoute(const std::filesystem::path& repoRoot, const std
         std::lock_guard<std::mutex> lock(g_mu);
         ensureDbLoadedLocked(repoRoot);
         if (g_fns.count(hash)) {
-            Json resp = {{"ok", true}, {"variantId", variantId}, {"name", name}, {"cached", true}};
+            Json resp = {{"ok", true}, {"variantId", variantId}, {"name", name}, {"bailout", bailout}, {"cached", true}};
             return resp.dump();
         }
     }
@@ -422,6 +480,7 @@ std::string variantCompileRoute(const std::filesystem::path& repoRoot, const std
         {"variantId", variantId},
         {"name",      name},
         {"hash",      hash},
+        {"bailout",   bailout},
         {"cached",    false},
     };
     return resp.dump();
@@ -439,15 +498,15 @@ std::string variantListRoute(const std::filesystem::path& repoRoot) {
     Json builtin = Json::array();
     static const std::pair<const char*, const char*> BUILTIN[] = {
         {"mandelbrot",  "Mandelbrot"},
-        {"tricorn",     "Tricorn"},
+        {"tricorn",     "Tricorn / Mandelbar"},
         {"burning_ship","Burning Ship"},
-        {"celtic",      "Celtic"},
-        {"heart",       "Heart"},
-        {"buffalo",     "Buffalo"},
-        {"perp_buffalo","Perp. Buffalo"},
-        {"celtic_ship", "Celtic Ship"},
-        {"mandelceltic","Mandelceltic"},
-        {"perp_ship",   "Perp. Ship"},
+        {"celtic",      "Perpendicular Burning Ship"},
+        {"heart",       "Perpendicular Mandelbrot"},
+        {"buffalo",     "Celtic"},
+        {"perp_buffalo","Mandelbar Celtic"},
+        {"celtic_ship", "Buffalo"},
+        {"mandelceltic","Perpendicular Buffalo"},
+        {"perp_ship",   "Perpendicular Celtic"},
         {"sin_z",       "sin(z)+c"},
         {"cos_z",       "cos(z)+c"},
         {"exp_z",       "exp(z)+c"},

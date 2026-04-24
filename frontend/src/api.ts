@@ -38,15 +38,15 @@ export const VARIANTS: Variant[] = [
 // Human-readable display names, used in dropdowns and info panels
 export const VARIANT_LABELS: Record<Variant, { en: string; zh: string }> = {
   mandelbrot:   { en: 'Mandelbrot',        zh: 'Mandelbrot' },
-  tricorn:      { en: 'Tricorn',           zh: '三角形' },
+  tricorn:      { en: 'Tricorn / Mandelbar', zh: 'Tricorn / Mandelbar' },
   burning_ship: { en: 'Burning Ship',      zh: '燃烧船' },
-  celtic:       { en: 'Celtic',            zh: '凯尔特' },
-  heart:        { en: 'Heart',             zh: '心形' },
-  buffalo:      { en: 'Buffalo',           zh: '野牛' },
-  perp_buffalo: { en: 'Perp. Buffalo',     zh: '垂直野牛' },
-  celtic_ship:  { en: 'Celtic Ship',       zh: '凯尔特船' },
-  mandelceltic: { en: 'Mandelceltic',      zh: '曼德凯尔特' },
-  perp_ship:    { en: 'Perp. Ship',        zh: '垂直船' },
+  celtic:       { en: 'Perpendicular Burning Ship', zh: '垂直燃烧船' },
+  heart:        { en: 'Perpendicular Mandelbrot', zh: '垂直 Mandelbrot' },
+  buffalo:      { en: 'Celtic',            zh: '凯尔特' },
+  perp_buffalo: { en: 'Mandelbar Celtic',  zh: 'Mandelbar 凯尔特' },
+  celtic_ship:  { en: 'Buffalo',           zh: 'Buffalo' },
+  mandelceltic: { en: 'Perpendicular Buffalo', zh: '垂直 Buffalo' },
+  perp_ship:    { en: 'Perpendicular Celtic', zh: '垂直凯尔特' },
   sin_z:        { en: 'sin(z)+c',          zh: 'sin(z)+c' },
   cos_z:        { en: 'cos(z)+c',          zh: 'cos(z)+c' },
   exp_z:        { en: 'exp(z)+c',          zh: 'exp(z)+c' },
@@ -79,6 +79,8 @@ export interface MapRenderRequest {
   juliaRe?: number
   juliaIm?: number
   transitionTheta?: number  // 0..π; when set, transition kernel is used instead of the variant kernel
+  transitionFrom?: Variant | string
+  transitionTo?: Variant | string
 }
 
 export interface MapRenderResponse {
@@ -221,6 +223,8 @@ export interface TransitionMeshRequest {
   resolution?: number
   iso?: number
   iterations?: number
+  transitionFrom?: Variant | string
+  transitionTo?: Variant | string
 }
 
 export interface TransitionVoxelRequest {
@@ -231,6 +235,8 @@ export interface TransitionVoxelRequest {
   resolution?: number   // default 64, max 512
   iso?: number
   iterations?: number
+  transitionFrom?: Variant | string
+  transitionTo?: Variant | string
 }
 
 export interface TransitionVoxelResponse {
@@ -238,6 +244,7 @@ export interface TransitionVoxelResponse {
   status: string
   resolution: number
   extent: number
+  voxelCount?: number
   faceCount: number
   generatedMs: number
   stlArtifactId?: string
@@ -361,6 +368,7 @@ export interface VariantCompileResponse {
   variantId?: string
   name?:     string
   hash?:     string
+  bailout?:  number
   cached?:   boolean
   error?:    string
 }

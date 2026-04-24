@@ -21,6 +21,7 @@
 #include "variants.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <vector>
 
@@ -101,6 +102,8 @@ inline IterResult iterate(
 
     int n_iter = (track_pairwise && max_iter > pairwise_cap) ? pairwise_cap : max_iter;
 
+    const double bailout = std::sqrt(bailout_sq);
+
     int i;
     for (i = 0; i < n_iter; i++) {
         z = variant_step<V, S>(z, c);
@@ -108,7 +111,10 @@ inline IterResult iterate(
         // grows large near the escape boundary (re² + im² can exceed Fx64 range).
         const double zre = scalar_to_double(z.re);
         const double zim = scalar_to_double(z.im);
-        const double n2  = zre * zre + zim * zim;
+        const bool finite_z = std::isfinite(zre) && std::isfinite(zim);
+        const double n2  = finite_z
+            ? (zre * zre + zim * zim)
+            : std::numeric_limits<double>::infinity();
 
         if (metric == Metric::MinAbs || metric == Metric::Envelope || metric == Metric::MinPairwiseDist) {
             if (n2 < r.min_abs) r.min_abs = n2;
@@ -127,7 +133,15 @@ inline IterResult iterate(
             orbit_scratch.push_back(z);
         }
 
-        if (n2 > bailout_sq) {
+        bool escaped_now = !finite_z;
+        if constexpr (variant_is_transcendental_v<V>()) {
+            const double component = std::max(std::fabs(zre), std::fabs(zim));
+            escaped_now = escaped_now || component >= bailout;
+        } else {
+            escaped_now = escaped_now || n2 > bailout_sq;
+        }
+
+        if (escaped_now) {
             r.iter = i;
             r.norm = n2;
             r.escaped = true;

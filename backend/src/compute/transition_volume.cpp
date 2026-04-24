@@ -8,10 +8,17 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <stdexcept>
 
 namespace fsd::compute {
 
 McField buildTransitionVolume(const TransitionVolumeParams& p) {
+    if (!variant_supports_axis_transition(p.from_variant) ||
+        !variant_supports_axis_transition(p.to_variant)) {
+        throw std::runtime_error("transition variants must be quadratic Mandelbrot-family variants");
+    }
+
     const int N = std::max(4, std::min(1024, p.resolution));
     McField field;
     field.Nx = field.Ny = field.Nz = N;
@@ -37,11 +44,19 @@ McField buildTransitionVolume(const TransitionVolumeParams& p) {
                 int iter = 0;
                 bool escaped = false;
                 for (; iter < maxIter; iter++) {
-                    const double nx = x*x - y*y - z*z + x0;
-                    const double ny = 2.0 * x * y + y0;
-                    const double nz = 2.0 * std::fabs(x * z) + z0;
+                    const double x2 = x * x;
+                    const double nx =
+                        variant_transition_real_projection(p.from_variant, x2, y * y)
+                      + variant_transition_real_projection(p.to_variant,   x2, z * z)
+                      - x2 + x0;
+                    const double ny = variant_transition_imag_projection(p.from_variant, x, y) + y0;
+                    const double nz = variant_transition_imag_projection(p.to_variant,   x, z) + z0;
                     x = nx; y = ny; z = nz;
-                    if (x*x + y*y + z*z > bail2) {
+                    const bool finite_xyz = std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
+                    const double n2 = finite_xyz
+                        ? (x*x + y*y + z*z)
+                        : std::numeric_limits<double>::infinity();
+                    if (!finite_xyz || n2 > bail2) {
                         escaped = true;
                         break;
                     }
@@ -57,7 +72,8 @@ McField buildTransitionVolume(const TransitionVolumeParams& p) {
                 if (escaped) {
                     v = 0.5f + 0.5f * (static_cast<float>(iter) / static_cast<float>(maxIter));
                 } else {
-                    const double finalMag = std::sqrt(x*x + y*y + z*z);
+                    const bool finite_xyz = std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
+                    const double finalMag = finite_xyz ? std::sqrt(x*x + y*y + z*z) : p.bailout;
                     // Normalize to [0, 0.48) — near-boundary orbits reach higher mag.
                     v = static_cast<float>(finalMag / p.bailout) * 0.48f;
                 }

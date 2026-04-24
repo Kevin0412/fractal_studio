@@ -49,18 +49,21 @@
 
 ## Variants / 变体
 
+The API names below are kept stable for old runs; display names follow the
+common formula names used by Mandelbrot-family renderers.
+
 | API name | Display name / 显示名称 | Formula / 公式 |
 |---|---|---|
 | `mandelbrot`   | Mandelbrot        | z² + c |
-| `tricorn`      | Tricorn           | conj(z)² + c |
+| `tricorn`      | Tricorn / Mandelbar | conj(z)² + c |
 | `burning_ship` | Burning Ship      | (abs(Re z) + abs(Im z)·i)² + c |
-| `celtic`       | Celtic            | (Re z + abs(Im z)·i)² + c |
-| `heart`        | Heart             | (abs(Re z) − Im z·i)² + c |
-| `buffalo`      | Buffalo           | z²→abs(Re(z²)) + Im(z²)·i + c |
-| `perp_buffalo` | Perp. Buffalo     | z²→abs(Re(z²)) − Im(z²)·i + c |
-| `celtic_ship`  | Celtic Ship       | z²→abs(Re(z²)) + abs(Im(z²))·i + c |
-| `mandelceltic` | Mandelceltic      | (Re+abs(Im)·i)²→abs(Re)+Im·i + c |
-| `perp_ship`    | Perp. Ship        | (abs(Re)+Im·i)²→abs(Re)−Im·i + c |
+| `celtic`       | Perpendicular Burning Ship | (Re z + abs(Im z)·i)² + c |
+| `heart`        | Perpendicular Mandelbrot | (abs(Re z) − Im z·i)² + c |
+| `buffalo`      | Celtic            | z²→abs(Re(z²)) + Im(z²)·i + c |
+| `perp_buffalo` | Mandelbar Celtic  | z²→abs(Re(z²)) − Im(z²)·i + c |
+| `celtic_ship`  | Buffalo           | z²→abs(Re(z²)) + abs(Im(z²))·i + c |
+| `mandelceltic` | Perpendicular Buffalo | (Re+abs(Im)·i)²→abs(Re)+Im·i + c |
+| `perp_ship`    | Perpendicular Celtic | (abs(Re)+Im·i)²→abs(Re)−Im·i + c |
 | `sin_z`        | sin(z)+c          | sin(z) + c |
 | `cos_z`        | cos(z)+c          | cos(z) + c |
 | `exp_z`        | exp(z)+c          | exp(z) + c |

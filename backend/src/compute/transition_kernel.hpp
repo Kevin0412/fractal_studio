@@ -24,6 +24,7 @@
 #include "colormap.hpp"
 #include "escape_time.hpp"
 #include "map_kernel.hpp"  // for MapStats
+#include "variants.hpp"
 
 #include <opencv2/core.hpp>
 
@@ -41,6 +42,11 @@ struct TransitionParams {
 
     // Rotation angle around x-axis, radians. 0 = Mandelbrot, π/2 = Burning Ship.
     double theta     = 0.0;
+
+    // Quadratic/folded variants to place on the xy and xz planes. The default
+    // preserves the original Mandelbrot → Burning Ship bridge.
+    Variant from_variant = Variant::Mandelbrot;
+    Variant to_variant   = Variant::Boat;
 
     Metric   metric       = Metric::Escape;
     Colormap colormap     = Colormap::ClassicCos;

@@ -7,15 +7,15 @@
 //
 // Variant catalog (see README.md for full descriptions):
 //   mandelbrot   — z² + c                                (standard)
-//   tricorn      — conj(z²) + c                          (Mandelbar)
+//   tricorn      — conj(z²) + c                          (Tricorn / Mandelbar)
 //   burning_ship — (|Re z| + |Im z|·i)² + c             (Burning Ship)
-//   celtic       — (Re z + |Im z|·i)² + c               (half-fold Im only)
-//   heart        — (|Re z| − Im z·i)² + c               (fold Re, negate Im)
-//   buffalo      — z² → |Re(z²)| + Im(z²)·i + c        (Celtic Mandelbrot)
-//   perp_buffalo — z² → |Re(z²)| − Im(z²)·i + c        (perpendicular buffalo)
-//   celtic_ship  — z² → |Re(z²)| + |Im(z²)|·i + c      (Celtic+Ship combined)
-//   mandelceltic — (Re+|Im|·i)² → |Re|+Im·i + c         (pre+post fold Im)
-//   perp_ship    — (|Re|+Im·i)² → |Re|−Im·i + c         (perpendicular ship)
+//   celtic       — (Re z + |Im z|·i)² + c               (Perpendicular Burning Ship; legacy id)
+//   heart        — (|Re z| − Im z·i)² + c               (Perpendicular Mandelbrot / Heart)
+//   buffalo      — z² → |Re(z²)| + Im(z²)·i + c        (Celtic; legacy id)
+//   perp_buffalo — z² → |Re(z²)| − Im(z²)·i + c        (Mandelbar Celtic; legacy id)
+//   celtic_ship  — z² → |Re(z²)| + |Im(z²)|·i + c      (Buffalo; legacy id)
+//   mandelceltic — (Re+|Im|·i)² → |Re|+Im·i + c         (Perpendicular Buffalo; legacy id)
+//   perp_ship    — (|Re|+Im·i)² → |Re|−Im·i + c         (Perpendicular Celtic; legacy id)
 //   sin_z        — sin(z) + c
 //   cos_z        — cos(z) + c
 //   exp_z        — exp(z) + c
@@ -32,15 +32,15 @@ namespace fsd::compute {
 
 enum class Variant {
     Mandelbrot  = 0,  // z² + c
-    Tri         = 1,  // conj(z²) + c                       (tricorn / Mandelbar)
+    Tri         = 1,  // conj(z²) + c                       (Tricorn / Mandelbar)
     Boat        = 2,  // (|Re| + |Im|·i)² + c               (Burning Ship)
-    Duck        = 3,  // (Re + |Im|·i)² + c                 (Celtic — fold Im only)
-    Bell        = 4,  // (|Re| − Im·i)² + c                 (Heart — fold Re, negate Im)
-    Fish        = 5,  // z²→|Re(z²)|+Im(z²)·i+c            (Buffalo / Celtic Mandelbrot)
-    Vase        = 6,  // z²→|Re(z²)|−Im(z²)·i+c            (Perpendicular Buffalo)
-    Bird        = 7,  // z²→|Re(z²)|+|Im(z²)|·i+c          (Celtic Ship)
-    Mask        = 8,  // (Re+|Im|·i)²→|Re|+Im·i+c          (Mandelceltic)
-    Ship        = 9,  // (|Re|+Im·i)²→|Re|−Im·i+c          (Perpendicular Ship)
+    Duck        = 3,  // (Re + |Im|·i)² + c                 (Perpendicular Burning Ship)
+    Bell        = 4,  // (|Re| − Im·i)² + c                 (Perpendicular Mandelbrot / Heart)
+    Fish        = 5,  // z²→|Re(z²)|+Im(z²)·i+c            (Celtic)
+    Vase        = 6,  // z²→|Re(z²)|−Im(z²)·i+c            (Mandelbar Celtic)
+    Bird        = 7,  // z²→|Re(z²)|+|Im(z²)|·i+c          (Buffalo)
+    Mask        = 8,  // (Re+|Im|·i)²→|Re|+Im·i+c          (Perpendicular Buffalo)
+    Ship        = 9,  // (|Re|+Im·i)²→|Re|−Im·i+c          (Perpendicular Celtic)
     SinZ        = 10, // sin(z) + c
     CosZ        = 11, // cos(z) + c
     ExpZ        = 12, // exp(z) + c
@@ -180,6 +180,83 @@ inline bool variant_needs_scalar_fallback(Variant v) {
             return true;
         default:
             return false;
+    }
+}
+
+inline bool variant_is_transcendental(Variant v) {
+    switch (v) {
+        case Variant::SinZ:
+        case Variant::CosZ:
+        case Variant::ExpZ:
+        case Variant::SinhZ:
+        case Variant::CoshZ:
+        case Variant::TanZ:
+            return true;
+        default:
+            return false;
+    }
+}
+
+template <Variant V>
+constexpr bool variant_is_transcendental_v() {
+    return V == Variant::SinZ
+        || V == Variant::CosZ
+        || V == Variant::ExpZ
+        || V == Variant::SinhZ
+        || V == Variant::CoshZ
+        || V == Variant::TanZ;
+}
+
+// Escape policy:
+//   - quadratic/folded polynomial variants use the classic radius test |z|²>R².
+//   - transcendental variants do not have a single useful escape circle. Their
+//     sin/cos/sinh/cosh/exp/tan formulas grow through individual components or
+//     poles, so the kernels use max(|Re|, |Im|)>R plus non-finite detection.
+inline double variant_default_bailout(Variant v) {
+    return variant_is_transcendental(v) ? 64.0 : 2.0;
+}
+
+inline bool variant_supports_axis_transition(Variant v) {
+    const int id = static_cast<int>(v);
+    return id >= 0 && id <= 9;
+}
+
+inline bool variant_transition_post_abs_real(Variant v) {
+    switch (v) {
+        case Variant::Fish:
+        case Variant::Vase:
+        case Variant::Bird:
+        case Variant::Mask:
+        case Variant::Ship:
+            return true;
+        default:
+            return false;
+    }
+}
+
+inline double variant_transition_real_projection(Variant v, double x2, double axis2) {
+    const double q = x2 - axis2;
+    return variant_transition_post_abs_real(v) ? std::fabs(q) : q;
+}
+
+inline double variant_transition_imag_projection(Variant v, double x, double axis) {
+    switch (v) {
+        case Variant::Tri:
+        case Variant::Vase:
+            return -2.0 * x * axis;
+        case Variant::Boat:
+        case Variant::Bird:
+            return 2.0 * std::fabs(x * axis);
+        case Variant::Duck:
+        case Variant::Mask:
+            return 2.0 * x * std::fabs(axis);
+        case Variant::Bell:
+        case Variant::Ship:
+            return -2.0 * std::fabs(x) * axis;
+        case Variant::Mandelbrot:
+        case Variant::Fish:
+        default:
+            return 2.0 * x * axis;
     }
 }
 

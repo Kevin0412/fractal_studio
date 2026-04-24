@@ -1,6 +1,5 @@
 #include "http_server.hpp"
 #include "job_runner.hpp"
-#include "path_guard.hpp"
 #include "routes.hpp"
 #include "db.hpp"
 
@@ -9,8 +8,31 @@
 #include <execinfo.h>
 #include <filesystem>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <unistd.h>
+
+namespace {
+
+std::filesystem::path find_studio_root(std::filesystem::path start) {
+    namespace fs = std::filesystem;
+    start = fs::weakly_canonical(std::move(start));
+    for (fs::path probe = start; !probe.empty(); probe = probe.parent_path()) {
+        if (fs::exists(probe / "backend" / "CMakeLists.txt") &&
+            fs::exists(probe / "frontend" / "package.json")) {
+            return probe;
+        }
+        if (fs::exists(probe / "fractal_studio" / "backend" / "CMakeLists.txt") &&
+            fs::exists(probe / "fractal_studio" / "frontend" / "package.json")) {
+            return probe / "fractal_studio";
+        }
+        const auto parent = probe.parent_path();
+        if (parent == probe) break;
+    }
+    throw std::runtime_error("could not locate fractal_studio root");
+}
+
+} // namespace
 
 static void crash_handler(int sig) {
     // Write backtrace to stderr (goes to the log file when redirected).
@@ -39,22 +61,15 @@ int main(int argc, char* argv[]) {
 
     namespace fs = std::filesystem;
 
-    // Walk up from cwd until we find the repo root (marked by C_mandelbrot/).
-    fs::path probe = fs::current_path();
-    while (!probe.empty() && !fs::exists(probe / "C_mandelbrot")) {
-        const auto parent = probe.parent_path();
-        if (parent == probe) break;
-        probe = parent;
-    }
-    const fs::path repoRoot = probe;
+    const fs::path studioRoot = find_studio_root(fs::current_path());
+    const fs::path repoRoot = studioRoot.parent_path();
 
-    const fs::path runtimeRoot = repoRoot / "fractal_studio" / "runtime";
+    const fs::path runtimeRoot = studioRoot / "runtime";
     const fs::path dbDir = runtimeRoot / "db";
     fs::create_directories(dbDir);
     fsd::Db db(dbDir / "fractal_studio.sqlite3");
     db.ensureSchema();
 
-    fsd::PathGuard guard(repoRoot);
     fsd::JobRunner runner(runtimeRoot, &db);
 
     std::cout << "fractal_studio backend ready (native compute)" << std::endl;

@@ -64,9 +64,24 @@ const customVariants     = ref<CustomVariant[]>([])
 const showCustomPanel    = ref(false)
 const customFormula      = ref('z^2 + c')
 const customName         = ref('my_variant')
-const customBailout      = ref(4.0)
+const customBailoutDirty = ref(false)
+const customBailout      = ref(suggestCustomBailout(customFormula.value))
 const customCompiling    = ref(false)
 const customCompileMsg   = ref('')
+
+function suggestCustomBailout(formula: string): number {
+  const s = formula.replace(/\s+/g, '').toLowerCase()
+  const power = s === 'z*z+c'
+    ? 2
+    : s === 'z*z*z+c'
+      ? 3
+      : Number(s.match(/^z\^(\d+)\+c$/)?.[1] ?? s.match(/^pow\(z,(\d+)\)\+c$/)?.[1])
+  return Number.isFinite(power) && power >= 2 ? Math.pow(2, 1 / (power - 1)) : 2
+}
+
+watch(customFormula, (formula) => {
+  if (!customBailoutDirty.value) customBailout.value = suggestCustomBailout(formula)
+})
 
 async function loadCustomVariants() {
   try {
@@ -113,6 +128,9 @@ function onVariantSelect(val: string) {
 
 const transitionOn = ref(false)
 const thetaDeg     = ref(0)
+const transitionFrom = ref<string>('mandelbrot')
+const transitionTo   = ref<string>('burning_ship')
+const AXIS_TRANSITION_VARIANTS = VARIANTS.slice(0, 10)
 
 // ── Julia mode ────────────────────────────────────────────────────────────────
 const juliaOn  = ref(false)
@@ -239,6 +257,8 @@ async function exportPng() {
       juliaRe:    juliaRe.value,
       juliaIm:    juliaIm.value,
       transitionTheta: transitionOn.value ? thetaDeg.value * Math.PI / 180 : undefined,
+      transitionFrom:  transitionOn.value ? transitionFrom.value : undefined,
+      transitionTo:    transitionOn.value ? transitionTo.value : undefined,
     }) as any
     window.open(api.artifactDownloadUrl(resp.artifactId), '_blank')
   } catch (e: any) {
@@ -352,6 +372,15 @@ async function runExport() {
           <input type="range" min="0" max="90" step="0.1" v-model.number="thetaDeg" />
           <span class="num">{{ thetaDeg.toFixed(1) }}°</span>
         </div>
+        <div v-if="transitionOn" class="theta-row">
+          <select v-model="transitionFrom">
+            <option v-for="v in AXIS_TRANSITION_VARIANTS" :key="'from-' + v" :value="v">{{ VARIANT_LABELS[v][lang] }}</option>
+          </select>
+          <span class="num">→</span>
+          <select v-model="transitionTo">
+            <option v-for="v in AXIS_TRANSITION_VARIANTS" :key="'to-' + v" :value="v">{{ VARIANT_LABELS[v][lang] }}</option>
+          </select>
+        </div>
       </div>
 
       <div class="group">
@@ -410,7 +439,7 @@ async function runExport() {
         <label style="margin-left:12px">{{ t('custom_name') }}</label>
         <input v-model="customName" placeholder="my_variant" style="width:120px" />
         <label style="margin-left:12px">{{ t('custom_bailout') }}</label>
-        <input type="number" v-model.number="customBailout" min="0.1" max="1000000" step="1" style="width:80px" />
+        <input type="number" v-model.number="customBailout" min="0.1" max="1000000" step="0.001" style="width:80px" @input="customBailoutDirty = true" />
         <button class="btn-compile" @click="compileCustom" :disabled="customCompiling">
           {{ customCompiling ? t('loading') : t('custom_compile') }}
         </button>
@@ -443,6 +472,7 @@ async function runExport() {
           :iterations="iterations" :variant="variant" :metric="metric"
           :colorMap="colorMap" :smooth="smooth"
           :transitionTheta="transitionOn ? thetaDeg * Math.PI / 180 : null"
+          :transitionFrom="transitionFrom" :transitionTo="transitionTo"
           :engine="engineMode" :scalarType="scalarMode"
           @viewport-change="onViewportChange"
           @rendered="onRendered"
@@ -470,6 +500,7 @@ async function runExport() {
                 :iterations="iterations" :variant="variant" :metric="metric"
                 :colorMap="colorMap" :smooth="smooth"
                 :transitionTheta="transitionOn ? thetaDeg * Math.PI / 180 : null"
+                :transitionFrom="transitionFrom" :transitionTo="transitionTo"
                 :engine="engineMode" :scalarType="scalarMode"
                 @viewport-change="onViewportChange"
                 @rendered="onRendered"

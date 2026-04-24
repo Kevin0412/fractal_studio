@@ -150,8 +150,11 @@ static void avx512_fp64_row(
                 _mm512_mul_pd(vzre, vzre), _mm512_mul_pd(vzim, vzim)); \
             vmn = _mm512_min_pd(vmn, vn2); \
             vmx = _mm512_max_pd(vmx, vn2); \
-            const __mmask8 escaped = _mm512_mask_cmp_pd_mask( \
+            const __mmask8 escaped_radius = _mm512_mask_cmp_pd_mask( \
                 active, vn2, vbail2, _CMP_GT_OQ); \
+            const __mmask8 escaped_nan = _mm512_mask_cmp_pd_mask( \
+                active, vn2, vn2, _CMP_UNORD_Q); \
+            const __mmask8 escaped = escaped_radius | escaped_nan; \
             if (escaped) { \
                 const __m512i vi = _mm512_set1_epi64(i); \
                 viter = _mm512_mask_mov_epi64(viter, escaped, vi); \

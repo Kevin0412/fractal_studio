@@ -280,10 +280,11 @@ __global__ void fractal_fp64(
             case 9:  step_ship(zre, zim, cre, cim);      break;
             default: step_mandelbrot(zre, zim, cre, cim); break;
         }
-        const double abs2 = zre * zre + zim * zim;
+        const bool finite_z = isfinite(zre) && isfinite(zim);
+        const double abs2 = finite_z ? (zre * zre + zim * zim) : INFINITY;
         if (abs2 < mn) mn = abs2;
         if (abs2 > mx) mx = abs2;
-        if (abs2 > bail2) break;
+        if (!finite_z || abs2 > bail2) break;
     }
 
     uint8_t* px = out + (static_cast<size_t>(px_y) * W + px_x) * 3;
@@ -462,10 +463,11 @@ __global__ void fractal_fx64(
         // Escape check in fp64 (avoids fixed-point overflow for large |z|)
         const double fre = zre.to_double();
         const double fim = zim.to_double();
-        const double abs2 = fre * fre + fim * fim;
+        const bool finite_z = isfinite(fre) && isfinite(fim);
+        const double abs2 = finite_z ? (fre * fre + fim * fim) : INFINITY;
         if (abs2 < mn) mn = abs2;
         if (abs2 > mx) mx = abs2;
-        if (abs2 > bail2) break;
+        if (!finite_z || abs2 > bail2) break;
     }
 
     uint8_t* px = out + (static_cast<size_t>(px_y) * W + px_x) * 3;
