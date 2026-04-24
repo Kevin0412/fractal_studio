@@ -37,7 +37,7 @@ const dict: Dict = {
   scale:            { en: 'Scale',            zh: '缩放' },
   center:           { en: 'Center',           zh: '中心' },
   theta:            { en: 'θ (rad)',          zh: 'θ（弧度）' },
-  transition:       { en: 'Transition',       zh: 'M↔B 过渡' },
+  transition:       { en: 'Axis transition',  zh: '轴向过渡' },
   julia:            { en: 'Julia J(c)',       zh: 'Julia J(c)' },
   engine:           { en: 'Engine',           zh: '引擎' },
   scalar:           { en: 'Scalar',           zh: '标量类型' },
@@ -79,7 +79,7 @@ const dict: Dict = {
 
   // ── 3D view ─────────────────────────────────────────────────────────────
   three_mode_hs:    { en: 'HS',              zh: '隐结构' },
-  three_mode_tx:    { en: 'M↔B',            zh: 'M↔B 三维' },
+  three_mode_tx:    { en: 'Axis transition', zh: '轴向过渡' },
   three_metric:     { en: 'Metric',          zh: '指标' },
   three_resolution: { en: 'Resolution',      zh: '分辨率' },
   three_iso:        { en: 'Iso level',       zh: '等值面' },

@@ -52,6 +52,12 @@ const HS_METRIC_LABELS: Record<HsStage, { en: string; zh: string }> = {
   min_pairwise_dist:  { en: 'Min pairwise (recurrence)',  zh: '最小轨道距（递归）' },
 }
 
+function transitionStlDownloadUrl(r: TransitionVoxelResponse): string | null {
+  if (r.stlArtifactId) return api.artifactDownloadUrl(r.stlArtifactId)
+  if (!r.stlUrl) return null
+  return new URL(r.stlUrl, api.baseUrl).toString()
+}
+
 // ── HS field auto-compute (debounced) ─────────────────────────────────────────
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -137,7 +143,7 @@ async function computeTransitionVoxels() {
       transitionTo:   txTo.value,
     })
     voxelData.value = r
-    stlUrl.value = r.stlUrl ?? null
+    stlUrl.value = transitionStlDownloadUrl(r)
     info.value = `${(r.voxelCount ?? 0).toLocaleString()} voxels · ${r.faceCount.toLocaleString()} faces · ${r.resolution}³ grid · ${r.generatedMs.toFixed(0)}ms`
   } catch (e: any) {
     error.value = e?.message ?? String(e)
@@ -153,8 +159,8 @@ async function computeTransitionVoxels() {
 // Otherwise we trigger a fresh voxel compute to get the STL.
 
 async function exportTxStl() {
-  if (voxelData.value?.stlUrl) {
-    stlUrl.value = voxelData.value.stlUrl
+  if (voxelData.value?.stlArtifactId || voxelData.value?.stlUrl) {
+    stlUrl.value = transitionStlDownloadUrl(voxelData.value)
     return
   }
   stlLoading.value = true
@@ -173,7 +179,7 @@ async function exportTxStl() {
       transitionTo:   txTo.value,
     })
     voxelData.value = r
-    stlUrl.value = r.stlUrl ?? null
+    stlUrl.value = transitionStlDownloadUrl(r)
     info.value = `${(r.voxelCount ?? 0).toLocaleString()} voxels · ${r.faceCount.toLocaleString()} faces · ${r.resolution}³ grid · ${r.generatedMs.toFixed(0)}ms`
   } catch (e: any) {
     error.value = e?.message ?? String(e)
