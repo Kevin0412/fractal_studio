@@ -28,7 +28,7 @@ McField buildTransitionVolume(const TransitionVolumeParams& p) {
     const double xmin = p.centerX - p.extent;
     const double ymin = p.centerY - p.extent;
     const double zmin = p.centerZ - p.extent;
-    const double bail2 = p.bailout * p.bailout;
+    const double bail2 = p.bailout_sq;
 
     const int maxIter = p.iterations;
 

@@ -128,7 +128,7 @@ MapStats render_transition(const TransitionParams& p, cv::Mat& out) {
     const double span_re = p.scale * aspect;
     const double re_min  = p.center_re - span_re * 0.5;
     const double im_max  = p.center_im + span_im * 0.5;
-    const double bail2   = p.bailout * p.bailout;
+    const double bail2   = p.bailout_sq;
     const double cth     = std::cos(p.theta);
     const double sth     = std::sin(p.theta);
 

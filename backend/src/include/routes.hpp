@@ -55,6 +55,7 @@ std::string variantDeleteRoute(const std::filesystem::path& repoRoot, const std:
 // Called from routes_map.cpp when variant string starts with "custom:".
 void* lookupCustomFn(const std::filesystem::path& repoRoot, const std::string& hash);
 double lookupCustomBailout(const std::filesystem::path& repoRoot, const std::string& hash);
+double lookupCustomBailoutSq(const std::filesystem::path& repoRoot, const std::string& hash);
 
 // Runs
 std::string runsListRoute(const std::filesystem::path& repoRoot, const std::string& query);

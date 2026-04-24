@@ -25,7 +25,7 @@ void computeFieldImpl(const HsMeshParams& p, std::vector<double>& field) {
     const double span = p.scale;
     const double re_min = p.center_re - span * 0.5;
     const double im_max = p.center_im + span * 0.5;
-    const double bail2 = p.bailout * p.bailout;
+    const double bail2 = p.bailout_sq;
 
     #pragma omp parallel
     {
@@ -40,7 +40,7 @@ void computeFieldImpl(const HsMeshParams& p, std::vector<double>& field) {
                 Cx<double> c{re, im};
                 Cx<double> z0{0.0, 0.0};
                 IterResult r = iterate<V, double>(
-                    z0, c, p.iterations, bail2, p.metric, 64, orbit_scratch);
+                    z0, c, p.iterations, p.bailout, bail2, p.metric, 64, orbit_scratch);
 
                 double v = 0.0;
                 switch (p.metric) {

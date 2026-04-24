@@ -94,7 +94,11 @@ async function compileCustom() {
   customCompiling.value = true
   customCompileMsg.value = ''
   try {
-    const r = await api.variantCompile(customFormula.value, customName.value, customBailout.value)
+    const r = await api.variantCompile(
+      customFormula.value,
+      customName.value,
+      customBailoutDirty.value ? customBailout.value : undefined,
+    )
     if (r.ok && r.variantId) {
       await loadCustomVariants()
       variant.value        = r.variantId

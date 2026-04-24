@@ -32,6 +32,7 @@ struct VariantResolved {
     compute::Variant      var;
     compute::CustomStepFn fn = nullptr;  // non-null only for Variant::Custom
     double default_bailout = std::numeric_limits<double>::quiet_NaN();
+    double default_bailout_sq = std::numeric_limits<double>::quiet_NaN();
 };
 
 VariantResolved resolveVariant(const std::string& s, const std::filesystem::path& repoRoot) {
@@ -41,24 +42,46 @@ VariantResolved resolveVariant(const std::string& s, const std::filesystem::path
         if (!raw) throw std::runtime_error("custom variant not found or compile failed: " + hash);
         compute::CustomStepFn fn;
         std::memcpy(&fn, &raw, sizeof(fn));
-        return {compute::Variant::Custom, fn, lookupCustomBailout(repoRoot, hash)};
+        return {compute::Variant::Custom, fn,
+                lookupCustomBailout(repoRoot, hash),
+                lookupCustomBailoutSq(repoRoot, hash)};
     }
     compute::Variant v;
-    if (compute::variant_from_name(s.c_str(), v)) return {v, nullptr, compute::variant_default_bailout(v)};
+    if (compute::variant_from_name(s.c_str(), v)) {
+        return {v, nullptr, compute::variant_default_bailout(v), compute::variant_default_bailout_sq(v)};
+    }
     // Backwards compat with old integer IDs.
     try {
         int i = std::stoi(s);
         if (i >= 0 && i <= 15) {
             const auto v = static_cast<compute::Variant>(i);
-            return {v, nullptr, compute::variant_default_bailout(v)};
+            return {v, nullptr, compute::variant_default_bailout(v), compute::variant_default_bailout_sq(v)};
         }
     } catch (...) {}
-    return {compute::Variant::Mandelbrot, nullptr, compute::variant_default_bailout(compute::Variant::Mandelbrot)};
+    return {compute::Variant::Mandelbrot, nullptr,
+            compute::variant_default_bailout(compute::Variant::Mandelbrot),
+            compute::variant_default_bailout_sq(compute::Variant::Mandelbrot)};
 }
 
 double resolvedDefaultBailout(const VariantResolved& vr) {
     if (std::isfinite(vr.default_bailout) && vr.default_bailout > 0.0) return vr.default_bailout;
     return compute::variant_default_bailout(vr.var);
+}
+
+double resolvedDefaultBailoutSq(const VariantResolved& vr) {
+    if (std::isfinite(vr.default_bailout_sq) && vr.default_bailout_sq > 0.0) return vr.default_bailout_sq;
+    const double radius = resolvedDefaultBailout(vr);
+    return radius * radius;
+}
+
+double bailoutSqFromJson(const Json& j, double radius, double defaultSq) {
+    if (j.contains("bailoutSq") && !j["bailoutSq"].is_null()) {
+        return j.value("bailoutSq", defaultSq);
+    }
+    if (j.contains("bailout") && !j["bailout"].is_null()) {
+        return radius * radius;
+    }
+    return defaultSq;
 }
 
 compute::Metric parseMetric(const std::string& s) {
@@ -119,14 +142,24 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
     std::string scalarUsed = "fp64";
     std::string engineUsed = "openmp";
     double elapsed = 0.0;
+    double effectiveBailout = 2.0;
+    double effectiveBailoutSq = 4.0;
 
     try {
         cv::Mat out;
         if (hasTheta) {
-            const double bailout = j.contains("bailout") && !j["bailout"].is_null()
+            double bailout = j.contains("bailout") && !j["bailout"].is_null()
                 ? j.value("bailout", 2.0)
                 : 2.0;
+            const double bailoutSq = bailoutSqFromJson(j, bailout, 4.0);
+            if (j.contains("bailoutSq") && !j["bailoutSq"].is_null() &&
+                !(j.contains("bailout") && !j["bailout"].is_null())) {
+                bailout = std::sqrt(bailoutSq);
+            }
             if (!(bailout > 0.0) || !std::isfinite(bailout)) throw std::runtime_error("invalid bailout");
+            if (!(bailoutSq > 0.0) || !std::isfinite(bailoutSq)) throw std::runtime_error("invalid bailoutSq");
+            effectiveBailout = bailout;
+            effectiveBailoutSq = bailoutSq;
             compute::TransitionParams p;
             p.center_re = cRe;
             p.center_im = cIm;
@@ -135,6 +168,7 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
             p.height    = height;
             p.iterations = iters;
             p.bailout    = bailout;
+            p.bailout_sq = bailoutSq;
             p.theta      = theta;
             p.metric       = parseMetric(metricStr);
             p.colormap     = parseColormap(colormapStr);
@@ -151,10 +185,18 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
             artifactName = "transition.png";
         } else {
             const auto vr = resolveVariant(variantStr, repoRoot);
-            const double bailout = j.contains("bailout") && !j["bailout"].is_null()
+            double bailout = j.contains("bailout") && !j["bailout"].is_null()
                 ? j.value("bailout", 2.0)
                 : resolvedDefaultBailout(vr);
+            const double bailoutSq = bailoutSqFromJson(j, bailout, resolvedDefaultBailoutSq(vr));
+            if (j.contains("bailoutSq") && !j["bailoutSq"].is_null() &&
+                !(j.contains("bailout") && !j["bailout"].is_null())) {
+                bailout = std::sqrt(bailoutSq);
+            }
             if (!(bailout > 0.0) || !std::isfinite(bailout)) throw std::runtime_error("invalid bailout");
+            if (!(bailoutSq > 0.0) || !std::isfinite(bailoutSq)) throw std::runtime_error("invalid bailoutSq");
+            effectiveBailout = bailout;
+            effectiveBailoutSq = bailoutSq;
             compute::MapParams p;
             p.center_re  = cRe;
             p.center_im  = cIm;
@@ -163,6 +205,7 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
             p.height     = height;
             p.iterations = iters;
             p.bailout    = bailout;
+            p.bailout_sq = bailoutSq;
             p.variant    = vr.var;
             p.custom_step_fn = vr.fn;
             p.metric     = parseMetric(metricStr);
@@ -217,6 +260,8 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
             {"variant",   variantStr},
             {"metric",    metricStr},
             {"colorMap",  colormapStr},
+            {"bailout",   effectiveBailout},
+            {"bailoutSq", effectiveBailoutSq},
             {"julia",     julia},
             {"juliaRe",   juliaRe},
             {"juliaIm",   juliaIm},
@@ -265,10 +310,16 @@ std::string mapFieldRoute(const std::filesystem::path& repoRoot, const std::stri
     if (!std::isfinite(cRe) || !std::isfinite(cIm)) throw std::runtime_error("invalid center");
 
     const auto vr2 = resolveVariant(variantStr, repoRoot);
-    const double bailout = j.contains("bailout") && !j["bailout"].is_null()
+    double bailout = j.contains("bailout") && !j["bailout"].is_null()
         ? j.value("bailout", 2.0)
         : resolvedDefaultBailout(vr2);
+    const double bailoutSq = bailoutSqFromJson(j, bailout, resolvedDefaultBailoutSq(vr2));
+    if (j.contains("bailoutSq") && !j["bailoutSq"].is_null() &&
+        !(j.contains("bailout") && !j["bailout"].is_null())) {
+        bailout = std::sqrt(bailoutSq);
+    }
     if (!(bailout > 0.0) || !std::isfinite(bailout)) throw std::runtime_error("invalid bailout");
+    if (!(bailoutSq > 0.0) || !std::isfinite(bailoutSq)) throw std::runtime_error("invalid bailoutSq");
     compute::MapParams p;
     p.center_re  = cRe;
     p.center_im  = cIm;
@@ -277,6 +328,7 @@ std::string mapFieldRoute(const std::filesystem::path& repoRoot, const std::stri
     p.height     = height;
     p.iterations = iters;
     p.bailout    = bailout;
+    p.bailout_sq = bailoutSq;
     p.variant    = vr2.var;
     p.custom_step_fn = vr2.fn;
     p.metric     = parseMetric(metricStr);

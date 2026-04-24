@@ -71,7 +71,7 @@ void render_variant_impl(const MapParams& p, cv::Mat& out) {
     const double span_re = p.scale * aspect;
     const double re_min  = p.center_re - span_re * 0.5;
     const double im_max  = p.center_im + span_im * 0.5;
-    const double bail2   = p.bailout * p.bailout;
+    const double bail2   = p.bailout_sq;
 
     const S jre = scalar_from_double<S>(p.julia_re);
     const S jim = scalar_from_double<S>(p.julia_im);
@@ -102,7 +102,7 @@ void render_variant_impl(const MapParams& p, cv::Mat& out) {
                 }
 
                 const IterResult r = iterate<V, S>(
-                    z0, c, p.iterations, bail2, p.metric, p.pairwise_cap, orbit
+                    z0, c, p.iterations, p.bailout, bail2, p.metric, p.pairwise_cap, orbit
                 );
 
                 uint8_t* px = row + 3 * x;
@@ -238,7 +238,7 @@ static MapStats render_custom_openmp(const MapParams& p, cv::Mat& out) {
     const double span_re = p.scale * aspect;
     const double re_min  = p.center_re - span_re * 0.5;
     const double im_max  = p.center_im + span_im * 0.5;
-    const double bail2   = p.bailout * p.bailout;
+    const double bail2   = p.bailout_sq;
     const double jre     = p.julia_re;
     const double jim     = p.julia_im;
 
@@ -303,7 +303,7 @@ static MapStats render_custom_field_openmp(const MapParams& p, FieldOutput& fo) 
     const double span_re = p.scale * aspect;
     const double re_min  = p.center_re - span_re * 0.5;
     const double im_max  = p.center_im + span_im * 0.5;
-    const double bail2   = p.bailout * p.bailout;
+    const double bail2   = p.bailout_sq;
     const double jre     = p.julia_re;
     const double jim     = p.julia_im;
 
@@ -381,7 +381,7 @@ void field_variant_impl(const MapParams& p, FieldOutput& out) {
     const double span_re = p.scale * aspect;
     const double re_min  = p.center_re - span_re * 0.5;
     const double im_max  = p.center_im + span_im * 0.5;
-    const double bail2   = p.bailout * p.bailout;
+    const double bail2   = p.bailout_sq;
 
     const S jre = scalar_from_double<S>(p.julia_re);
     const S jim = scalar_from_double<S>(p.julia_im);
@@ -418,7 +418,7 @@ void field_variant_impl(const MapParams& p, FieldOutput& out) {
                 }
 
                 const IterResult r = iterate<V, S>(
-                    z0, c, p.iterations, bail2, p.metric, p.pairwise_cap, orbit
+                    z0, c, p.iterations, p.bailout, bail2, p.metric, p.pairwise_cap, orbit
                 );
 
                 const size_t idx = static_cast<size_t>(y) * W + x;
@@ -569,6 +569,7 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
         cp.height     = p.height;
         cp.iterations = p.iterations;
         cp.bailout    = p.bailout;
+        cp.bailout_sq = p.bailout_sq;
         cp.scalar_type  = fx ? "fx64" : "fp64";
         cp.colormap_id  = static_cast<int>(p.colormap);
         cp.variant_id   = static_cast<int>(p.variant);

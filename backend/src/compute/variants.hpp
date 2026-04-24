@@ -216,6 +216,11 @@ inline double variant_default_bailout(Variant v) {
     return variant_is_transcendental(v) ? 64.0 : 2.0;
 }
 
+inline double variant_default_bailout_sq(Variant v) {
+    const double r = variant_default_bailout(v);
+    return r * r;
+}
+
 inline bool variant_supports_axis_transition(Variant v) {
     const int id = static_cast<int>(v);
     return id >= 0 && id <= 9;

@@ -24,7 +24,8 @@ struct HsMeshParams {
     double scale     =  3.0;          // complex units, the height of the field
     int    resolution = 192;          // grid size (resolution × resolution)
     int    iterations = 512;
-    double bailout    = 2.0;
+    double bailout    = 2.0;          // radius, kept for metric normalization
+    double bailout_sq = 4.0;          // squared threshold used by escape tests
 
     Variant variant   = Variant::Mandelbrot;
     Metric  metric    = Metric::MinAbs;

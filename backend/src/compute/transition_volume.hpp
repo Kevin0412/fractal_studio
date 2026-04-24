@@ -25,7 +25,8 @@ struct TransitionVolumeParams {
 
     int resolution = 96;  // resolution³ voxels
     int iterations = 256;
-    double bailout = 2.0;
+    double bailout = 2.0;  // radius, kept for interior normalization
+    double bailout_sq = 4.0; // squared threshold used by escape tests
 
     Variant from_variant = Variant::Mandelbrot;
     Variant to_variant   = Variant::Boat;

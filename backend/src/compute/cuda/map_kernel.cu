@@ -532,7 +532,7 @@ CudaMapStats cuda_render_map(const CudaMapParams& p, cv::Mat& out) {
 
     const dim3 block(16, 16);
     const dim3 grid((p.width + 15) / 16, (p.height + 15) / 16);
-    const double bail2 = p.bailout * p.bailout;
+    const double bail2 = p.bailout_sq;
 
     // Time the kernel with CUDA events.
     cudaEvent_t ev_start, ev_stop;

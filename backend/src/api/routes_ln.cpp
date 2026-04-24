@@ -60,12 +60,10 @@ template <compute::Variant V>
 void render_ln_strip(
     double cr, double ci,
     int s, int t,
-    int iters, double bailout,
+    int iters, double bailout, double bailoutSq,
     compute::Colormap colormap,
     cv::Mat& out
 ) {
-    const double bail2 = bailout * bailout;
-
     #pragma omp parallel
     {
         std::vector<compute::Cx<double>> orbit_scratch;
@@ -81,7 +79,7 @@ void render_ln_strip(
                 const compute::Cx<double> c{ore, oim};
                 const compute::Cx<double> z0{0.0, 0.0};
                 const compute::IterResult ir = compute::iterate<V, double>(
-                    z0, c, iters, bail2, compute::Metric::Escape, 1, orbit_scratch);
+                    z0, c, iters, bailout, bailoutSq, compute::Metric::Escape, 1, orbit_scratch);
                 uint8_t* px = rowp + 3 * x;
                 const int    it   = ir.escaped ? ir.iter : iters;
                 const double norm = ir.escaped ? ir.norm : 0.0;
@@ -95,28 +93,28 @@ void dispatch_ln_strip(
     compute::Variant v,
     double cr, double ci,
     int s, int t,
-    int iters, double bailout,
+    int iters, double bailout, double bailoutSq,
     compute::Colormap colormap,
     cv::Mat& out
 ) {
     using V = compute::Variant;
     switch (v) {
-        case V::Mandelbrot: render_ln_strip<V::Mandelbrot>(cr, ci, s, t, iters, bailout, colormap, out); break;
-        case V::Tri:        render_ln_strip<V::Tri>       (cr, ci, s, t, iters, bailout, colormap, out); break;
-        case V::Boat:       render_ln_strip<V::Boat>      (cr, ci, s, t, iters, bailout, colormap, out); break;
-        case V::Duck:       render_ln_strip<V::Duck>      (cr, ci, s, t, iters, bailout, colormap, out); break;
-        case V::Bell:       render_ln_strip<V::Bell>      (cr, ci, s, t, iters, bailout, colormap, out); break;
-        case V::Fish:       render_ln_strip<V::Fish>      (cr, ci, s, t, iters, bailout, colormap, out); break;
-        case V::Vase:       render_ln_strip<V::Vase>      (cr, ci, s, t, iters, bailout, colormap, out); break;
-        case V::Bird:       render_ln_strip<V::Bird>      (cr, ci, s, t, iters, bailout, colormap, out); break;
-        case V::Mask:       render_ln_strip<V::Mask>      (cr, ci, s, t, iters, bailout, colormap, out); break;
-        case V::Ship:       render_ln_strip<V::Ship>      (cr, ci, s, t, iters, bailout, colormap, out); break;
-        case V::SinZ:       render_ln_strip<V::SinZ>      (cr, ci, s, t, iters, bailout, colormap, out); break;
-        case V::CosZ:       render_ln_strip<V::CosZ>      (cr, ci, s, t, iters, bailout, colormap, out); break;
-        case V::ExpZ:       render_ln_strip<V::ExpZ>      (cr, ci, s, t, iters, bailout, colormap, out); break;
-        case V::SinhZ:      render_ln_strip<V::SinhZ>     (cr, ci, s, t, iters, bailout, colormap, out); break;
-        case V::CoshZ:      render_ln_strip<V::CoshZ>     (cr, ci, s, t, iters, bailout, colormap, out); break;
-        case V::TanZ:       render_ln_strip<V::TanZ>      (cr, ci, s, t, iters, bailout, colormap, out); break;
+        case V::Mandelbrot: render_ln_strip<V::Mandelbrot>(cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
+        case V::Tri:        render_ln_strip<V::Tri>       (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
+        case V::Boat:       render_ln_strip<V::Boat>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
+        case V::Duck:       render_ln_strip<V::Duck>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
+        case V::Bell:       render_ln_strip<V::Bell>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
+        case V::Fish:       render_ln_strip<V::Fish>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
+        case V::Vase:       render_ln_strip<V::Vase>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
+        case V::Bird:       render_ln_strip<V::Bird>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
+        case V::Mask:       render_ln_strip<V::Mask>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
+        case V::Ship:       render_ln_strip<V::Ship>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
+        case V::SinZ:       render_ln_strip<V::SinZ>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
+        case V::CosZ:       render_ln_strip<V::CosZ>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
+        case V::ExpZ:       render_ln_strip<V::ExpZ>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
+        case V::SinhZ:      render_ln_strip<V::SinhZ>     (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
+        case V::CoshZ:      render_ln_strip<V::CoshZ>     (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
+        case V::TanZ:       render_ln_strip<V::TanZ>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
     }
 }
 
@@ -150,10 +148,20 @@ std::string lnMapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& r
 
     compute::Variant v;
     if (!compute::variant_from_name(variantStr.c_str(), v)) v = compute::Variant::Mandelbrot;
-    const double bailout = j.contains("bailout") && !j["bailout"].is_null()
+    double bailout = j.contains("bailout") && !j["bailout"].is_null()
         ? j.value("bailout", 2.0)
         : compute::variant_default_bailout(v);
+    const double bailoutSq = j.contains("bailoutSq") && !j["bailoutSq"].is_null()
+        ? j.value("bailoutSq", compute::variant_default_bailout_sq(v))
+        : (j.contains("bailout") && !j["bailout"].is_null()
+            ? bailout * bailout
+            : compute::variant_default_bailout_sq(v));
+    if (j.contains("bailoutSq") && !j["bailoutSq"].is_null() &&
+        !(j.contains("bailout") && !j["bailout"].is_null())) {
+        bailout = std::sqrt(bailoutSq);
+    }
     if (!(bailout > 0.0) || !std::isfinite(bailout)) throw std::runtime_error("invalid bailout");
+    if (!(bailoutSq > 0.0) || !std::isfinite(bailoutSq)) throw std::runtime_error("invalid bailoutSq");
     compute::Colormap cm;
     if (!compute::colormap_from_name(colormapStr.c_str(), cm)) cm = compute::Colormap::ClassicCos;
 
@@ -166,7 +174,7 @@ std::string lnMapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& r
     try {
         cv::Mat strip(t, s, CV_8UC3);
         const auto t0 = std::chrono::steady_clock::now();
-        dispatch_ln_strip(v, cr, ci, s, t, iters, bailout, cm, strip);
+        dispatch_ln_strip(v, cr, ci, s, t, iters, bailout, bailoutSq, cm, strip);
         const auto t1 = std::chrono::steady_clock::now();
         elapsed = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
@@ -188,6 +196,7 @@ std::string lnMapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& r
             {"colorMap",     colormapStr},
             {"iterations",   iters},
             {"bailout",      bailout},
+            {"bailoutSq",    bailoutSq},
         };
         const std::filesystem::path sidecarPath =
             std::filesystem::path(run.outputDir) / "ln_map.json";

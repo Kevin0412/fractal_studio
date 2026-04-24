@@ -360,7 +360,7 @@ MapStats render_map_avx512_fp64(const MapParams& p, cv::Mat& out) {
     const double span_re = p.scale * aspect;
     const double re_min  = p.center_re - span_re * 0.5;
     const double im_max  = p.center_im + span_im * 0.5;
-    const double bail2   = p.bailout * p.bailout;
+    const double bail2   = p.bailout_sq;
     const int variant_id = static_cast<int>(p.variant);
 
     const auto t0 = std::chrono::steady_clock::now();
@@ -566,7 +566,7 @@ MapStats render_map_avx512_fx64(const MapParams& p, cv::Mat& out) {
     const double span_re = p.scale * aspect;
     const double re_min  = p.center_re - span_re * 0.5;
     const double im_max  = p.center_im + span_im * 0.5;
-    const double bail2   = p.bailout * p.bailout;
+    const double bail2   = p.bailout_sq;
 
     const auto t0 = std::chrono::steady_clock::now();
 

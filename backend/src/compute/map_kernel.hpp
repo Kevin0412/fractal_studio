@@ -33,7 +33,8 @@ struct MapParams {
     int width        = 1024;
     int height       = 768;
     int iterations   = 1024;
-    double bailout   = 2.0;
+    double bailout   = 2.0;  // radius, kept for UI-scale normalization
+    double bailout_sq = 4.0; // squared threshold used by escape tests
 
     Variant  variant  = Variant::Mandelbrot;
     Metric   metric   = Metric::Escape;

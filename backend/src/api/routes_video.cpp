@@ -73,6 +73,16 @@ int resolveStripWidth(const Json& j, int W, int H) {
     return roundUpToMultiple(std::max(requested, derived), 8);
 }
 
+double bailoutSqFromJson(const Json& j, double radius, double defaultSq) {
+    if (j.contains("bailoutSq") && !j["bailoutSq"].is_null()) {
+        return j.value("bailoutSq", defaultSq);
+    }
+    if (j.contains("bailout") && !j["bailout"].is_null()) {
+        return radius * radius;
+    }
+    return defaultSq;
+}
+
 // ─── Julia-aware ln-strip renderer ───────────────────────────────────────────
 // When julia=true, z₀ = center + e^k·e^(iθ) and c = fixed (juliaRe+juliaIm·i).
 // When julia=false, c = center + e^k·e^(iθ) and z₀ = 0 (standard ln-map).
@@ -83,11 +93,10 @@ void render_ln_strip_dispatch(
     double cr, double ci,
     double jre, double jim,
     int s, int t,
-    int iters, double bailout,
+    int iters, double bailout, double bailoutSq,
     compute::Colormap colormap,
     cv::Mat& out
 ) {
-    const double bail2 = bailout * bailout;
     const compute::Cx<double> c_julia{jre, jim};
 
     #pragma omp parallel
@@ -111,7 +120,7 @@ void render_ln_strip_dispatch(
                     c  = {pre, pim};
                 }
                 const compute::IterResult ir = compute::iterate<V, double>(
-                    z0, c, iters, bail2, compute::Metric::Escape, 1, orbit_scratch);
+                    z0, c, iters, bailout, bailoutSq, compute::Metric::Escape, 1, orbit_scratch);
                 uint8_t* px = rowp + 3 * x;
                 const int    it   = ir.escaped ? ir.iter : iters;
                 const double norm = ir.escaped ? ir.norm : 0.0;
@@ -127,12 +136,12 @@ void dispatch_ln_strip_full(
     double cr, double ci,
     double jre, double jim,
     int s, int t,
-    int iters, double bailout,
+    int iters, double bailout, double bailoutSq,
     compute::Colormap colormap,
     cv::Mat& out
 ) {
     using V = compute::Variant;
-#define CASE(X) case V::X: render_ln_strip_dispatch<V::X>(julia,cr,ci,jre,jim,s,t,iters,bailout,colormap,out); break
+#define CASE(X) case V::X: render_ln_strip_dispatch<V::X>(julia,cr,ci,jre,jim,s,t,iters,bailout,bailoutSq,colormap,out); break
     switch (v) {
         CASE(Mandelbrot); CASE(Tri); CASE(Boat); CASE(Duck); CASE(Bell);
         CASE(Fish);       CASE(Vase); CASE(Bird); CASE(Mask); CASE(Ship);
@@ -354,10 +363,20 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
     compute::Variant variantVal;
     if (!compute::variant_from_name(variantStr.c_str(), variantVal))
         variantVal = compute::Variant::Mandelbrot;
-    const double bailout = lk.sidecar.contains("bailout") && !lk.sidecar["bailout"].is_null()
+    double bailout = lk.sidecar.contains("bailout") && !lk.sidecar["bailout"].is_null()
         ? lk.sidecar.value("bailout", 2.0)
         : compute::variant_default_bailout(variantVal);
+    const double bailoutSq = lk.sidecar.contains("bailoutSq") && !lk.sidecar["bailoutSq"].is_null()
+        ? lk.sidecar.value("bailoutSq", compute::variant_default_bailout_sq(variantVal))
+        : (lk.sidecar.contains("bailout") && !lk.sidecar["bailout"].is_null()
+            ? bailout * bailout
+            : compute::variant_default_bailout_sq(variantVal));
+    if (lk.sidecar.contains("bailoutSq") && !lk.sidecar["bailoutSq"].is_null() &&
+        !(lk.sidecar.contains("bailout") && !lk.sidecar["bailout"].is_null())) {
+        bailout = std::sqrt(bailoutSq);
+    }
     if (!(bailout > 0.0) || !std::isfinite(bailout)) throw std::runtime_error("invalid bailout");
+    if (!(bailoutSq > 0.0) || !std::isfinite(bailoutSq)) throw std::runtime_error("invalid bailoutSq");
     compute::Colormap cmVal;
     if (!compute::colormap_from_name(colormapStr.c_str(), cmVal))
         cmVal = compute::Colormap::ClassicCos;
@@ -372,6 +391,7 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
     mp.height     = H;
     mp.iterations = iters;
     mp.bailout    = bailout;
+    mp.bailout_sq = bailoutSq;
     mp.variant    = variantVal;
     mp.metric     = compute::Metric::Escape;
     mp.colormap   = cmVal;
@@ -500,10 +520,16 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
 
     compute::Variant v;
     if (!compute::variant_from_name(variantStr.c_str(), v)) v = compute::Variant::Mandelbrot;
-    const double bailout = j.contains("bailout") && !j["bailout"].is_null()
+    double bailout = j.contains("bailout") && !j["bailout"].is_null()
         ? j.value("bailout", 2.0)
         : compute::variant_default_bailout(v);
+    const double bailoutSq = bailoutSqFromJson(j, bailout, compute::variant_default_bailout_sq(v));
+    if (j.contains("bailoutSq") && !j["bailoutSq"].is_null() &&
+        !(j.contains("bailout") && !j["bailout"].is_null())) {
+        bailout = std::sqrt(bailoutSq);
+    }
     if (!(bailout > 0.0) || !std::isfinite(bailout)) throw std::runtime_error("invalid bailout");
+    if (!(bailoutSq > 0.0) || !std::isfinite(bailoutSq)) throw std::runtime_error("invalid bailoutSq");
     compute::Colormap cm;
     if (!compute::colormap_from_name(colormapStr.c_str(), cm)) cm = compute::Colormap::ClassicCos;
 
@@ -517,7 +543,7 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
         const double t_exact = (2.0 + depth) * LN_TWO / TAU * static_cast<double>(s);
         const int t = static_cast<int>(std::ceil(t_exact));
         cv::Mat strip(t, s, CV_8UC3);
-        dispatch_ln_strip_full(v, julia, cr, ci, jre, jim, s, t, iters, bailout, cm, strip);
+        dispatch_ln_strip_full(v, julia, cr, ci, jre, jim, s, t, iters, bailout, bailoutSq, cm, strip);
 
         const std::filesystem::path stripPath = std::filesystem::path(run.outputDir) / "ln_map.png";
         compute::write_png(stripPath.string(), strip);
@@ -532,6 +558,7 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
                 {"lnRadiusTop", LN_FOUR}, {"variant", variantStr},
                 {"colorMap", colormapStr}, {"iterations", iters},
                 {"bailout", bailout},
+                {"bailoutSq", bailoutSq},
             };
             const std::filesystem::path scPath = std::filesystem::path(run.outputDir) / "ln_map.json";
             std::ofstream os(scPath);
@@ -552,6 +579,7 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
         mp.height     = H;
         mp.iterations = iters;
         mp.bailout    = bailout;
+        mp.bailout_sq = bailoutSq;
         mp.variant    = v;
         mp.metric     = compute::Metric::Escape;
         mp.colormap   = cm;

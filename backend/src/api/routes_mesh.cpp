@@ -38,6 +38,16 @@ compute::Metric parseMetric(const std::string& s) {
     return compute::Metric::MinAbs;
 }
 
+double bailoutSqFromJson(const Json& j, double radius, double defaultSq) {
+    if (j.contains("bailoutSq") && !j["bailoutSq"].is_null()) {
+        return j.value("bailoutSq", defaultSq);
+    }
+    if (j.contains("bailout") && !j["bailout"].is_null()) {
+        return radius * radius;
+    }
+    return defaultSq;
+}
+
 } // namespace
 
 std::string hsMeshRoute(const std::filesystem::path&, JobRunner& runner, const std::string& body) {
@@ -55,11 +65,17 @@ std::string hsMeshRoute(const std::filesystem::path&, JobRunner& runner, const s
     p.bailout = j.contains("bailout") && !j["bailout"].is_null()
         ? j.value("bailout", 2.0)
         : compute::variant_default_bailout(p.variant);
+    p.bailout_sq = bailoutSqFromJson(j, p.bailout, compute::variant_default_bailout_sq(p.variant));
+    if (j.contains("bailoutSq") && !j["bailoutSq"].is_null() &&
+        !(j.contains("bailout") && !j["bailout"].is_null())) {
+        p.bailout = std::sqrt(p.bailout_sq);
+    }
     p.metric  = parseMetric (j.value("metric",  std::string("min_abs")));
 
     if (p.resolution < 8 || p.resolution > 4096) throw std::runtime_error("invalid resolution");
     if (p.iterations < 1 || p.iterations > 1000000) throw std::runtime_error("invalid iterations");
     if (!(p.bailout > 0.0) || !std::isfinite(p.bailout)) throw std::runtime_error("invalid bailout");
+    if (!(p.bailout_sq > 0.0) || !std::isfinite(p.bailout_sq)) throw std::runtime_error("invalid bailoutSq");
 
     auto run = runner.createRun("hs-mesh", body);
     runner.setStatus(run.id, "running");
@@ -125,11 +141,17 @@ std::string hsFieldRoute(const std::filesystem::path&, JobRunner& runner, const 
     p.bailout = j.contains("bailout") && !j["bailout"].is_null()
         ? j.value("bailout", 2.0)
         : compute::variant_default_bailout(p.variant);
+    p.bailout_sq = bailoutSqFromJson(j, p.bailout, compute::variant_default_bailout_sq(p.variant));
+    if (j.contains("bailoutSq") && !j["bailoutSq"].is_null() &&
+        !(j.contains("bailout") && !j["bailout"].is_null())) {
+        p.bailout = std::sqrt(p.bailout_sq);
+    }
     p.metric  = parseMetric (j.value("metric",  std::string("min_abs")));
 
     if (p.resolution < 8 || p.resolution > 4096) throw std::runtime_error("invalid resolution");
     if (p.iterations < 1 || p.iterations > 1000000) throw std::runtime_error("invalid iterations");
     if (!(p.bailout > 0.0) || !std::isfinite(p.bailout)) throw std::runtime_error("invalid bailout");
+    if (!(p.bailout_sq > 0.0) || !std::isfinite(p.bailout_sq)) throw std::runtime_error("invalid bailoutSq");
 
     auto run = runner.createRun("hs-field", body);
     runner.setStatus(run.id, "running");
@@ -194,6 +216,11 @@ std::string transitionMeshRoute(const std::filesystem::path&, JobRunner& runner,
     p.resolution = j.value("resolution", 96);
     p.iterations = j.value("iterations", 256);
     p.bailout   = j.value("bailout",   2.0);
+    p.bailout_sq = bailoutSqFromJson(j, p.bailout, 4.0);
+    if (j.contains("bailoutSq") && !j["bailoutSq"].is_null() &&
+        !(j.contains("bailout") && !j["bailout"].is_null())) {
+        p.bailout = std::sqrt(p.bailout_sq);
+    }
     p.from_variant = parseVariant(j.value("transitionFrom", std::string("mandelbrot")));
     p.to_variant   = parseVariant(j.value("transitionTo",   std::string("burning_ship")));
     const double iso = j.value("iso",  0.5);
@@ -201,6 +228,7 @@ std::string transitionMeshRoute(const std::filesystem::path&, JobRunner& runner,
     if (p.resolution < 8 || p.resolution > 1024) throw std::runtime_error("invalid resolution");
     if (p.iterations < 1 || p.iterations > 10000) throw std::runtime_error("invalid iterations");
     if (!(p.bailout > 0.0) || !std::isfinite(p.bailout)) throw std::runtime_error("invalid bailout");
+    if (!(p.bailout_sq > 0.0) || !std::isfinite(p.bailout_sq)) throw std::runtime_error("invalid bailoutSq");
 
     auto run = runner.createRun("transition-mesh", body);
     runner.setStatus(run.id, "running");
@@ -276,6 +304,11 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
     p.resolution = j.value("resolution", 64);
     p.iterations = j.value("iterations", 128);
     p.bailout    = j.value("bailout",    2.0);
+    p.bailout_sq = bailoutSqFromJson(j, p.bailout, 4.0);
+    if (j.contains("bailoutSq") && !j["bailoutSq"].is_null() &&
+        !(j.contains("bailout") && !j["bailout"].is_null())) {
+        p.bailout = std::sqrt(p.bailout_sq);
+    }
     p.from_variant = parseVariant(j.value("transitionFrom", std::string("mandelbrot")));
     p.to_variant   = parseVariant(j.value("transitionTo",   std::string("burning_ship")));
     const float iso = static_cast<float>(j.value("iso", 0.48));
@@ -283,6 +316,7 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
     if (p.resolution < 4 || p.resolution > 1024) throw std::runtime_error("resolution out of range [4,1024]");
     if (p.iterations < 1 || p.iterations > 10000) throw std::runtime_error("invalid iterations");
     if (!(p.bailout > 0.0) || !std::isfinite(p.bailout)) throw std::runtime_error("invalid bailout");
+    if (!(p.bailout_sq > 0.0) || !std::isfinite(p.bailout_sq)) throw std::runtime_error("invalid bailoutSq");
 
     auto run = runner.createRun("transition-voxels", body);
     runner.setStatus(run.id, "running");

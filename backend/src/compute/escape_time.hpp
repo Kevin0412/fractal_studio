@@ -81,6 +81,7 @@ inline IterResult iterate(
     Cx<S> z,
     const Cx<S>& c,
     int max_iter,
+    double bailout,
     double bailout_sq,
     Metric metric,
     int pairwise_cap,
@@ -101,8 +102,6 @@ inline IterResult iterate(
     }
 
     int n_iter = (track_pairwise && max_iter > pairwise_cap) ? pairwise_cap : max_iter;
-
-    const double bailout = std::sqrt(bailout_sq);
 
     int i;
     for (i = 0; i < n_iter; i++) {

@@ -150,6 +150,11 @@ double multibrotBailoutForPower(int power) {
     return std::pow(2.0, 1.0 / static_cast<double>(power - 1));
 }
 
+double multibrotBailoutSqForPower(int power) {
+    if (power < 2) return 4.0;
+    return std::pow(2.0, 2.0 / static_cast<double>(power - 1));
+}
+
 int inferFormulaPower(const std::string& formula) {
     const std::string s = formulaKey(formula);
     if (s == "z*z+c") return 2;
@@ -184,12 +189,30 @@ double inferFormulaBailout(const std::string& formula) {
     return 2.0;
 }
 
+double inferFormulaBailoutSq(const std::string& formula) {
+    const int power = inferFormulaPower(formula);
+    if (power >= 2) return multibrotBailoutSqForPower(power);
+    return 4.0;
+}
+
 double effectiveCustomBailout(const std::string& formula, double storedBailout) {
     const int power = inferFormulaPower(formula);
     if (power >= 2 && std::abs(storedBailout - 4.0) < 1e-12) {
         return multibrotBailoutForPower(power);
     }
     return storedBailout;
+}
+
+double effectiveCustomBailoutSq(const std::string& formula, double storedBailout) {
+    const int power = inferFormulaPower(formula);
+    if (power >= 2) {
+        const double inferred = multibrotBailoutForPower(power);
+        if (std::abs(storedBailout - 4.0) < 1e-12 ||
+            std::abs(storedBailout - inferred) < 1e-12) {
+            return multibrotBailoutSqForPower(power);
+        }
+    }
+    return storedBailout * storedBailout;
 }
 
 // ─── Compile a formula into a shared library ──────────────────────────────────
@@ -424,6 +447,18 @@ double lookupCustomBailout(const std::filesystem::path& repoRoot, const std::str
     return effectiveCustomBailout(rec.formula, rec.bailout);
 }
 
+double lookupCustomBailoutSq(const std::filesystem::path& repoRoot, const std::string& hash) {
+    std::lock_guard<std::mutex> lock(g_mu);
+    ensureDbLoadedLocked(repoRoot);
+
+    Db db(repoRoot / "fractal_studio.db");
+    CustomVariantRecord rec;
+    if (!db.getCustomVariantByHash(hash, rec)) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return effectiveCustomBailoutSq(rec.formula, rec.bailout);
+}
+
 // ─── Route: POST /api/variants/compile ───────────────────────────────────────
 
 std::string variantCompileRoute(const std::filesystem::path& repoRoot, const std::string& body) {
@@ -431,9 +466,11 @@ std::string variantCompileRoute(const std::filesystem::path& repoRoot, const std
 
     const std::string formula = j.value("formula", std::string(""));
     const std::string name    = j.value("name",    std::string("custom"));
-    const double bailout      = j.contains("bailout") && !j["bailout"].is_null()
+    const bool explicitBailout = j.contains("bailout") && !j["bailout"].is_null();
+    const double bailout      = explicitBailout
         ? j.value("bailout", 2.0)
         : inferFormulaBailout(formula);
+    const double bailoutSq    = explicitBailout ? bailout * bailout : inferFormulaBailoutSq(formula);
 
     if (formula.empty()) throw std::runtime_error("formula is required");
     if (bailout <= 0.0 || bailout > 1e6) throw std::runtime_error("bailout must be in (0, 1e6]");
@@ -453,7 +490,11 @@ std::string variantCompileRoute(const std::filesystem::path& repoRoot, const std
         std::lock_guard<std::mutex> lock(g_mu);
         ensureDbLoadedLocked(repoRoot);
         if (g_fns.count(hash)) {
-            Json resp = {{"ok", true}, {"variantId", variantId}, {"name", name}, {"bailout", bailout}, {"cached", true}};
+            Json resp = {
+                {"ok", true}, {"variantId", variantId}, {"name", name},
+                {"bailout", bailout}, {"bailoutSq", bailoutSq},
+                {"cached", true}
+            };
             return resp.dump();
         }
     }
@@ -495,6 +536,7 @@ std::string variantCompileRoute(const std::filesystem::path& repoRoot, const std
         {"name",      name},
         {"hash",      hash},
         {"bailout",   bailout},
+        {"bailoutSq", bailoutSq},
         {"cached",    false},
     };
     return resp.dump();
@@ -543,6 +585,7 @@ std::string variantListRoute(const std::filesystem::path& repoRoot) {
             {"name",       r.name},
             {"formula",    r.formula},
             {"bailout",    effectiveCustomBailout(r.formula, r.bailout)},
+            {"bailoutSq",  effectiveCustomBailoutSq(r.formula, r.bailout)},
             {"createdAt",  r.createdAt},
             {"loaded",     g_fns.count(r.hash) > 0},
         });

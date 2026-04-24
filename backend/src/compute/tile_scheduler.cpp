@@ -136,6 +136,7 @@ static double render_tile_gpu(
     cp.height     = t.h;
     cp.iterations = base.iterations;
     cp.bailout    = base.bailout;
+    cp.bailout_sq = base.bailout_sq;
     cp.scalar_type  = use_fx ? "fx64" : "fp64";
     cp.colormap_id  = static_cast<int>(base.colormap);
 

@@ -75,6 +75,7 @@ export interface MapRenderRequest {
   colorMap?: ColorMap
   smooth?: boolean           // ln-smooth continuous coloring (μ = iter + 1 − log₂(log₂(|z|²)))
   bailout?: number
+  bailoutSq?: number
   julia?: boolean
   juliaRe?: number
   juliaIm?: number
@@ -116,6 +117,7 @@ export interface MapFieldRequest {
   variant?: Variant | string   // Variant literal or "custom:HASH"
   metric?: Metric
   bailout?: number
+  bailoutSq?: number
   julia?: boolean
   juliaRe?: number
   juliaIm?: number
@@ -187,6 +189,8 @@ export interface HsFieldRequest {
   metric?: HsStage
   variant?: Variant
   iterations?: number
+  bailout?: number
+  bailoutSq?: number
   heightClamp?: number
 }
 
@@ -223,6 +227,8 @@ export interface TransitionMeshRequest {
   resolution?: number
   iso?: number
   iterations?: number
+  bailout?: number
+  bailoutSq?: number
   transitionFrom?: Variant | string
   transitionTo?: Variant | string
 }
@@ -235,6 +241,8 @@ export interface TransitionVoxelRequest {
   resolution?: number   // default 64, max 512
   iso?: number
   iterations?: number
+  bailout?: number
+  bailoutSq?: number
   transitionFrom?: Variant | string
   transitionTo?: Variant | string
 }
@@ -264,6 +272,8 @@ export interface VideoExportRequest {
   variant?: Variant | string
   colorMap?: ColorMap
   iterations?: number
+  bailout?: number
+  bailoutSq?: number
   widthS?: number
   depthOctaves?: number
   fps?: number
@@ -348,6 +358,7 @@ export interface CustomVariant {
   name:       string
   formula:    string
   bailout:    number
+  bailoutSq?: number
   createdAt:  string
   loaded:     boolean
 }
@@ -369,6 +380,7 @@ export interface VariantCompileResponse {
   name?:     string
   hash?:     string
   bailout?:  number
+  bailoutSq?: number
   cached?:   boolean
   error?:    string
 }
@@ -422,8 +434,11 @@ export const api = {
 
   variantList:    () =>
     getJson<VariantListResponse>('/api/variants'),
-  variantCompile: (formula: string, name: string, bailout: number) =>
-    postJson<VariantCompileResponse>('/api/variants/compile', { formula, name, bailout }),
+  variantCompile: (formula: string, name: string, bailout?: number) =>
+    postJson<VariantCompileResponse>(
+      '/api/variants/compile',
+      bailout === undefined ? { formula, name } : { formula, name, bailout },
+    ),
   variantDelete:  (variantId: string) =>
     postJson<{ ok: boolean }>('/api/variants/delete', { variantId }),
 }

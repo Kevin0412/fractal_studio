@@ -23,7 +23,8 @@ struct CudaMapParams {
     int width       = 1024;
     int height      = 768;
     int iterations  = 1024;
-    double bailout  = 2.0;
+    double bailout  = 2.0;  // radius, kept for metric normalization
+    double bailout_sq = 4.0; // squared threshold used by escape tests
 
     // "fp64" or "fx64"
     std::string scalar_type = "fp64";

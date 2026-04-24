@@ -38,7 +38,8 @@ struct TransitionParams {
     int width        = 1024;
     int height       = 1024;
     int iterations   = 512;
-    double bailout   = 2.0;
+    double bailout   = 2.0;  // radius, kept for field normalization
+    double bailout_sq = 4.0; // squared threshold used by escape tests
 
     // Rotation angle around x-axis, radians. 0 = Mandelbrot, π/2 = Burning Ship.
     double theta     = 0.0;
