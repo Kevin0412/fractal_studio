@@ -150,10 +150,10 @@ double multibrotBailoutForPower(int power) {
     return std::pow(2.0, 1.0 / static_cast<double>(power - 1));
 }
 
-double inferFormulaBailout(const std::string& formula) {
+int inferFormulaPower(const std::string& formula) {
     const std::string s = formulaKey(formula);
-    if (s == "z*z+c") return 2.0;
-    if (s == "z*z*z+c") return multibrotBailoutForPower(3);
+    if (s == "z*z+c") return 2;
+    if (s == "z*z*z+c") return 3;
 
     const std::string prefix = "z^";
     const std::string suffix = "+c";
@@ -161,7 +161,7 @@ double inferFormulaBailout(const std::string& formula) {
         && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0) {
         const std::string exp = s.substr(prefix.size(), s.size() - prefix.size() - suffix.size());
         if (!exp.empty() && std::all_of(exp.begin(), exp.end(), [](unsigned char ch) { return std::isdigit(ch); })) {
-            return multibrotBailoutForPower(std::stoi(exp));
+            return std::stoi(exp);
         }
     }
 
@@ -171,11 +171,25 @@ double inferFormulaBailout(const std::string& formula) {
         && s.compare(s.size() - powSuffix.size(), powSuffix.size(), powSuffix) == 0) {
         const std::string exp = s.substr(powPrefix.size(), s.size() - powPrefix.size() - powSuffix.size());
         if (!exp.empty() && std::all_of(exp.begin(), exp.end(), [](unsigned char ch) { return std::isdigit(ch); })) {
-            return multibrotBailoutForPower(std::stoi(exp));
+            return std::stoi(exp);
         }
     }
 
+    return 0;
+}
+
+double inferFormulaBailout(const std::string& formula) {
+    const int power = inferFormulaPower(formula);
+    if (power >= 2) return multibrotBailoutForPower(power);
     return 2.0;
+}
+
+double effectiveCustomBailout(const std::string& formula, double storedBailout) {
+    const int power = inferFormulaPower(formula);
+    if (power >= 2 && std::abs(storedBailout - 4.0) < 1e-12) {
+        return multibrotBailoutForPower(power);
+    }
+    return storedBailout;
 }
 
 // ─── Compile a formula into a shared library ──────────────────────────────────
@@ -407,7 +421,7 @@ double lookupCustomBailout(const std::filesystem::path& repoRoot, const std::str
     if (!db.getCustomVariantByHash(hash, rec)) {
         return std::numeric_limits<double>::quiet_NaN();
     }
-    return rec.bailout;
+    return effectiveCustomBailout(rec.formula, rec.bailout);
 }
 
 // ─── Route: POST /api/variants/compile ───────────────────────────────────────
@@ -528,7 +542,7 @@ std::string variantListRoute(const std::filesystem::path& repoRoot) {
             {"variantId",  "custom:" + r.hash},
             {"name",       r.name},
             {"formula",    r.formula},
-            {"bailout",    r.bailout},
+            {"bailout",    effectiveCustomBailout(r.formula, r.bailout)},
             {"createdAt",  r.createdAt},
             {"loaded",     g_fns.count(r.hash) > 0},
         });
