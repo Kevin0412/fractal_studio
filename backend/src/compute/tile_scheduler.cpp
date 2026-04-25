@@ -5,6 +5,7 @@
 #include "tile_scheduler.hpp"
 #include "map_kernel.hpp"
 #include "map_kernel_avx512.hpp"
+#include "parallel.hpp"
 
 #if defined(HAS_CUDA_KERNEL)
 #  include "cuda/map_kernel.cuh"
@@ -95,6 +96,7 @@ static double render_tile_cpu(
     p.height    = t.h;
     p.engine    = use_avx ? "avx512" : "openmp";
     p.scalar_type = use_fx ? "fx64" : "fp64";
+    p.render_threads = 1;
 
     // Create a submat view for this tile.
     cv::Mat tile_mat = out(cv::Rect(t.x, t.y, t.w, t.h));
@@ -106,9 +108,6 @@ static double render_tile_cpu(
     } else {
         // OpenMP path (single-threaded for this tile since the outer scheduler
         // calls render_tile_cpu from multiple CPU workers concurrently).
-        // We need a non-parallel fallback here to avoid nested omp parallelism.
-        // For now, use render_map which uses #pragma omp parallel internally —
-        // nested parallelism is handled by OMP_NESTED / omp_set_nested().
         stats = render_map(p, tile_mat);
     }
     return stats.elapsed_ms;
@@ -210,11 +209,7 @@ TileSchedulerStats render_map_hybrid(
     }
 
     // CPU workers — one thread per available CPU core
-#ifdef _OPENMP
-    const int n_cpu_threads = omp_get_max_threads();
-#else
-    const int n_cpu_threads = static_cast<int>(std::thread::hardware_concurrency());
-#endif
+    const int n_cpu_threads = default_render_threads();
     std::vector<std::thread> cpu_threads;
     cpu_threads.reserve(static_cast<size_t>(n_cpu_threads));
     WorkerStats cpu_ema;

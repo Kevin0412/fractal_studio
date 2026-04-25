@@ -21,6 +21,7 @@
 #include "../compute/escape_time.hpp"
 #include "../compute/colormap.hpp"
 #include "../compute/image_io.hpp"
+#include "../compute/parallel.hpp"
 
 #ifdef _OPENMP
 #  include <omp.h>
@@ -64,7 +65,9 @@ void render_ln_strip(
     compute::Colormap colormap,
     cv::Mat& out
 ) {
-    #pragma omp parallel
+    const int thread_count = compute::default_render_threads();
+
+    #pragma omp parallel num_threads(thread_count)
     {
         std::vector<compute::Cx<double>> orbit_scratch;
         #pragma omp for schedule(dynamic, 8)
@@ -79,11 +82,13 @@ void render_ln_strip(
                 const compute::Cx<double> c{ore, oim};
                 const compute::Cx<double> z0{0.0, 0.0};
                 const compute::IterResult ir = compute::iterate<V, double>(
-                    z0, c, iters, bailout, bailoutSq, compute::Metric::Escape, 1, orbit_scratch);
+                    z0, c, iters, bailout, bailoutSq,
+                    compute::Metric::Escape,
+                    compute::iter_result_mask_for_metric(compute::Metric::Escape),
+                    1, orbit_scratch);
                 uint8_t* px = rowp + 3 * x;
                 const int    it   = ir.escaped ? ir.iter : iters;
-                const double norm = ir.escaped ? ir.norm : 0.0;
-                compute::colorize_escape_bgr(it, iters, colormap, norm, false, px[0], px[1], px[2]);
+                compute::colorize_escape_bgr(it, iters, colormap, 0.0, false, px[0], px[1], px[2]);
             }
         }
     }

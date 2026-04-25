@@ -53,6 +53,7 @@ struct TransitionParams {
     Colormap colormap     = Colormap::ClassicCos;
     bool     smooth       = false;
     int      pairwise_cap = 64;   // orbit length cap for MinPairwiseDist
+    int      render_threads = 0;  // 0 = auto-select visible logical cores
 };
 
 MapStats render_transition(const TransitionParams& p, cv::Mat& out);

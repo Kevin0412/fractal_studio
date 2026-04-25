@@ -5,7 +5,7 @@
 // A viewport is split into tiles (default 256×256). Tiles are pushed into a
 // shared work queue. Two worker pools draw from the queue:
 //
-//   CPU pool — one worker per omp_get_max_threads() / 2 logical cores.
+//   CPU pool — one worker per visible logical core by default.
 //              Runs the AVX-512 or OpenMP path depending on availability.
 //
 //   GPU pool — one worker. Runs CUDA batches of tiles via cudaGraphLaunch.

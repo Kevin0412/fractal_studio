@@ -2,6 +2,7 @@
 
 #include "transition_kernel.hpp"
 #include "map_kernel.hpp"
+#include "parallel.hpp"
 
 #ifdef _OPENMP
 #  include <omp.h>
@@ -11,6 +12,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <vector>
 
 namespace fsd::compute {
 
@@ -23,6 +25,7 @@ struct TransitionIterResult {
     double extra;    // min pairwise distance (sqrt), or 0 if not computed
     double norm;     // |z|² at escape step (0 if not escaped)
     bool   escaped;
+    IterResultMask valid_mask;
 };
 
 // Direct 3D transition iteration. Tracks min/max of x²+y²+z² for HS metrics.
@@ -34,21 +37,41 @@ inline TransitionIterResult iterate_transition(
     double x0, double y0, double z0,
     int max_iter, double bail2,
     Variant from_variant, Variant to_variant,
-    Metric metric, int pairwise_cap,
+    Metric metric, IterResultMask result_mask, int pairwise_cap,
     std::vector<OrbitPt>& orbit
 ) {
+    (void)metric;
     double x = x0, y = y0, z = z0;
-    double mn = x*x + y*y + z*z;
-    double mx = mn;
     TransitionIterResult r{};
     r.iter = 0;
-    r.min_abs_sq = mn;
-    r.max_abs_sq = mx;
+    r.min_abs_sq = std::numeric_limits<double>::infinity();
+    r.max_abs_sq = 0.0;
     r.extra = 0.0;
     r.norm = 0.0;
     r.escaped = false;
+    r.valid_mask = 0;
 
-    const bool track_orbit = (metric == Metric::MinPairwiseDist) && (pairwise_cap > 0);
+    const bool track_iter    = iter_result_wants(result_mask, IterResultField::Iter);
+    const bool track_min_abs = iter_result_wants(result_mask, IterResultField::MinAbs);
+    const bool track_max_abs = iter_result_wants(result_mask, IterResultField::MaxAbs);
+    const bool track_norm    = iter_result_wants(result_mask, IterResultField::Norm);
+    const bool track_escaped = iter_result_wants(result_mask, IterResultField::Escaped);
+    const bool track_orbit   = iter_result_wants(result_mask, IterResultField::Extra)
+                            && pairwise_cap > 0;
+
+    if (track_iter)    r.valid_mask |= IterResultField::Iter;
+    if (track_min_abs) r.valid_mask |= IterResultField::MinAbs;
+    if (track_max_abs) r.valid_mask |= IterResultField::MaxAbs;
+    if (track_norm)    r.valid_mask |= IterResultField::Norm;
+    if (track_escaped) r.valid_mask |= IterResultField::Escaped;
+    if (track_orbit)   r.valid_mask |= IterResultField::Extra;
+
+    if (track_min_abs || track_max_abs) {
+        const double init_n2 = x*x + y*y + z*z;
+        r.min_abs_sq = init_n2;
+        r.max_abs_sq = init_n2;
+    }
+
     if (track_orbit) {
         orbit.clear();
         orbit.push_back({x, y, z});
@@ -67,26 +90,22 @@ inline TransitionIterResult iterate_transition(
         const double n2 = finite_xyz
             ? (x*x + y*y + z*z)
             : std::numeric_limits<double>::infinity();
-        if (n2 < mn) mn = n2;
-        if (n2 > mx) mx = n2;
+        if (track_min_abs && n2 < r.min_abs_sq) r.min_abs_sq = n2;
+        if (track_max_abs && n2 > r.max_abs_sq) r.max_abs_sq = n2;
 
         if (track_orbit && static_cast<int>(orbit.size()) < pairwise_cap) {
             orbit.push_back({x, y, z});
         }
 
         if (!finite_xyz || n2 > bail2) {
-            r.iter = i;
-            r.norm = n2;
-            r.escaped = true;
-            r.min_abs_sq = mn;
-            r.max_abs_sq = mx;
+            if (track_iter)    r.iter = i;
+            if (track_norm)    r.norm = n2;
+            if (track_escaped) r.escaped = true;
             break;
         }
     }
     if (!r.escaped) {
-        r.iter = max_iter;
-        r.min_abs_sq = mn;
-        r.max_abs_sq = mx;
+        if (track_iter) r.iter = max_iter;
     }
 
     // Compute min pairwise distance from orbit (O(n²), capped).
@@ -131,8 +150,11 @@ MapStats render_transition(const TransitionParams& p, cv::Mat& out) {
     const double bail2   = p.bailout_sq;
     const double cth     = std::cos(p.theta);
     const double sth     = std::sin(p.theta);
+    const IterResultMask result_mask =
+        iter_result_mask_for_metric(p.metric, p.metric == Metric::Escape && p.smooth);
+    const int thread_count = resolve_render_threads(p.render_threads);
 
-    #pragma omp parallel
+    #pragma omp parallel num_threads(thread_count)
     {
         std::vector<OrbitPt> orbit;
         orbit.reserve(static_cast<size_t>(p.pairwise_cap));
@@ -151,7 +173,7 @@ MapStats render_transition(const TransitionParams& p, cv::Mat& out) {
             const TransitionIterResult r =
                 iterate_transition(x0, y0, z0, p.iterations, bail2,
                                    p.from_variant, p.to_variant,
-                                   p.metric, p.pairwise_cap, orbit);
+                                   p.metric, result_mask, p.pairwise_cap, orbit);
 
             uint8_t* px = row + 3 * x;
             if (p.metric == Metric::Escape) {

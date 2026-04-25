@@ -13,6 +13,7 @@
 #include "map_kernel_avx512.hpp"
 #include "escape_time.hpp"
 #include "complex.hpp"
+#include "parallel.hpp"
 #include "scalar/fx64.hpp"
 
 #if defined(HAS_CUDA_KERNEL)
@@ -72,12 +73,15 @@ void render_variant_impl(const MapParams& p, cv::Mat& out) {
     const double re_min  = p.center_re - span_re * 0.5;
     const double im_max  = p.center_im + span_im * 0.5;
     const double bail2   = p.bailout_sq;
+    const IterResultMask result_mask =
+        iter_result_mask_for_metric(p.metric, p.metric == Metric::Escape && p.smooth);
+    const int thread_count = resolve_render_threads(p.render_threads);
 
     const S jre = scalar_from_double<S>(p.julia_re);
     const S jim = scalar_from_double<S>(p.julia_im);
     const Cx<S> c_const{jre, jim};
 
-    #pragma omp parallel
+    #pragma omp parallel num_threads(thread_count)
     {
         std::vector<Cx<S>> orbit;
         orbit.reserve(static_cast<size_t>(p.pairwise_cap));
@@ -102,7 +106,8 @@ void render_variant_impl(const MapParams& p, cv::Mat& out) {
                 }
 
                 const IterResult r = iterate<V, S>(
-                    z0, c, p.iterations, p.bailout, bail2, p.metric, p.pairwise_cap, orbit
+                    z0, c, p.iterations, p.bailout, bail2,
+                    p.metric, result_mask, p.pairwise_cap, orbit
                 );
 
                 uint8_t* px = row + 3 * x;
@@ -241,10 +246,11 @@ static MapStats render_custom_openmp(const MapParams& p, cv::Mat& out) {
     const double bail2   = p.bailout_sq;
     const double jre     = p.julia_re;
     const double jim     = p.julia_im;
+    const int thread_count = resolve_render_threads(p.render_threads);
 
     const auto t0 = std::chrono::steady_clock::now();
 
-    #pragma omp parallel for schedule(dynamic, 4)
+    #pragma omp parallel for num_threads(thread_count) schedule(dynamic, 4)
     for (int y = 0; y < H; y++) {
         uint8_t* row = out.ptr<uint8_t>(y);
         const double im_c = im_max - (static_cast<double>(y) + 0.5) / H * span_im;
@@ -306,13 +312,14 @@ static MapStats render_custom_field_openmp(const MapParams& p, FieldOutput& fo) 
     const double bail2   = p.bailout_sq;
     const double jre     = p.julia_re;
     const double jim     = p.julia_im;
+    const int thread_count = resolve_render_threads(p.render_threads);
 
     fo.iter_u32.assign(static_cast<size_t>(W) * H, 0u);
     fo.norm_f32.assign(static_cast<size_t>(W) * H, 0.0f);
 
     const auto t0 = std::chrono::steady_clock::now();
 
-    #pragma omp parallel for schedule(dynamic, 4)
+    #pragma omp parallel for num_threads(thread_count) schedule(dynamic, 4)
     for (int y = 0; y < H; y++) {
         const double im_c = im_max - (static_cast<double>(y) + 0.5) / H * span_im;
         for (int x = 0; x < W; x++) {
@@ -388,6 +395,10 @@ void field_variant_impl(const MapParams& p, FieldOutput& out) {
     const Cx<S> c_const{jre, jim};
 
     const bool is_escape = (p.metric == Metric::Escape);
+    const IterResultMask result_mask = is_escape
+        ? (IterResultField::Iter | IterResultField::Escaped | IterResultField::Norm)
+        : iter_result_mask_for_metric(p.metric);
+    const int thread_count = resolve_render_threads(p.render_threads);
     if (is_escape) {
         out.iter_u32.assign(static_cast<size_t>(W) * H, 0u);
         out.norm_f32.assign(static_cast<size_t>(W) * H, 0.0f);
@@ -395,7 +406,7 @@ void field_variant_impl(const MapParams& p, FieldOutput& out) {
         out.field_f64.assign(static_cast<size_t>(W) * H, 0.0);
     }
 
-    #pragma omp parallel
+    #pragma omp parallel num_threads(thread_count)
     {
         std::vector<Cx<S>> orbit;
         orbit.reserve(static_cast<size_t>(p.pairwise_cap));
@@ -418,7 +429,8 @@ void field_variant_impl(const MapParams& p, FieldOutput& out) {
                 }
 
                 const IterResult r = iterate<V, S>(
-                    z0, c, p.iterations, p.bailout, bail2, p.metric, p.pairwise_cap, orbit
+                    z0, c, p.iterations, p.bailout, bail2,
+                    p.metric, result_mask, p.pairwise_cap, orbit
                 );
 
                 const size_t idx = static_cast<size_t>(y) * W + x;
@@ -598,10 +610,10 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
                            && (p.engine == "avx512" || p.engine == "auto" || p.engine == "hybrid")
                            && (static_cast<int>(p.metric) < 4)
                            && avx512_available();
-    // fx64 path: restrict to Mandelbrot variant only (IFMA52 integer variant
-    // extensions are not yet implemented for the other 9 variants).
+    // fx64 path: restrict to Mandelbrot escape only. IFMA52 metric
+    // accumulators and non-Mandelbrot variants fall through to OpenMP.
     const bool can_avx = can_avx_base
-                      && (!fx || p.variant == Variant::Mandelbrot);
+                      && (!fx || (p.variant == Variant::Mandelbrot && p.metric == Metric::Escape));
 
     if (can_avx) {
         auto s = fx ? render_map_avx512_fx64(p, out)

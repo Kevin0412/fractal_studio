@@ -2,6 +2,7 @@
 
 #include "heightfield_mesh.hpp"
 #include "../complex.hpp"
+#include "../parallel.hpp"
 
 #ifdef _OPENMP
 #  include <omp.h>
@@ -26,8 +27,10 @@ void computeFieldImpl(const HsMeshParams& p, std::vector<double>& field) {
     const double re_min = p.center_re - span * 0.5;
     const double im_max = p.center_im + span * 0.5;
     const double bail2 = p.bailout_sq;
+    const IterResultMask result_mask = iter_result_mask_for_metric(p.metric);
+    const int thread_count = resolve_render_threads(p.render_threads);
 
-    #pragma omp parallel
+    #pragma omp parallel num_threads(thread_count)
     {
         std::vector<Cx<double>> orbit_scratch;
         orbit_scratch.reserve(64);
@@ -40,7 +43,8 @@ void computeFieldImpl(const HsMeshParams& p, std::vector<double>& field) {
                 Cx<double> c{re, im};
                 Cx<double> z0{0.0, 0.0};
                 IterResult r = iterate<V, double>(
-                    z0, c, p.iterations, p.bailout, bail2, p.metric, 64, orbit_scratch);
+                    z0, c, p.iterations, p.bailout, bail2,
+                    p.metric, result_mask, 64, orbit_scratch);
 
                 double v = 0.0;
                 switch (p.metric) {

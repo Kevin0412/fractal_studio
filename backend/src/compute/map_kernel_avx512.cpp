@@ -36,6 +36,7 @@
 
 #include "map_kernel_avx512.hpp"
 #include "colormap.hpp"   // colorize_escape_bgr / colorize_field_bgr
+#include "parallel.hpp"
 #include "variants.hpp"   // Variant enum
 
 #include <opencv2/core.hpp>
@@ -43,6 +44,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 // AVX-512 intrinsics are available if __AVX512F__ is defined.
 // We compile this file with -mavx512f via a target_compile_options guard in
@@ -95,6 +97,8 @@ static void avx512_fp64_row(
     const __m512d vbail2 = _mm512_set1_pd(bail2);
     const __m512d vtwo   = _mm512_set1_pd(2.0);
     const __m512d vzero  = _mm512_setzero_pd();
+    const bool track_min = (metric == Metric::MinAbs || metric == Metric::Envelope);
+    const bool track_max = (metric == Metric::MaxAbs || metric == Metric::Envelope);
 
     // Pixel x stride: 8 lanes at a time.
     for (int x = 0; x < W; x += 8) {
@@ -128,12 +132,14 @@ static void avx512_fp64_row(
         __m512i viter  = _mm512_setzero_si512();
         __mmask8 active = 0xFF;
 
-        // Track min/max |z|² for non-escape metrics.
-        // Initialise with |z0|².
-        __m512d vn2_init = _mm512_add_pd(
-            _mm512_mul_pd(vzre, vzre), _mm512_mul_pd(vzim, vzim));
-        __m512d vmn = vn2_init;
-        __m512d vmx = vn2_init;
+        __m512d vmn = _mm512_set1_pd(std::numeric_limits<double>::infinity());
+        __m512d vmx = vzero;
+        if (track_min || track_max) {
+            const __m512d vn2_init = _mm512_add_pd(
+                _mm512_mul_pd(vzre, vzre), _mm512_mul_pd(vzim, vzim));
+            vmn = vn2_init;
+            vmx = vn2_init;
+        }
 
         // Select which variant inner loop to run. The switch is *outside* the
         // pixel loop (hoisted per-row) so the branch predictor and the
@@ -148,8 +154,8 @@ static void avx512_fp64_row(
             vzim = _mm512_mask_mov_pd(vzim, active, new_im); \
             const __m512d vn2 = _mm512_add_pd( \
                 _mm512_mul_pd(vzre, vzre), _mm512_mul_pd(vzim, vzim)); \
-            vmn = _mm512_min_pd(vmn, vn2); \
-            vmx = _mm512_max_pd(vmx, vn2); \
+            if (track_min) vmn = _mm512_min_pd(vmn, vn2); \
+            if (track_max) vmx = _mm512_max_pd(vmx, vn2); \
             const __mmask8 escaped_radius = _mm512_mask_cmp_pd_mask( \
                 active, vn2, vbail2, _CMP_GT_OQ); \
             const __mmask8 escaped_nan = _mm512_mask_cmp_pd_mask( \
@@ -322,8 +328,8 @@ static void avx512_fp64_row(
         int64_t iters_arr[8];
         _mm512_storeu_si512(iters_arr, viter);
         double mn_arr[8], mx_arr[8];
-        _mm512_storeu_pd(mn_arr, vmn);
-        _mm512_storeu_pd(mx_arr, vmx);
+        if (track_min) _mm512_storeu_pd(mn_arr, vmn);
+        if (track_max) _mm512_storeu_pd(mx_arr, vmx);
 
         for (int k = 0; k < 8 && (x + k) < W; k++) {
             uint8_t* px = row_ptr + 3 * (x + k);
@@ -362,10 +368,11 @@ MapStats render_map_avx512_fp64(const MapParams& p, cv::Mat& out) {
     const double im_max  = p.center_im + span_im * 0.5;
     const double bail2   = p.bailout_sq;
     const int variant_id = static_cast<int>(p.variant);
+    const int thread_count = resolve_render_threads(p.render_threads);
 
     const auto t0 = std::chrono::steady_clock::now();
 
-    #pragma omp parallel for schedule(dynamic, 4)
+    #pragma omp parallel for num_threads(thread_count) schedule(dynamic, 4)
     for (int y = 0; y < H; y++) {
         avx512_fp64_row(
             y, W, H, re_min, im_max, span_re, span_im,
@@ -567,10 +574,11 @@ MapStats render_map_avx512_fx64(const MapParams& p, cv::Mat& out) {
     const double re_min  = p.center_re - span_re * 0.5;
     const double im_max  = p.center_im + span_im * 0.5;
     const double bail2   = p.bailout_sq;
+    const int thread_count = resolve_render_threads(p.render_threads);
 
     const auto t0 = std::chrono::steady_clock::now();
 
-    #pragma omp parallel for schedule(dynamic, 4)
+    #pragma omp parallel for num_threads(thread_count) schedule(dynamic, 4)
     for (int y = 0; y < H; y++) {
         avx512_mandelbrot_row_fx64(
             y, W, H, re_min, im_max, span_re, span_im,

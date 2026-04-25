@@ -13,8 +13,8 @@
 //   - Output: raw BGR byte array on the host (allocated as pinned memory).
 //     Converted to cv::Mat on the CPU side.
 //
-// Thread layout: 16×16 blocks. Kernel iterates over (blockIdx * blockDim + threadIdx)
-// pixel indices, with out-of-bounds guard.
+// Thread layout: 32×8 blocks. Each warp covers a contiguous row segment,
+// improving row-major stores while keeping 256 threads per block.
 
 #include "map_kernel.cuh"
 #include "fx64.cuh"
@@ -260,9 +260,15 @@ __global__ void fractal_fp64(
         cre = re;   cim = im;
     }
 
-    // Track min/max |z|² for non-escape metrics.
-    double mn = zre * zre + zim * zim;
-    double mx = mn;
+    const bool track_min = (metric_id == 1 || metric_id == 3);
+    const bool track_max = (metric_id == 2 || metric_id == 3);
+    double mn = INFINITY;
+    double mx = 0.0;
+    if (track_min || track_max) {
+        const double init_abs2 = zre * zre + zim * zim;
+        mn = init_abs2;
+        mx = init_abs2;
+    }
 
     // Apply step THEN check — matches escape_time.hpp CPU convention so that
     // r.iter is identical on both paths (both return i when z_{i+1} escapes).
@@ -282,8 +288,8 @@ __global__ void fractal_fp64(
         }
         const bool finite_z = isfinite(zre) && isfinite(zim);
         const double abs2 = finite_z ? (zre * zre + zim * zim) : INFINITY;
-        if (abs2 < mn) mn = abs2;
-        if (abs2 > mx) mx = abs2;
+        if (track_min && abs2 < mn) mn = abs2;
+        if (track_max && abs2 > mx) mx = abs2;
         if (!finite_z || abs2 > bail2) break;
     }
 
@@ -438,11 +444,17 @@ __global__ void fractal_fx64(
         cim = Fx64::from_double(im_d);
     }
 
-    // Track min/max |z|² using fp64 for the escape check and metrics.
-    double fre0 = zre.to_double();
-    double fim0 = zim.to_double();
-    double mn = fre0 * fre0 + fim0 * fim0;
-    double mx = mn;
+    const bool track_min = (metric_id == 1 || metric_id == 3);
+    const bool track_max = (metric_id == 2 || metric_id == 3);
+    double mn = INFINITY;
+    double mx = 0.0;
+    if (track_min || track_max) {
+        const double fre0 = zre.to_double();
+        const double fim0 = zim.to_double();
+        const double init_abs2 = fre0 * fre0 + fim0 * fim0;
+        mn = init_abs2;
+        mx = init_abs2;
+    }
 
     // Apply step THEN check — matches escape_time.hpp CPU convention.
     int i = 0;
@@ -465,8 +477,8 @@ __global__ void fractal_fx64(
         const double fim = zim.to_double();
         const bool finite_z = isfinite(fre) && isfinite(fim);
         const double abs2 = finite_z ? (fre * fre + fim * fim) : INFINITY;
-        if (abs2 < mn) mn = abs2;
-        if (abs2 > mx) mx = abs2;
+        if (track_min && abs2 < mn) mn = abs2;
+        if (track_max && abs2 > mx) mx = abs2;
         if (!finite_z || abs2 > bail2) break;
     }
 
@@ -530,8 +542,10 @@ CudaMapStats cuda_render_map(const CudaMapParams& p, cv::Mat& out) {
     // Ensure device buffer is large enough.
     g_devbuf.ensure(p.width, p.height);
 
-    const dim3 block(16, 16);
-    const dim3 grid((p.width + 15) / 16, (p.height + 15) / 16);
+    const dim3 block(32, 8);
+    const dim3 grid(
+        (p.width + static_cast<int>(block.x) - 1) / static_cast<int>(block.x),
+        (p.height + static_cast<int>(block.y) - 1) / static_cast<int>(block.y));
     const double bail2 = p.bailout_sq;
 
     // Time the kernel with CUDA events.

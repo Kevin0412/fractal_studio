@@ -35,6 +35,9 @@ struct HsMeshParams {
     // Clamp to prevent spikes from the escape-time metric (which can go to
     // the bailout radius). Field values above this collapse to this value.
     double heightClamp = 2.0;
+
+    // CPU render threads. 0 means auto-select from visible logical cores.
+    int render_threads = 0;
 };
 
 // Compute the raw metric field values (float64[resolution²], row-major).

@@ -32,6 +32,7 @@
 #include "../compute/variants.hpp"
 #include "../compute/colormap.hpp"
 #include "../compute/escape_time.hpp"
+#include "../compute/parallel.hpp"
 
 #include <opencv2/imgproc.hpp>
 #include <opencv2/videoio.hpp>
@@ -98,8 +99,9 @@ void render_ln_strip_dispatch(
     cv::Mat& out
 ) {
     const compute::Cx<double> c_julia{jre, jim};
+    const int thread_count = compute::default_render_threads();
 
-    #pragma omp parallel
+    #pragma omp parallel num_threads(thread_count)
     {
         std::vector<compute::Cx<double>> orbit_scratch;
         #pragma omp for schedule(dynamic, 8)
@@ -120,11 +122,13 @@ void render_ln_strip_dispatch(
                     c  = {pre, pim};
                 }
                 const compute::IterResult ir = compute::iterate<V, double>(
-                    z0, c, iters, bailout, bailoutSq, compute::Metric::Escape, 1, orbit_scratch);
+                    z0, c, iters, bailout, bailoutSq,
+                    compute::Metric::Escape,
+                    compute::iter_result_mask_for_metric(compute::Metric::Escape),
+                    1, orbit_scratch);
                 uint8_t* px = rowp + 3 * x;
                 const int    it   = ir.escaped ? ir.iter : iters;
-                const double norm = ir.escaped ? ir.norm : 0.0;
-                compute::colorize_escape_bgr(it, iters, colormap, norm, false, px[0], px[1], px[2]);
+                compute::colorize_escape_bgr(it, iters, colormap, 0.0, false, px[0], px[1], px[2]);
             }
         }
     }

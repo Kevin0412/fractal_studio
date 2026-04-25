@@ -49,6 +49,10 @@ struct MapParams {
     // Cap for the pairwise-distance orbit buffer (HS-Recurrence).
     int pairwise_cap  = 64;
 
+    // CPU render threads. 0 means auto-select from visible logical cores;
+    // callers with outer parallelism can force 1 to avoid nested oversubscribe.
+    int render_threads = 0;
+
     // Scalar type: "fp64" (default), "fx64", or "auto" (auto-selects fx64
     // when scale < 1e-13 for precision at extreme zoom depth).
     std::string scalar_type = "auto";

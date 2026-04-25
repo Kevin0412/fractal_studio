@@ -1,6 +1,7 @@
 // compute/transition_volume.cpp
 
 #include "transition_volume.hpp"
+#include "parallel.hpp"
 
 #ifdef _OPENMP
 #  include <omp.h>
@@ -31,8 +32,9 @@ McField buildTransitionVolume(const TransitionVolumeParams& p) {
     const double bail2 = p.bailout_sq;
 
     const int maxIter = p.iterations;
+    const int thread_count = default_render_threads();
 
-    #pragma omp parallel for schedule(dynamic, 1)
+    #pragma omp parallel for num_threads(thread_count) schedule(dynamic, 1)
     for (int zi = 0; zi < N; zi++) {
         const double z0 = zmin + (zi + 0.5) / N * span;
         for (int yi = 0; yi < N; yi++) {

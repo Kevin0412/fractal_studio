@@ -21,6 +21,7 @@
 #include "variants.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <cmath>
 #include <limits>
 #include <vector>
@@ -64,14 +65,49 @@ inline bool metric_from_name(const char* name, Metric& out) {
     return false;
 }
 
-// Per-pixel result. Fields are populated conditionally on metric.
+using IterResultMask = uint32_t;
+
+namespace IterResultField {
+    inline constexpr IterResultMask Iter     = 1u << 0;
+    inline constexpr IterResultMask MinAbs   = 1u << 1;
+    inline constexpr IterResultMask MaxAbs   = 1u << 2;
+    inline constexpr IterResultMask Extra    = 1u << 3;
+    inline constexpr IterResultMask Norm     = 1u << 4;
+    inline constexpr IterResultMask Escaped  = 1u << 5;
+}
+
+inline bool iter_result_wants(IterResultMask mask, IterResultMask field) {
+    return (mask & field) != 0;
+}
+
+inline IterResultMask iter_result_mask_for_metric(Metric metric, bool need_escape_norm = false) {
+    switch (metric) {
+        case Metric::Escape:
+            return IterResultField::Iter
+                 | IterResultField::Escaped
+                 | (need_escape_norm ? IterResultField::Norm : 0u);
+        case Metric::MinAbs:
+            return IterResultField::MinAbs;
+        case Metric::MaxAbs:
+            return IterResultField::MaxAbs;
+        case Metric::Envelope:
+            return IterResultField::MinAbs | IterResultField::MaxAbs;
+        case Metric::MinPairwiseDist:
+            return IterResultField::Extra;
+    }
+    return IterResultField::Iter | IterResultField::Escaped;
+}
+
+// Per-pixel result. `valid_mask` reports which fields were requested and
+// maintained by the caller-selected mask.
 struct IterResult {
     int    iter;     // escape iteration (== max_iter if bounded)
-    double min_abs;  // min |z_n|, valid for MinAbs/Envelope/MinPairwiseDist fallback
+    double min_abs;  // min |z_n|, valid when valid_mask has MinAbs
     double max_abs;  // max |z_n|, valid for MaxAbs/Envelope
     double extra;    // MinPairwiseDist result
     double norm;     // |z|² at the escape step (0 if not escaped); used by LnSmooth
     bool   escaped;
+    IterResultMask valid_mask;
 };
 
 // Iterate up to max_iter steps of variant V on seed (z0, c). Tracks metrics.
@@ -84,9 +120,11 @@ inline IterResult iterate(
     double bailout,
     double bailout_sq,
     Metric metric,
+    IterResultMask result_mask,
     int pairwise_cap,
     std::vector<Cx<S>>& orbit_scratch  // reused across pixels by caller
 ) {
+    (void)metric;
     IterResult r{};
     r.iter    = 0;
     r.min_abs = std::numeric_limits<double>::infinity();
@@ -94,8 +132,23 @@ inline IterResult iterate(
     r.extra   = std::numeric_limits<double>::infinity();
     r.norm    = 0.0;
     r.escaped = false;
+    r.valid_mask = 0;
 
-    const bool track_pairwise = (metric == Metric::MinPairwiseDist);
+    const bool track_iter     = iter_result_wants(result_mask, IterResultField::Iter);
+    const bool track_min_abs  = iter_result_wants(result_mask, IterResultField::MinAbs);
+    const bool track_max_abs  = iter_result_wants(result_mask, IterResultField::MaxAbs);
+    const bool track_pairwise = iter_result_wants(result_mask, IterResultField::Extra)
+                             && pairwise_cap > 0;
+    const bool track_norm     = iter_result_wants(result_mask, IterResultField::Norm);
+    const bool track_escaped  = iter_result_wants(result_mask, IterResultField::Escaped);
+
+    if (track_iter)     r.valid_mask |= IterResultField::Iter;
+    if (track_min_abs)  r.valid_mask |= IterResultField::MinAbs;
+    if (track_max_abs)  r.valid_mask |= IterResultField::MaxAbs;
+    if (track_pairwise) r.valid_mask |= IterResultField::Extra;
+    if (track_norm)     r.valid_mask |= IterResultField::Norm;
+    if (track_escaped)  r.valid_mask |= IterResultField::Escaped;
+
     if (track_pairwise) {
         orbit_scratch.clear();
         orbit_scratch.reserve(static_cast<size_t>(pairwise_cap));
@@ -115,10 +168,10 @@ inline IterResult iterate(
             ? (zre * zre + zim * zim)
             : std::numeric_limits<double>::infinity();
 
-        if (metric == Metric::MinAbs || metric == Metric::Envelope || metric == Metric::MinPairwiseDist) {
+        if (track_min_abs) {
             if (n2 < r.min_abs) r.min_abs = n2;
         }
-        if (metric == Metric::MaxAbs || metric == Metric::Envelope) {
+        if (track_max_abs) {
             if (n2 > r.max_abs) r.max_abs = n2;
         }
         if (track_pairwise) {
@@ -141,22 +194,22 @@ inline IterResult iterate(
         }
 
         if (escaped_now) {
-            r.iter = i;
-            r.norm = n2;
-            r.escaped = true;
+            if (track_iter)    r.iter = i;
+            if (track_norm)    r.norm = n2;
+            if (track_escaped) r.escaped = true;
             // Convert squared accumulators to magnitudes on exit.
-            if (r.min_abs != std::numeric_limits<double>::infinity()) r.min_abs = scalar_sqrt(r.min_abs);
-            if (r.max_abs != 0.0)                                     r.max_abs = scalar_sqrt(r.max_abs);
-            if (r.extra   != std::numeric_limits<double>::infinity()) r.extra   = scalar_sqrt(r.extra);
+            if (track_min_abs && r.min_abs != std::numeric_limits<double>::infinity()) r.min_abs = scalar_sqrt(r.min_abs);
+            if (track_max_abs && r.max_abs != 0.0)                                     r.max_abs = scalar_sqrt(r.max_abs);
+            if (track_pairwise && r.extra != std::numeric_limits<double>::infinity())   r.extra   = scalar_sqrt(r.extra);
             return r;
         }
     }
 
-    r.iter    = n_iter;
-    r.escaped = false;
-    if (r.min_abs != std::numeric_limits<double>::infinity()) r.min_abs = scalar_sqrt(r.min_abs);
-    if (r.max_abs != 0.0)                                     r.max_abs = scalar_sqrt(r.max_abs);
-    if (r.extra   != std::numeric_limits<double>::infinity()) r.extra   = scalar_sqrt(r.extra);
+    if (track_iter)    r.iter = n_iter;
+    if (track_escaped) r.escaped = false;
+    if (track_min_abs && r.min_abs != std::numeric_limits<double>::infinity()) r.min_abs = scalar_sqrt(r.min_abs);
+    if (track_max_abs && r.max_abs != 0.0)                                     r.max_abs = scalar_sqrt(r.max_abs);
+    if (track_pairwise && r.extra != std::numeric_limits<double>::infinity())   r.extra   = scalar_sqrt(r.extra);
     return r;
 }
 
