@@ -17,52 +17,93 @@ namespace fsd::compute::hs {
 
 namespace {
 
-// Populate `field` with per-pixel metric values using the same iterate<>
-// core as the map kernel. Field is row-major: field[row * N + col].
-template <Variant V>
-void computeFieldImpl(const HsMeshParams& p, std::vector<double>& field) {
+template <Metric M>
+double hs_raw_value(const IterResult& r, double heightClamp, int iterations) {
+    if constexpr (M == Metric::Escape) {
+        return r.escaped
+            ? static_cast<double>(r.iter) / static_cast<double>(iterations)
+            : 1.0;
+    } else if constexpr (M == Metric::MinAbs) {
+        return std::isfinite(r.min_abs) ? r.min_abs : heightClamp;
+    } else if constexpr (M == Metric::MaxAbs) {
+        return r.max_abs;
+    } else if constexpr (M == Metric::Envelope) {
+        return 0.5 * (r.min_abs + r.max_abs);
+    } else {
+        return std::isfinite(r.extra) ? r.extra : heightClamp;
+    }
+}
+
+// Populate `field` with per-pixel metric values using the same iterate core as
+// the map kernel. Field is row-major: field[row * N + col].
+template <Variant V, Metric M, IterResultMask NeedMask>
+void computeFieldMetricImpl(const HsMeshParams& p, std::vector<double>& field) {
     const int N = p.resolution;
     field.assign(N * N, 0.0);
     const double span = p.scale;
     const double re_min = p.center_re - span * 0.5;
     const double im_max = p.center_im + span * 0.5;
     const double bail2 = p.bailout_sq;
-    const IterResultMask result_mask = iter_result_mask_for_metric(p.metric);
     const int thread_count = resolve_render_threads(p.render_threads);
+    constexpr int tile_size = 32;
+    const int tiles = (N + tile_size - 1) / tile_size;
+    const int tile_count = tiles * tiles;
 
     #pragma omp parallel num_threads(thread_count)
     {
         std::vector<Cx<double>> orbit_scratch;
-        orbit_scratch.reserve(64);
+        if constexpr (M == Metric::MinPairwiseDist) {
+            orbit_scratch.reserve(64);
+        }
 
-        #pragma omp for schedule(dynamic, 4)
-        for (int row = 0; row < N; row++) {
-            const double im = im_max - (static_cast<double>(row) + 0.5) / N * span;
-            for (int col = 0; col < N; col++) {
-                const double re = re_min + (static_cast<double>(col) + 0.5) / N * span;
-                Cx<double> c{re, im};
-                Cx<double> z0{0.0, 0.0};
-                IterResult r = iterate<V, double>(
-                    z0, c, p.iterations, p.bailout, bail2,
-                    p.metric, result_mask, 64, orbit_scratch);
+        #pragma omp for schedule(dynamic, 1)
+        for (int tile = 0; tile < tile_count; tile++) {
+            const int tile_col = tile % tiles;
+            const int tile_row = tile / tiles;
+            const int row0 = tile_row * tile_size;
+            const int col0 = tile_col * tile_size;
+            const int row1 = std::min(N, row0 + tile_size);
+            const int col1 = std::min(N, col0 + tile_size);
 
-                double v = 0.0;
-                switch (p.metric) {
-                    case Metric::Escape:
-                        v = r.escaped
-                            ? static_cast<double>(r.iter) / static_cast<double>(p.iterations)
-                            : 1.0;
-                        break;
-                    case Metric::MinAbs:          v = std::isfinite(r.min_abs) ? r.min_abs : p.heightClamp; break;
-                    case Metric::MaxAbs:          v = r.max_abs; break;
-                    case Metric::Envelope:        v = 0.5 * (r.min_abs + r.max_abs); break;
-                    case Metric::MinPairwiseDist: v = std::isfinite(r.extra) ? r.extra : p.heightClamp; break;
+            for (int row = row0; row < row1; row++) {
+                const double im = im_max - (static_cast<double>(row) + 0.5) / N * span;
+                for (int col = col0; col < col1; col++) {
+                    const double re = re_min + (static_cast<double>(col) + 0.5) / N * span;
+                    Cx<double> c{re, im};
+                    Cx<double> z0{0.0, 0.0};
+                    IterResult r;
+                    if constexpr (M == Metric::MinPairwiseDist) {
+                        r = iterate_pairwise<V, double>(
+                            z0, c, p.iterations, p.bailout, bail2, 64, orbit_scratch);
+                    } else {
+                        r = iterate_masked<NeedMask, V, double>(
+                            z0, c, p.iterations, p.bailout, bail2);
+                    }
+                    double v = hs_raw_value<M>(r, p.heightClamp, p.iterations);
+                    if (v > p.heightClamp) v = p.heightClamp;
+                    if (!std::isfinite(v)) v = p.heightClamp;
+                    field[row * N + col] = v;
                 }
-                if (v > p.heightClamp) v = p.heightClamp;
-                if (!std::isfinite(v)) v = p.heightClamp;
-                field[row * N + col] = v;
             }
         }
+    }
+}
+
+template <Variant V>
+void computeFieldImpl(const HsMeshParams& p, std::vector<double>& field) {
+    switch (p.metric) {
+        case Metric::Escape:
+            computeFieldMetricImpl<V, Metric::Escape,
+                IterResultField::Iter | IterResultField::Escaped>(p, field); break;
+        case Metric::MinAbs:
+            computeFieldMetricImpl<V, Metric::MinAbs, IterResultField::MinAbs>(p, field); break;
+        case Metric::MaxAbs:
+            computeFieldMetricImpl<V, Metric::MaxAbs, IterResultField::MaxAbs>(p, field); break;
+        case Metric::Envelope:
+            computeFieldMetricImpl<V, Metric::Envelope,
+                IterResultField::MinAbs | IterResultField::MaxAbs>(p, field); break;
+        case Metric::MinPairwiseDist:
+            computeFieldMetricImpl<V, Metric::MinPairwiseDist, IterResultField::Extra>(p, field); break;
     }
 }
 

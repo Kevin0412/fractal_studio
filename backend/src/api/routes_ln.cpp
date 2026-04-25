@@ -33,7 +33,6 @@
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
-#include <vector>
 
 namespace fsd {
 
@@ -69,7 +68,6 @@ void render_ln_strip(
 
     #pragma omp parallel num_threads(thread_count)
     {
-        std::vector<compute::Cx<double>> orbit_scratch;
         #pragma omp for schedule(dynamic, 8)
         for (int row = 0; row < t; row++) {
             uint8_t* rowp = out.ptr<uint8_t>(row);
@@ -81,11 +79,9 @@ void render_ln_strip(
                 const double oim = ci + r_mag * std::sin(th);
                 const compute::Cx<double> c{ore, oim};
                 const compute::Cx<double> z0{0.0, 0.0};
-                const compute::IterResult ir = compute::iterate<V, double>(
-                    z0, c, iters, bailout, bailoutSq,
-                    compute::Metric::Escape,
-                    compute::iter_result_mask_for_metric(compute::Metric::Escape),
-                    1, orbit_scratch);
+                const compute::IterResult ir = compute::iterate_masked<
+                    compute::IterResultField::Iter | compute::IterResultField::Escaped,
+                    V, double>(z0, c, iters, bailout, bailoutSq);
                 uint8_t* px = rowp + 3 * x;
                 const int    it   = ir.escaped ? ir.iter : iters;
                 compute::colorize_escape_bgr(it, iters, colormap, 0.0, false, px[0], px[1], px[2]);

@@ -40,8 +40,8 @@
   **auto** 模式按 CUDA → AVX-512 → OpenMP 优先级自动选择，取决于运行时可用性与度量支持情况。
 - **fx64** (1s·6i·57f fixed-point) engages automatically when scale < 1e-13 for ~17 decimal digits of precision vs fp64's ~15.
   **fx64**（1符·6整·57小数定点数）在 scale < 1e-13 时自动启用，精度约 17 位，优于 fp64 的 15 位。
-- **CUDA Graphs** are used for launch-overhead-free tile streaming when the GPU is active.
-  GPU 活跃时使用 **CUDA Graphs** 实现零启动开销的分块流式渲染。
+- **CUDA renderer** supports GPU map rendering for supported variants and metrics.
+  **CUDA 渲染器** 支持可用变体和指标的 GPU 地图渲染。
 - **MinPairwiseDist** (O(n²) orbit buffer) runs only on OpenMP; the vectorized paths skip it.
   **最小轨道距**（O(n²)轨道缓冲）仅在 OpenMP 路径支持，向量化路径跳过。
 
@@ -201,7 +201,7 @@ fractal_studio/
         map_kernel.cpp        # OpenMP renderer
         map_kernel_avx512.cpp # AVX-512 renderer (fp64 + fx64)
         cuda/
-          map_kernel.cu       # CUDA renderer (all variants, Julia, CUDA Graphs)
+          map_kernel.cu       # CUDA renderer (all variants, Julia)
           fx64.cuh            # fixed-point int64 on CUDA
         hs/
           heightfield_mesh.cpp  # HS field → triangle mesh

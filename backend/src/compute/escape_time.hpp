@@ -76,26 +76,8 @@ namespace IterResultField {
     inline constexpr IterResultMask Escaped  = 1u << 5;
 }
 
-inline bool iter_result_wants(IterResultMask mask, IterResultMask field) {
+constexpr bool iter_result_wants(IterResultMask mask, IterResultMask field) {
     return (mask & field) != 0;
-}
-
-inline IterResultMask iter_result_mask_for_metric(Metric metric, bool need_escape_norm = false) {
-    switch (metric) {
-        case Metric::Escape:
-            return IterResultField::Iter
-                 | IterResultField::Escaped
-                 | (need_escape_norm ? IterResultField::Norm : 0u);
-        case Metric::MinAbs:
-            return IterResultField::MinAbs;
-        case Metric::MaxAbs:
-            return IterResultField::MaxAbs;
-        case Metric::Envelope:
-            return IterResultField::MinAbs | IterResultField::MaxAbs;
-        case Metric::MinPairwiseDist:
-            return IterResultField::Extra;
-    }
-    return IterResultField::Iter | IterResultField::Escaped;
 }
 
 // Per-pixel result. `valid_mask` reports which fields were requested and
@@ -110,21 +92,19 @@ struct IterResult {
     IterResultMask valid_mask;
 };
 
-// Iterate up to max_iter steps of variant V on seed (z0, c). Tracks metrics.
-// For MinPairwiseDist we keep an orbit buffer capped at `pairwise_cap`.
-template <Variant V, typename S>
-inline IterResult iterate(
+// Iterate up to max_iter steps of variant V on seed (z0, c). NeedMask is a
+// compile-time contract: unused metric maintenance is compiled out of hot loops.
+template <IterResultMask NeedMask, Variant V, typename S>
+inline IterResult iterate_masked(
     Cx<S> z,
     const Cx<S>& c,
     int max_iter,
     double bailout,
-    double bailout_sq,
-    Metric metric,
-    IterResultMask result_mask,
-    int pairwise_cap,
-    std::vector<Cx<S>>& orbit_scratch  // reused across pixels by caller
+    double bailout_sq
 ) {
-    (void)metric;
+    static_assert(!iter_result_wants(NeedMask, IterResultField::Extra),
+        "Use iterate_pairwise for MinPairwiseDist.");
+
     IterResult r{};
     r.iter    = 0;
     r.min_abs = std::numeric_limits<double>::infinity();
@@ -134,33 +114,14 @@ inline IterResult iterate(
     r.escaped = false;
     r.valid_mask = 0;
 
-    const bool track_iter     = iter_result_wants(result_mask, IterResultField::Iter);
-    const bool track_min_abs  = iter_result_wants(result_mask, IterResultField::MinAbs);
-    const bool track_max_abs  = iter_result_wants(result_mask, IterResultField::MaxAbs);
-    const bool track_pairwise = iter_result_wants(result_mask, IterResultField::Extra)
-                             && pairwise_cap > 0;
-    const bool track_norm     = iter_result_wants(result_mask, IterResultField::Norm);
-    const bool track_escaped  = iter_result_wants(result_mask, IterResultField::Escaped);
+    if constexpr (iter_result_wants(NeedMask, IterResultField::Iter))    r.valid_mask |= IterResultField::Iter;
+    if constexpr (iter_result_wants(NeedMask, IterResultField::MinAbs))  r.valid_mask |= IterResultField::MinAbs;
+    if constexpr (iter_result_wants(NeedMask, IterResultField::MaxAbs))  r.valid_mask |= IterResultField::MaxAbs;
+    if constexpr (iter_result_wants(NeedMask, IterResultField::Norm))    r.valid_mask |= IterResultField::Norm;
+    if constexpr (iter_result_wants(NeedMask, IterResultField::Escaped)) r.valid_mask |= IterResultField::Escaped;
 
-    if (track_iter)     r.valid_mask |= IterResultField::Iter;
-    if (track_min_abs)  r.valid_mask |= IterResultField::MinAbs;
-    if (track_max_abs)  r.valid_mask |= IterResultField::MaxAbs;
-    if (track_pairwise) r.valid_mask |= IterResultField::Extra;
-    if (track_norm)     r.valid_mask |= IterResultField::Norm;
-    if (track_escaped)  r.valid_mask |= IterResultField::Escaped;
-
-    if (track_pairwise) {
-        orbit_scratch.clear();
-        orbit_scratch.reserve(static_cast<size_t>(pairwise_cap));
-    }
-
-    int n_iter = (track_pairwise && max_iter > pairwise_cap) ? pairwise_cap : max_iter;
-
-    int i;
-    for (i = 0; i < n_iter; i++) {
+    for (int i = 0; i < max_iter; i++) {
         z = variant_step<V, S>(z, c);
-        // Compute |z|² in double space: avoids fixed-point overflow when |z|
-        // grows large near the escape boundary (re² + im² can exceed Fx64 range).
         const double zre = scalar_to_double(z.re);
         const double zim = scalar_to_double(z.im);
         const bool finite_z = std::isfinite(zre) && std::isfinite(zim);
@@ -168,21 +129,11 @@ inline IterResult iterate(
             ? (zre * zre + zim * zim)
             : std::numeric_limits<double>::infinity();
 
-        if (track_min_abs) {
+        if constexpr (iter_result_wants(NeedMask, IterResultField::MinAbs)) {
             if (n2 < r.min_abs) r.min_abs = n2;
         }
-        if (track_max_abs) {
+        if constexpr (iter_result_wants(NeedMask, IterResultField::MaxAbs)) {
             if (n2 > r.max_abs) r.max_abs = n2;
-        }
-        if (track_pairwise) {
-            // Compare new point against all prior orbit points.
-            for (const auto& prior : orbit_scratch) {
-                const double dr = zre - scalar_to_double(prior.re);
-                const double di = zim - scalar_to_double(prior.im);
-                const double d2 = dr * dr + di * di;
-                if (d2 < r.extra) r.extra = d2;
-            }
-            orbit_scratch.push_back(z);
         }
 
         bool escaped_now = !finite_z;
@@ -194,22 +145,84 @@ inline IterResult iterate(
         }
 
         if (escaped_now) {
-            if (track_iter)    r.iter = i;
-            if (track_norm)    r.norm = n2;
-            if (track_escaped) r.escaped = true;
-            // Convert squared accumulators to magnitudes on exit.
-            if (track_min_abs && r.min_abs != std::numeric_limits<double>::infinity()) r.min_abs = scalar_sqrt(r.min_abs);
-            if (track_max_abs && r.max_abs != 0.0)                                     r.max_abs = scalar_sqrt(r.max_abs);
-            if (track_pairwise && r.extra != std::numeric_limits<double>::infinity())   r.extra   = scalar_sqrt(r.extra);
+            if constexpr (iter_result_wants(NeedMask, IterResultField::Iter))    r.iter = i;
+            if constexpr (iter_result_wants(NeedMask, IterResultField::Norm))    r.norm = n2;
+            if constexpr (iter_result_wants(NeedMask, IterResultField::Escaped)) r.escaped = true;
+            if constexpr (iter_result_wants(NeedMask, IterResultField::MinAbs)) {
+                if (r.min_abs != std::numeric_limits<double>::infinity()) r.min_abs = scalar_sqrt(r.min_abs);
+            }
+            if constexpr (iter_result_wants(NeedMask, IterResultField::MaxAbs)) {
+                if (r.max_abs != 0.0) r.max_abs = scalar_sqrt(r.max_abs);
+            }
             return r;
         }
     }
 
-    if (track_iter)    r.iter = n_iter;
-    if (track_escaped) r.escaped = false;
-    if (track_min_abs && r.min_abs != std::numeric_limits<double>::infinity()) r.min_abs = scalar_sqrt(r.min_abs);
-    if (track_max_abs && r.max_abs != 0.0)                                     r.max_abs = scalar_sqrt(r.max_abs);
-    if (track_pairwise && r.extra != std::numeric_limits<double>::infinity())   r.extra   = scalar_sqrt(r.extra);
+    if constexpr (iter_result_wants(NeedMask, IterResultField::Iter))    r.iter = max_iter;
+    if constexpr (iter_result_wants(NeedMask, IterResultField::Escaped)) r.escaped = false;
+    if constexpr (iter_result_wants(NeedMask, IterResultField::MinAbs)) {
+        if (r.min_abs != std::numeric_limits<double>::infinity()) r.min_abs = scalar_sqrt(r.min_abs);
+    }
+    if constexpr (iter_result_wants(NeedMask, IterResultField::MaxAbs)) {
+        if (r.max_abs != 0.0) r.max_abs = scalar_sqrt(r.max_abs);
+    }
+    return r;
+}
+
+template <Variant V, typename S>
+inline IterResult iterate_pairwise(
+    Cx<S> z,
+    const Cx<S>& c,
+    int max_iter,
+    double bailout,
+    double bailout_sq,
+    int pairwise_cap,
+    std::vector<Cx<S>>& orbit_scratch
+) {
+    IterResult r{};
+    r.iter    = 0;
+    r.min_abs = std::numeric_limits<double>::infinity();
+    r.max_abs = 0.0;
+    r.extra   = std::numeric_limits<double>::infinity();
+    r.norm    = 0.0;
+    r.escaped = false;
+    r.valid_mask = IterResultField::Extra;
+
+    if (pairwise_cap <= 0) return r;
+    orbit_scratch.clear();
+    orbit_scratch.reserve(static_cast<size_t>(pairwise_cap));
+
+    const int n_iter = std::min(max_iter, pairwise_cap);
+    for (int i = 0; i < n_iter; i++) {
+        z = variant_step<V, S>(z, c);
+        const double zre = scalar_to_double(z.re);
+        const double zim = scalar_to_double(z.im);
+        const bool finite_z = std::isfinite(zre) && std::isfinite(zim);
+        const double n2  = finite_z
+            ? (zre * zre + zim * zim)
+            : std::numeric_limits<double>::infinity();
+
+        for (const auto& prior : orbit_scratch) {
+            const double dr = zre - scalar_to_double(prior.re);
+            const double di = zim - scalar_to_double(prior.im);
+            const double d2 = dr * dr + di * di;
+            if (d2 < r.extra) r.extra = d2;
+        }
+        orbit_scratch.push_back(z);
+
+        bool escaped_now = !finite_z;
+        if constexpr (variant_is_transcendental_v<V>()) {
+            const double component = std::max(std::fabs(zre), std::fabs(zim));
+            escaped_now = escaped_now || component >= bailout;
+        } else {
+            escaped_now = escaped_now || n2 > bailout_sq;
+        }
+        if (escaped_now) break;
+    }
+
+    if (r.extra != std::numeric_limits<double>::infinity()) {
+        r.extra = scalar_sqrt(r.extra);
+    }
     return r;
 }
 

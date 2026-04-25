@@ -11,6 +11,7 @@
 
 #include "../compute/map_kernel.hpp"
 #include "../compute/map_kernel_avx512.hpp"
+#include "../compute/tile_scheduler.hpp"
 
 #if defined(HAS_CUDA_KERNEL)
 #  include "../compute/cuda/map_kernel.cuh"
@@ -65,11 +66,15 @@ std::string benchmarkRoute(const std::string& body) {
 
         cv::Mat out;
         try {
-            // Warmup (single run)
             const auto t0 = std::chrono::steady_clock::now();
-            auto stats = compute::render_map(p, out);
+            if (engine == "hybrid") {
+                auto stats = compute::render_map_hybrid(p, out);
+                (void)stats;
+            } else {
+                auto stats = compute::render_map(p, out);
+                (void)stats;
+            }
             const auto t1 = std::chrono::steady_clock::now();
-            (void)stats;
             r.elapsed_ms = std::chrono::duration<double,std::milli>(t1 - t0).count();
             r.mpix_per_sec = (static_cast<double>(W) * H / 1e6) / (r.elapsed_ms / 1000.0);
             r.available = true;
@@ -95,6 +100,8 @@ std::string benchmarkRoute(const std::string& body) {
         // CUDA path via render_map — uses CUDA internally when engine="cuda"
         results.push_back(run_bench("cuda", "fp64"));
         results.push_back(run_bench("cuda", "fx64"));
+        results.push_back(run_bench("hybrid", "fp64"));
+        results.push_back(run_bench("hybrid", "fx64"));
     }
 #endif
 

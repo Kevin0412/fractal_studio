@@ -138,6 +138,11 @@ static double render_tile_gpu(
     cp.bailout_sq = base.bailout_sq;
     cp.scalar_type  = use_fx ? "fx64" : "fp64";
     cp.colormap_id  = static_cast<int>(base.colormap);
+    cp.variant_id   = static_cast<int>(base.variant);
+    cp.julia        = base.julia;
+    cp.julia_re     = base.julia_re;
+    cp.julia_im     = base.julia_im;
+    cp.metric_id    = static_cast<int>(base.metric);
 
     // cuda_render_map does cudaMemcpy into a contiguous buffer; passing a submat
     // (whose rows are separated by the full-image stride) would corrupt adjacent

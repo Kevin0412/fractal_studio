@@ -37,34 +37,56 @@ namespace fsd::compute {
 
 namespace {
 
-// Normalize a metric sample into [0,1] for colorize_field_bgr.
-// For escape metric this function is unused (colorize_escape_bgr takes
-// iter+max_iter directly).
-inline double normalize_field(const IterResult& r, Metric m, double bailout) {
-    switch (m) {
-        case Metric::MinAbs:
-            // min|z_n| is in [0, bailout]; map to [0,1].
-            if (!std::isfinite(r.min_abs)) return 1.0;
-            return std::min(1.0, r.min_abs / bailout);
-        case Metric::MaxAbs:
-            if (r.max_abs <= 0.0) return 0.0;
-            return std::min(1.0, r.max_abs / bailout);
-        case Metric::Envelope:
-            // Combine min+max into a single brightness for now; the dedicated
-            // envelope endpoint in P2 emits two fields.
-            if (!std::isfinite(r.min_abs)) return 1.0;
-            return std::min(1.0, 0.5 * (r.min_abs + r.max_abs) / bailout);
-        case Metric::MinPairwiseDist:
-            if (!std::isfinite(r.extra)) return 1.0;
-            return std::min(1.0, r.extra / bailout);
-        default:
-            return 0.0;
+inline constexpr IterResultMask NeedEscape =
+    IterResultField::Iter | IterResultField::Escaped;
+inline constexpr IterResultMask NeedEscapeSmooth =
+    NeedEscape | IterResultField::Norm;
+inline constexpr IterResultMask NeedMinAbs = IterResultField::MinAbs;
+inline constexpr IterResultMask NeedMaxAbs = IterResultField::MaxAbs;
+inline constexpr IterResultMask NeedEnvelope =
+    IterResultField::MinAbs | IterResultField::MaxAbs;
+
+template <Metric M>
+inline double raw_field_value(const IterResult& r) {
+    if constexpr (M == Metric::MinAbs) {
+        return std::isfinite(r.min_abs) ? r.min_abs : 0.0;
+    } else if constexpr (M == Metric::MaxAbs) {
+        return r.max_abs > 0.0 ? r.max_abs : 0.0;
+    } else if constexpr (M == Metric::Envelope) {
+        return std::isfinite(r.min_abs) ? 0.5 * (r.min_abs + r.max_abs) : 0.0;
+    } else if constexpr (M == Metric::MinPairwiseDist) {
+        return std::isfinite(r.extra) ? r.extra : 0.0;
+    } else {
+        return 0.0;
     }
 }
 
-// Generic OpenMP kernel templated on both Variant and Scalar.
-template <Variant V, typename S>
-void render_variant_impl(const MapParams& p, cv::Mat& out) {
+template <Metric M>
+inline double normalize_field_static(const IterResult& r, double bailout) {
+    if constexpr (M == Metric::MinAbs) {
+        if (!std::isfinite(r.min_abs)) return 1.0;
+        return std::min(1.0, r.min_abs / bailout);
+    } else if constexpr (M == Metric::MaxAbs) {
+        if (r.max_abs <= 0.0) return 0.0;
+        return std::min(1.0, r.max_abs / bailout);
+    } else if constexpr (M == Metric::Envelope) {
+        if (!std::isfinite(r.min_abs)) return 1.0;
+        return std::min(1.0, 0.5 * (r.min_abs + r.max_abs) / bailout);
+    } else if constexpr (M == Metric::MinPairwiseDist) {
+        if (!std::isfinite(r.extra)) return 1.0;
+        return std::min(1.0, r.extra / bailout);
+    } else {
+        return 0.0;
+    }
+}
+
+inline int ceil_div(int value, int step) {
+    return (value + step - 1) / step;
+}
+
+// Generic OpenMP kernel templated on Variant, Scalar, and metric.
+template <Variant V, typename S, Metric M, IterResultMask NeedMask>
+void render_variant_metric_impl(const MapParams& p, cv::Mat& out) {
     const int W = p.width;
     const int H = p.height;
     const double aspect  = static_cast<double>(W) / static_cast<double>(H);
@@ -73,9 +95,11 @@ void render_variant_impl(const MapParams& p, cv::Mat& out) {
     const double re_min  = p.center_re - span_re * 0.5;
     const double im_max  = p.center_im + span_im * 0.5;
     const double bail2   = p.bailout_sq;
-    const IterResultMask result_mask =
-        iter_result_mask_for_metric(p.metric, p.metric == Metric::Escape && p.smooth);
     const int thread_count = resolve_render_threads(p.render_threads);
+    constexpr int tile_size = 32;
+    const int tiles_x = ceil_div(W, tile_size);
+    const int tiles_y = ceil_div(H, tile_size);
+    const int tile_count = tiles_x * tiles_y;
 
     const S jre = scalar_from_double<S>(p.julia_re);
     const S jim = scalar_from_double<S>(p.julia_im);
@@ -84,72 +108,65 @@ void render_variant_impl(const MapParams& p, cv::Mat& out) {
     #pragma omp parallel num_threads(thread_count)
     {
         std::vector<Cx<S>> orbit;
-        orbit.reserve(static_cast<size_t>(p.pairwise_cap));
+        if constexpr (M == Metric::MinPairwiseDist) {
+            orbit.reserve(static_cast<size_t>(p.pairwise_cap));
+        }
 
-        #pragma omp for schedule(dynamic, 4)
-        for (int y = 0; y < H; y++) {
-            uint8_t* row = out.ptr<uint8_t>(y);
-            const double im_d = im_max - (static_cast<double>(y) + 0.5) / H * span_im;
-            const S im = scalar_from_double<S>(im_d);
-            for (int x = 0; x < W; x++) {
-                const double re_d = re_min + (static_cast<double>(x) + 0.5) / W * span_re;
-                const S re = scalar_from_double<S>(re_d);
+        #pragma omp for schedule(dynamic, 1)
+        for (int tile = 0; tile < tile_count; tile++) {
+            const int tile_x = tile % tiles_x;
+            const int tile_y = tile / tiles_x;
+            const int x0 = tile_x * tile_size;
+            const int y0 = tile_y * tile_size;
+            const int x1 = std::min(W, x0 + tile_size);
+            const int y1 = std::min(H, y0 + tile_size);
 
-                Cx<S> z0;
-                Cx<S> c;
-                if (p.julia) {
-                    z0 = Cx<S>{re, im};
-                    c  = c_const;
-                } else {
-                    z0 = Cx<S>{scalar_from_double<S>(0.0), scalar_from_double<S>(0.0)};
-                    c  = Cx<S>{re, im};
-                }
+            for (int y = y0; y < y1; y++) {
+                uint8_t* row = out.ptr<uint8_t>(y);
+                const double im_d = im_max - (static_cast<double>(y) + 0.5) / H * span_im;
+                const S im = scalar_from_double<S>(im_d);
+                for (int x = x0; x < x1; x++) {
+                    const double re_d = re_min + (static_cast<double>(x) + 0.5) / W * span_re;
+                    const S re = scalar_from_double<S>(re_d);
 
-                const IterResult r = iterate<V, S>(
-                    z0, c, p.iterations, p.bailout, bail2,
-                    p.metric, result_mask, p.pairwise_cap, orbit
-                );
-
-                uint8_t* px = row + 3 * x;
-                if (p.metric == Metric::Escape) {
-                    const int    iter = r.escaped ? r.iter : p.iterations;
-                    const double norm = r.escaped ? r.norm : 0.0;
-                    colorize_escape_bgr(iter, p.iterations, p.colormap, norm, p.smooth, px[0], px[1], px[2]);
-                } else if (p.colormap == Colormap::HsRainbow) {
-                    // HsRainbow always uses the log-scale formula directly.
-                    double fv = 0.0;
-                    switch (p.metric) {
-                        case Metric::MinAbs:
-                            fv = std::isfinite(r.min_abs) ? r.min_abs : 0.0; break;
-                        case Metric::MaxAbs:
-                            fv = (r.max_abs > 0.0) ? r.max_abs : 0.0; break;
-                        case Metric::Envelope:
-                            fv = std::isfinite(r.min_abs)
-                                ? 0.5 * (r.min_abs + r.max_abs) : 0.0; break;
-                        case Metric::MinPairwiseDist:
-                            fv = std::isfinite(r.extra) ? r.extra : 0.0; break;
-                        default: fv = 0.0; break;
+                    Cx<S> z0;
+                    Cx<S> c;
+                    if (p.julia) {
+                        z0 = Cx<S>{re, im};
+                        c  = c_const;
+                    } else {
+                        z0 = Cx<S>{scalar_from_double<S>(0.0), scalar_from_double<S>(0.0)};
+                        c  = Cx<S>{re, im};
                     }
-                    colorize_field_hs_bgr(fv, px[0], px[1], px[2]);
-                } else if (p.smooth) {
-                    // Raw field value for ln-smooth coloring.
-                    double fv = 0.0;
-                    switch (p.metric) {
-                        case Metric::MinAbs:
-                            fv = std::isfinite(r.min_abs) ? r.min_abs : 0.0; break;
-                        case Metric::MaxAbs:
-                            fv = (r.max_abs > 0.0) ? r.max_abs : 0.0; break;
-                        case Metric::Envelope:
-                            fv = std::isfinite(r.min_abs)
-                                ? 0.5 * (r.min_abs + r.max_abs) : 0.0; break;
-                        case Metric::MinPairwiseDist:
-                            fv = std::isfinite(r.extra) ? r.extra : 0.0; break;
-                        default: fv = 0.0; break;
+
+                    IterResult r;
+                    if constexpr (M == Metric::MinPairwiseDist) {
+                        r = iterate_pairwise<V, S>(
+                            z0, c, p.iterations, p.bailout, bail2, p.pairwise_cap, orbit);
+                    } else {
+                        r = iterate_masked<NeedMask, V, S>(
+                            z0, c, p.iterations, p.bailout, bail2);
                     }
-                    colorize_field_smooth_bgr(fv, p.colormap, px[0], px[1], px[2]);
-                } else {
-                    const double v01 = normalize_field(r, p.metric, p.bailout);
-                    colorize_field_bgr(v01, p.colormap, px[0], px[1], px[2]);
+
+                    uint8_t* px = row + 3 * x;
+                    if constexpr (M == Metric::Escape) {
+                        const int iter = r.escaped ? r.iter : p.iterations;
+                        constexpr bool smooth_escape =
+                            iter_result_wants(NeedMask, IterResultField::Norm);
+                        const double norm = smooth_escape && r.escaped ? r.norm : 0.0;
+                        colorize_escape_bgr(iter, p.iterations, p.colormap, norm, smooth_escape, px[0], px[1], px[2]);
+                    } else {
+                        if (p.colormap == Colormap::HsRainbow) {
+                            const double fv = raw_field_value<M>(r);
+                            colorize_field_hs_bgr(fv, px[0], px[1], px[2]);
+                        } else if (p.smooth) {
+                            const double fv = raw_field_value<M>(r);
+                            colorize_field_smooth_bgr(fv, p.colormap, px[0], px[1], px[2]);
+                        } else {
+                            const double v01 = normalize_field_static<M>(r, p.bailout);
+                            colorize_field_bgr(v01, p.colormap, px[0], px[1], px[2]);
+                        }
+                    }
                 }
             }
         }
@@ -159,12 +176,38 @@ void render_variant_impl(const MapParams& p, cv::Mat& out) {
 // Variant dispatch helpers — one for fp64, one for fx64.
 template <Variant V>
 void render_variant(const MapParams& p, cv::Mat& out) {
-    render_variant_impl<V, double>(p, out);
+    switch (p.metric) {
+        case Metric::Escape:
+            if (p.smooth) render_variant_metric_impl<V, double, Metric::Escape, NeedEscapeSmooth>(p, out);
+            else          render_variant_metric_impl<V, double, Metric::Escape, NeedEscape>(p, out);
+            break;
+        case Metric::MinAbs:
+            render_variant_metric_impl<V, double, Metric::MinAbs, NeedMinAbs>(p, out); break;
+        case Metric::MaxAbs:
+            render_variant_metric_impl<V, double, Metric::MaxAbs, NeedMaxAbs>(p, out); break;
+        case Metric::Envelope:
+            render_variant_metric_impl<V, double, Metric::Envelope, NeedEnvelope>(p, out); break;
+        case Metric::MinPairwiseDist:
+            render_variant_metric_impl<V, double, Metric::MinPairwiseDist, IterResultField::Extra>(p, out); break;
+    }
 }
 
 template <Variant V>
 void render_variant_fx64(const MapParams& p, cv::Mat& out) {
-    render_variant_impl<V, Fx64>(p, out);
+    switch (p.metric) {
+        case Metric::Escape:
+            if (p.smooth) render_variant_metric_impl<V, Fx64, Metric::Escape, NeedEscapeSmooth>(p, out);
+            else          render_variant_metric_impl<V, Fx64, Metric::Escape, NeedEscape>(p, out);
+            break;
+        case Metric::MinAbs:
+            render_variant_metric_impl<V, Fx64, Metric::MinAbs, NeedMinAbs>(p, out); break;
+        case Metric::MaxAbs:
+            render_variant_metric_impl<V, Fx64, Metric::MaxAbs, NeedMaxAbs>(p, out); break;
+        case Metric::Envelope:
+            render_variant_metric_impl<V, Fx64, Metric::Envelope, NeedEnvelope>(p, out); break;
+        case Metric::MinPairwiseDist:
+            render_variant_metric_impl<V, Fx64, Metric::MinPairwiseDist, IterResultField::Extra>(p, out); break;
+    }
 }
 
 } // namespace
@@ -247,42 +290,55 @@ static MapStats render_custom_openmp(const MapParams& p, cv::Mat& out) {
     const double jre     = p.julia_re;
     const double jim     = p.julia_im;
     const int thread_count = resolve_render_threads(p.render_threads);
+    constexpr int tile_size = 32;
+    const int tiles_x = ceil_div(W, tile_size);
+    const int tiles_y = ceil_div(H, tile_size);
+    const int tile_count = tiles_x * tiles_y;
 
     const auto t0 = std::chrono::steady_clock::now();
 
-    #pragma omp parallel for num_threads(thread_count) schedule(dynamic, 4)
-    for (int y = 0; y < H; y++) {
-        uint8_t* row = out.ptr<uint8_t>(y);
-        const double im_c = im_max - (static_cast<double>(y) + 0.5) / H * span_im;
-        for (int x = 0; x < W; x++) {
-            const double re_c = re_min + (static_cast<double>(x) + 0.5) / W * span_re;
+    #pragma omp parallel for num_threads(thread_count) schedule(dynamic, 1)
+    for (int tile = 0; tile < tile_count; tile++) {
+        const int tile_x = tile % tiles_x;
+        const int tile_y = tile / tiles_x;
+        const int x0 = tile_x * tile_size;
+        const int y0 = tile_y * tile_size;
+        const int x1 = std::min(W, x0 + tile_size);
+        const int y1 = std::min(H, y0 + tile_size);
 
-            double zr, zi, cr, ci;
-            if (p.julia) { zr = re_c; zi = im_c; cr = jre; ci = jim; }
-            else          { zr = 0.0; zi = 0.0;  cr = re_c; ci = im_c; }
+        for (int y = y0; y < y1; y++) {
+            uint8_t* row = out.ptr<uint8_t>(y);
+            const double im_c = im_max - (static_cast<double>(y) + 0.5) / H * span_im;
+            for (int x = x0; x < x1; x++) {
+                const double re_c = re_min + (static_cast<double>(x) + 0.5) / W * span_re;
 
-            int   it    = 0;
-            double norm2 = 0.0;
-            for (; it < p.iterations; it++) {
-                double nr = 0.0, ni = 0.0;
-                fn(zr, zi, cr, ci, &nr, &ni);
-                zr = nr; zi = ni;
-                const bool finite_z = std::isfinite(zr) && std::isfinite(zi);
-                norm2 = finite_z ? (zr * zr + zi * zi)
-                                 : std::numeric_limits<double>::infinity();
-                if (!finite_z || norm2 > bail2) break;
+                double zr, zi, cr, ci;
+                if (p.julia) { zr = re_c; zi = im_c; cr = jre; ci = jim; }
+                else          { zr = 0.0; zi = 0.0;  cr = re_c; ci = im_c; }
+
+                int   it    = 0;
+                double norm2 = 0.0;
+                for (; it < p.iterations; it++) {
+                    double nr = 0.0, ni = 0.0;
+                    fn(zr, zi, cr, ci, &nr, &ni);
+                    zr = nr; zi = ni;
+                    const bool finite_z = std::isfinite(zr) && std::isfinite(zi);
+                    norm2 = finite_z ? (zr * zr + zi * zi)
+                                     : std::numeric_limits<double>::infinity();
+                    if (!finite_z || norm2 > bail2) break;
+                }
+
+                const bool escaped = (norm2 > bail2);
+                uint8_t* px = row + 3 * x;
+                colorize_escape_bgr(
+                    escaped ? it : p.iterations,
+                    p.iterations,
+                    p.colormap,
+                    escaped ? norm2 : 0.0,
+                    p.smooth,
+                    px[0], px[1], px[2]
+                );
             }
-
-            const bool escaped = (norm2 > bail2);
-            uint8_t* px = row + 3 * x;
-            colorize_escape_bgr(
-                escaped ? it : p.iterations,
-                p.iterations,
-                p.colormap,
-                escaped ? norm2 : 0.0,
-                p.smooth,
-                px[0], px[1], px[2]
-            );
         }
     }
 
@@ -313,38 +369,51 @@ static MapStats render_custom_field_openmp(const MapParams& p, FieldOutput& fo) 
     const double jre     = p.julia_re;
     const double jim     = p.julia_im;
     const int thread_count = resolve_render_threads(p.render_threads);
+    constexpr int tile_size = 32;
+    const int tiles_x = ceil_div(W, tile_size);
+    const int tiles_y = ceil_div(H, tile_size);
+    const int tile_count = tiles_x * tiles_y;
 
     fo.iter_u32.assign(static_cast<size_t>(W) * H, 0u);
     fo.norm_f32.assign(static_cast<size_t>(W) * H, 0.0f);
 
     const auto t0 = std::chrono::steady_clock::now();
 
-    #pragma omp parallel for num_threads(thread_count) schedule(dynamic, 4)
-    for (int y = 0; y < H; y++) {
-        const double im_c = im_max - (static_cast<double>(y) + 0.5) / H * span_im;
-        for (int x = 0; x < W; x++) {
-            const double re_c = re_min + (static_cast<double>(x) + 0.5) / W * span_re;
+    #pragma omp parallel for num_threads(thread_count) schedule(dynamic, 1)
+    for (int tile = 0; tile < tile_count; tile++) {
+        const int tile_x = tile % tiles_x;
+        const int tile_y = tile / tiles_x;
+        const int x0 = tile_x * tile_size;
+        const int y0 = tile_y * tile_size;
+        const int x1 = std::min(W, x0 + tile_size);
+        const int y1 = std::min(H, y0 + tile_size);
 
-            double zr, zi, cr, ci;
-            if (p.julia) { zr = re_c; zi = im_c; cr = jre; ci = jim; }
-            else          { zr = 0.0; zi = 0.0;  cr = re_c; ci = im_c; }
+        for (int y = y0; y < y1; y++) {
+            const double im_c = im_max - (static_cast<double>(y) + 0.5) / H * span_im;
+            for (int x = x0; x < x1; x++) {
+                const double re_c = re_min + (static_cast<double>(x) + 0.5) / W * span_re;
 
-            int   it    = 0;
-            double norm2 = 0.0;
-            for (; it < p.iterations; it++) {
-                double nr = 0.0, ni = 0.0;
-                fn(zr, zi, cr, ci, &nr, &ni);
-                zr = nr; zi = ni;
-                const bool finite_z = std::isfinite(zr) && std::isfinite(zi);
-                norm2 = finite_z ? (zr * zr + zi * zi)
-                                 : std::numeric_limits<double>::infinity();
-                if (!finite_z || norm2 > bail2) break;
+                double zr, zi, cr, ci;
+                if (p.julia) { zr = re_c; zi = im_c; cr = jre; ci = jim; }
+                else          { zr = 0.0; zi = 0.0;  cr = re_c; ci = im_c; }
+
+                int   it    = 0;
+                double norm2 = 0.0;
+                for (; it < p.iterations; it++) {
+                    double nr = 0.0, ni = 0.0;
+                    fn(zr, zi, cr, ci, &nr, &ni);
+                    zr = nr; zi = ni;
+                    const bool finite_z = std::isfinite(zr) && std::isfinite(zi);
+                    norm2 = finite_z ? (zr * zr + zi * zi)
+                                     : std::numeric_limits<double>::infinity();
+                    if (!finite_z || norm2 > bail2) break;
+                }
+
+                const bool escaped = (norm2 > bail2);
+                const size_t idx = static_cast<size_t>(y) * W + x;
+                fo.iter_u32[idx] = escaped ? static_cast<uint32_t>(it) : static_cast<uint32_t>(p.iterations);
+                fo.norm_f32[idx] = escaped ? static_cast<float>(norm2) : 0.0f;
             }
-
-            const bool escaped = (norm2 > bail2);
-            const size_t idx = static_cast<size_t>(y) * W + x;
-            fo.iter_u32[idx] = escaped ? static_cast<uint32_t>(it) : static_cast<uint32_t>(p.iterations);
-            fo.norm_f32[idx] = escaped ? static_cast<float>(norm2) : 0.0f;
         }
     }
 
@@ -363,23 +432,7 @@ static MapStats render_custom_field_openmp(const MapParams& p, FieldOutput& fo) 
 
 namespace {
 
-// Extract the raw metric value from an IterResult for non-escape metrics.
-inline double extract_raw_field(const IterResult& r, Metric m) {
-    switch (m) {
-        case Metric::MinAbs:
-            return std::isfinite(r.min_abs) ? r.min_abs : 0.0;
-        case Metric::MaxAbs:
-            return r.max_abs;
-        case Metric::Envelope:
-            return std::isfinite(r.min_abs) ? 0.5 * (r.min_abs + r.max_abs) : 0.0;
-        case Metric::MinPairwiseDist:
-            return std::isfinite(r.extra) ? r.extra : 0.0;
-        default:
-            return 0.0;
-    }
-}
-
-template <Variant V, typename S>
+template <Variant V, typename S, Metric M, IterResultMask NeedMask>
 void field_variant_impl(const MapParams& p, FieldOutput& out) {
     const int W = p.width;
     const int H = p.height;
@@ -394,12 +447,14 @@ void field_variant_impl(const MapParams& p, FieldOutput& out) {
     const S jim = scalar_from_double<S>(p.julia_im);
     const Cx<S> c_const{jre, jim};
 
-    const bool is_escape = (p.metric == Metric::Escape);
-    const IterResultMask result_mask = is_escape
-        ? (IterResultField::Iter | IterResultField::Escaped | IterResultField::Norm)
-        : iter_result_mask_for_metric(p.metric);
     const int thread_count = resolve_render_threads(p.render_threads);
-    if (is_escape) {
+    constexpr bool is_escape = (M == Metric::Escape);
+    constexpr int tile_size = 32;
+    const int tiles_x = ceil_div(W, tile_size);
+    const int tiles_y = ceil_div(H, tile_size);
+    const int tile_count = tiles_x * tiles_y;
+
+    if constexpr (is_escape) {
         out.iter_u32.assign(static_cast<size_t>(W) * H, 0u);
         out.norm_f32.assign(static_cast<size_t>(W) * H, 0.0f);
     } else {
@@ -409,44 +464,59 @@ void field_variant_impl(const MapParams& p, FieldOutput& out) {
     #pragma omp parallel num_threads(thread_count)
     {
         std::vector<Cx<S>> orbit;
-        orbit.reserve(static_cast<size_t>(p.pairwise_cap));
+        if constexpr (M == Metric::MinPairwiseDist) {
+            orbit.reserve(static_cast<size_t>(p.pairwise_cap));
+        }
 
-        #pragma omp for schedule(dynamic, 4)
-        for (int y = 0; y < H; y++) {
-            const double im_d = im_max - (static_cast<double>(y) + 0.5) / H * span_im;
-            const S im = scalar_from_double<S>(im_d);
-            for (int x = 0; x < W; x++) {
-                const double re_d = re_min + (static_cast<double>(x) + 0.5) / W * span_re;
-                const S re = scalar_from_double<S>(re_d);
+        #pragma omp for schedule(dynamic, 1)
+        for (int tile = 0; tile < tile_count; tile++) {
+            const int tile_x = tile % tiles_x;
+            const int tile_y = tile / tiles_x;
+            const int x0 = tile_x * tile_size;
+            const int y0 = tile_y * tile_size;
+            const int x1 = std::min(W, x0 + tile_size);
+            const int y1 = std::min(H, y0 + tile_size);
 
-                Cx<S> z0, c;
-                if (p.julia) {
-                    z0 = Cx<S>{re, im};
-                    c  = c_const;
-                } else {
-                    z0 = Cx<S>{scalar_from_double<S>(0.0), scalar_from_double<S>(0.0)};
-                    c  = Cx<S>{re, im};
-                }
+            for (int y = y0; y < y1; y++) {
+                const double im_d = im_max - (static_cast<double>(y) + 0.5) / H * span_im;
+                const S im = scalar_from_double<S>(im_d);
+                for (int x = x0; x < x1; x++) {
+                    const double re_d = re_min + (static_cast<double>(x) + 0.5) / W * span_re;
+                    const S re = scalar_from_double<S>(re_d);
 
-                const IterResult r = iterate<V, S>(
-                    z0, c, p.iterations, p.bailout, bail2,
-                    p.metric, result_mask, p.pairwise_cap, orbit
-                );
+                    Cx<S> z0, c;
+                    if (p.julia) {
+                        z0 = Cx<S>{re, im};
+                        c  = c_const;
+                    } else {
+                        z0 = Cx<S>{scalar_from_double<S>(0.0), scalar_from_double<S>(0.0)};
+                        c  = Cx<S>{re, im};
+                    }
 
-                const size_t idx = static_cast<size_t>(y) * W + x;
-                if (is_escape) {
-                    out.iter_u32[idx] = r.escaped
-                        ? static_cast<uint32_t>(r.iter)
-                        : static_cast<uint32_t>(p.iterations);
-                    out.norm_f32[idx] = r.escaped ? static_cast<float>(r.norm) : 0.0f;
-                } else {
-                    out.field_f64[idx] = extract_raw_field(r, p.metric);
+                    IterResult r;
+                    if constexpr (M == Metric::MinPairwiseDist) {
+                        r = iterate_pairwise<V, S>(
+                            z0, c, p.iterations, p.bailout, bail2, p.pairwise_cap, orbit);
+                    } else {
+                        r = iterate_masked<NeedMask, V, S>(
+                            z0, c, p.iterations, p.bailout, bail2);
+                    }
+
+                    const size_t idx = static_cast<size_t>(y) * W + x;
+                    if constexpr (is_escape) {
+                        out.iter_u32[idx] = r.escaped
+                            ? static_cast<uint32_t>(r.iter)
+                            : static_cast<uint32_t>(p.iterations);
+                        out.norm_f32[idx] = r.escaped ? static_cast<float>(r.norm) : 0.0f;
+                    } else {
+                        out.field_f64[idx] = raw_field_value<M>(r);
+                    }
                 }
             }
         }
     }
 
-    if (!is_escape) {
+    if constexpr (!is_escape) {
         double lo =  std::numeric_limits<double>::infinity();
         double hi = -std::numeric_limits<double>::infinity();
         for (double v : out.field_f64) {
@@ -462,12 +532,34 @@ void field_variant_impl(const MapParams& p, FieldOutput& out) {
 
 template <Variant V>
 void field_variant_fp64(const MapParams& p, FieldOutput& out) {
-    field_variant_impl<V, double>(p, out);
+    switch (p.metric) {
+        case Metric::Escape:
+            field_variant_impl<V, double, Metric::Escape, NeedEscapeSmooth>(p, out); break;
+        case Metric::MinAbs:
+            field_variant_impl<V, double, Metric::MinAbs, NeedMinAbs>(p, out); break;
+        case Metric::MaxAbs:
+            field_variant_impl<V, double, Metric::MaxAbs, NeedMaxAbs>(p, out); break;
+        case Metric::Envelope:
+            field_variant_impl<V, double, Metric::Envelope, NeedEnvelope>(p, out); break;
+        case Metric::MinPairwiseDist:
+            field_variant_impl<V, double, Metric::MinPairwiseDist, IterResultField::Extra>(p, out); break;
+    }
 }
 
 template <Variant V>
 void field_variant_fx64(const MapParams& p, FieldOutput& out) {
-    field_variant_impl<V, Fx64>(p, out);
+    switch (p.metric) {
+        case Metric::Escape:
+            field_variant_impl<V, Fx64, Metric::Escape, NeedEscapeSmooth>(p, out); break;
+        case Metric::MinAbs:
+            field_variant_impl<V, Fx64, Metric::MinAbs, NeedMinAbs>(p, out); break;
+        case Metric::MaxAbs:
+            field_variant_impl<V, Fx64, Metric::MaxAbs, NeedMaxAbs>(p, out); break;
+        case Metric::Envelope:
+            field_variant_impl<V, Fx64, Metric::Envelope, NeedEnvelope>(p, out); break;
+        case Metric::MinPairwiseDist:
+            field_variant_impl<V, Fx64, Metric::MinPairwiseDist, IterResultField::Extra>(p, out); break;
+    }
 }
 
 void dispatch_field_fp64(const MapParams& p, FieldOutput& out) {

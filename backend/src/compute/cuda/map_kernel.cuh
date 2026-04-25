@@ -3,7 +3,6 @@
 // Host-side interface to the CUDA map renderer.
 // Includes fp64 and fx64 variants for all 10 fractal variants,
 // Julia mode, and non-escape metrics (MinAbs, MaxAbs, Envelope).
-// CUDA Graphs are used to minimise kernel-launch overhead when streaming tiles.
 
 #pragma once
 
@@ -61,7 +60,6 @@ bool cuda_available() noexcept;
 
 // Render a fractal map using the CUDA kernels.
 // Output `out` is allocated as CV_8UC3 BGR on the host.
-// Internally uses CUDA Graphs to amortise launch overhead.
 CudaMapStats cuda_render_map(const CudaMapParams& p, cv::Mat& out);
 
 } // namespace fsd_cuda

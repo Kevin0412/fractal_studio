@@ -33,14 +33,14 @@ struct TransitionIterResult {
 // When metric == MinPairwiseDist, also stores the orbit and computes min pairwise dist.
 struct OrbitPt { double x, y, z; };
 
+template <Metric M, IterResultMask NeedMask>
 inline TransitionIterResult iterate_transition(
     double x0, double y0, double z0,
     int max_iter, double bail2,
     Variant from_variant, Variant to_variant,
-    Metric metric, IterResultMask result_mask, int pairwise_cap,
+    int pairwise_cap,
     std::vector<OrbitPt>& orbit
 ) {
-    (void)metric;
     double x = x0, y = y0, z = z0;
     TransitionIterResult r{};
     r.iter = 0;
@@ -51,22 +51,21 @@ inline TransitionIterResult iterate_transition(
     r.escaped = false;
     r.valid_mask = 0;
 
-    const bool track_iter    = iter_result_wants(result_mask, IterResultField::Iter);
-    const bool track_min_abs = iter_result_wants(result_mask, IterResultField::MinAbs);
-    const bool track_max_abs = iter_result_wants(result_mask, IterResultField::MaxAbs);
-    const bool track_norm    = iter_result_wants(result_mask, IterResultField::Norm);
-    const bool track_escaped = iter_result_wants(result_mask, IterResultField::Escaped);
-    const bool track_orbit   = iter_result_wants(result_mask, IterResultField::Extra)
-                            && pairwise_cap > 0;
+    constexpr bool track_iter    = iter_result_wants(NeedMask, IterResultField::Iter);
+    constexpr bool track_min_abs = iter_result_wants(NeedMask, IterResultField::MinAbs);
+    constexpr bool track_max_abs = iter_result_wants(NeedMask, IterResultField::MaxAbs);
+    constexpr bool track_norm    = iter_result_wants(NeedMask, IterResultField::Norm);
+    constexpr bool track_escaped = iter_result_wants(NeedMask, IterResultField::Escaped);
+    const bool track_orbit = (M == Metric::MinPairwiseDist) && pairwise_cap > 0;
 
-    if (track_iter)    r.valid_mask |= IterResultField::Iter;
-    if (track_min_abs) r.valid_mask |= IterResultField::MinAbs;
-    if (track_max_abs) r.valid_mask |= IterResultField::MaxAbs;
-    if (track_norm)    r.valid_mask |= IterResultField::Norm;
-    if (track_escaped) r.valid_mask |= IterResultField::Escaped;
-    if (track_orbit)   r.valid_mask |= IterResultField::Extra;
+    if constexpr (track_iter)    r.valid_mask |= IterResultField::Iter;
+    if constexpr (track_min_abs) r.valid_mask |= IterResultField::MinAbs;
+    if constexpr (track_max_abs) r.valid_mask |= IterResultField::MaxAbs;
+    if constexpr (track_norm)    r.valid_mask |= IterResultField::Norm;
+    if constexpr (track_escaped) r.valid_mask |= IterResultField::Escaped;
+    if constexpr (M == Metric::MinPairwiseDist) r.valid_mask |= IterResultField::Extra;
 
-    if (track_min_abs || track_max_abs) {
+    if constexpr (track_min_abs || track_max_abs) {
         const double init_n2 = x*x + y*y + z*z;
         r.min_abs_sq = init_n2;
         r.max_abs_sq = init_n2;
@@ -90,22 +89,26 @@ inline TransitionIterResult iterate_transition(
         const double n2 = finite_xyz
             ? (x*x + y*y + z*z)
             : std::numeric_limits<double>::infinity();
-        if (track_min_abs && n2 < r.min_abs_sq) r.min_abs_sq = n2;
-        if (track_max_abs && n2 > r.max_abs_sq) r.max_abs_sq = n2;
+        if constexpr (track_min_abs) {
+            if (n2 < r.min_abs_sq) r.min_abs_sq = n2;
+        }
+        if constexpr (track_max_abs) {
+            if (n2 > r.max_abs_sq) r.max_abs_sq = n2;
+        }
 
         if (track_orbit && static_cast<int>(orbit.size()) < pairwise_cap) {
             orbit.push_back({x, y, z});
         }
 
         if (!finite_xyz || n2 > bail2) {
-            if (track_iter)    r.iter = i;
-            if (track_norm)    r.norm = n2;
-            if (track_escaped) r.escaped = true;
+            if constexpr (track_iter)    r.iter = i;
+            if constexpr (track_norm)    r.norm = n2;
+            if constexpr (track_escaped) r.escaped = true;
             break;
         }
     }
     if (!r.escaped) {
-        if (track_iter) r.iter = max_iter;
+        if constexpr (track_iter) r.iter = max_iter;
     }
 
     // Compute min pairwise distance from orbit (O(n²), capped).
@@ -126,9 +129,38 @@ inline TransitionIterResult iterate_transition(
     return r;
 }
 
-} // namespace
+template <Metric M>
+double transition_raw_value(const TransitionIterResult& r) {
+    if constexpr (M == Metric::MinAbs) {
+        return std::sqrt(r.min_abs_sq);
+    } else if constexpr (M == Metric::MaxAbs) {
+        return std::sqrt(r.max_abs_sq);
+    } else if constexpr (M == Metric::Envelope) {
+        return 0.5 * (std::sqrt(r.min_abs_sq) + std::sqrt(r.max_abs_sq));
+    } else if constexpr (M == Metric::MinPairwiseDist) {
+        return r.extra;
+    } else {
+        return 0.0;
+    }
+}
 
-MapStats render_transition(const TransitionParams& p, cv::Mat& out) {
+template <Metric M>
+double transition_normalized_value(const TransitionIterResult& r, double bailout) {
+    if constexpr (M == Metric::MinAbs) {
+        return std::min(1.0, std::sqrt(r.min_abs_sq) / bailout);
+    } else if constexpr (M == Metric::MaxAbs) {
+        return std::min(1.0, std::sqrt(r.max_abs_sq) / bailout);
+    } else if constexpr (M == Metric::Envelope) {
+        return std::min(1.0, 0.5 * (std::sqrt(r.min_abs_sq) + std::sqrt(r.max_abs_sq)) / bailout);
+    } else if constexpr (M == Metric::MinPairwiseDist) {
+        return std::min(1.0, r.extra / bailout);
+    } else {
+        return 0.0;
+    }
+}
+
+template <Metric M, IterResultMask NeedMask>
+MapStats render_transition_metric(const TransitionParams& p, cv::Mat& out) {
     if (!variant_supports_axis_transition(p.from_variant) ||
         !variant_supports_axis_transition(p.to_variant)) {
         throw std::runtime_error("transition variants must be quadratic Mandelbrot-family variants");
@@ -150,69 +182,61 @@ MapStats render_transition(const TransitionParams& p, cv::Mat& out) {
     const double bail2   = p.bailout_sq;
     const double cth     = std::cos(p.theta);
     const double sth     = std::sin(p.theta);
-    const IterResultMask result_mask =
-        iter_result_mask_for_metric(p.metric, p.metric == Metric::Escape && p.smooth);
     const int thread_count = resolve_render_threads(p.render_threads);
+    constexpr int tile_size = 32;
+    const int tiles_x = (W + tile_size - 1) / tile_size;
+    const int tiles_y = (H + tile_size - 1) / tile_size;
+    const int tile_count = tiles_x * tiles_y;
 
     #pragma omp parallel num_threads(thread_count)
     {
         std::vector<OrbitPt> orbit;
-        orbit.reserve(static_cast<size_t>(p.pairwise_cap));
+        if constexpr (M == Metric::MinPairwiseDist) {
+            orbit.reserve(static_cast<size_t>(p.pairwise_cap));
+        }
 
-    #pragma omp for schedule(dynamic, 4)
-    for (int y = 0; y < H; y++) {
-        uint8_t* row = out.ptr<uint8_t>(y);
-        const double v = im_max - (static_cast<double>(y) + 0.5) / H * span_im;
-        for (int x = 0; x < W; x++) {
-            const double u = re_min + (static_cast<double>(x) + 0.5) / W * span_re;
+    #pragma omp for schedule(dynamic, 1)
+    for (int tile = 0; tile < tile_count; tile++) {
+        const int tile_x = tile % tiles_x;
+        const int tile_y = tile / tiles_x;
+        const int x_begin = tile_x * tile_size;
+        const int y_begin = tile_y * tile_size;
+        const int x_end = std::min(W, x_begin + tile_size);
+        const int y_end = std::min(H, y_begin + tile_size);
 
-            const double x0 = u;
-            const double y0 = v * cth;
-            const double z0 = v * sth;
+        for (int y = y_begin; y < y_end; y++) {
+            uint8_t* row = out.ptr<uint8_t>(y);
+            const double v = im_max - (static_cast<double>(y) + 0.5) / H * span_im;
+            for (int x = x_begin; x < x_end; x++) {
+                const double u = re_min + (static_cast<double>(x) + 0.5) / W * span_re;
 
-            const TransitionIterResult r =
-                iterate_transition(x0, y0, z0, p.iterations, bail2,
-                                   p.from_variant, p.to_variant,
-                                   p.metric, result_mask, p.pairwise_cap, orbit);
+                const double x0 = u;
+                const double y0 = v * cth;
+                const double z0 = v * sth;
 
-            uint8_t* px = row + 3 * x;
-            if (p.metric == Metric::Escape) {
-                const int    iter = r.escaped ? r.iter : p.iterations;
-                const double norm = r.escaped ? r.norm : 0.0;
-                colorize_escape_bgr(iter, p.iterations, p.colormap, norm, p.smooth, px[0], px[1], px[2]);
-            } else if (p.colormap == Colormap::HsRainbow) {
-                double fv = 0.0;
-                if (p.metric == Metric::MinAbs)
-                    fv = std::sqrt(r.min_abs_sq);
-                else if (p.metric == Metric::MaxAbs)
-                    fv = std::sqrt(r.max_abs_sq);
-                else if (p.metric == Metric::Envelope)
-                    fv = 0.5 * (std::sqrt(r.min_abs_sq) + std::sqrt(r.max_abs_sq));
-                else if (p.metric == Metric::MinPairwiseDist)
-                    fv = r.extra;
-                colorize_field_hs_bgr(fv, px[0], px[1], px[2]);
-            } else if (p.smooth) {
-                double fv = 0.0;
-                if (p.metric == Metric::MinAbs)
-                    fv = std::sqrt(r.min_abs_sq);
-                else if (p.metric == Metric::MaxAbs)
-                    fv = std::sqrt(r.max_abs_sq);
-                else if (p.metric == Metric::Envelope)
-                    fv = 0.5 * (std::sqrt(r.min_abs_sq) + std::sqrt(r.max_abs_sq));
-                else if (p.metric == Metric::MinPairwiseDist)
-                    fv = r.extra;
-                colorize_field_smooth_bgr(fv, p.colormap, px[0], px[1], px[2]);
-            } else {
-                double v01 = 0.0;
-                if (p.metric == Metric::MinAbs)
-                    v01 = std::min(1.0, std::sqrt(r.min_abs_sq) / p.bailout);
-                else if (p.metric == Metric::MaxAbs)
-                    v01 = std::min(1.0, std::sqrt(r.max_abs_sq) / p.bailout);
-                else if (p.metric == Metric::Envelope)
-                    v01 = std::min(1.0, 0.5 * (std::sqrt(r.min_abs_sq) + std::sqrt(r.max_abs_sq)) / p.bailout);
-                else if (p.metric == Metric::MinPairwiseDist)
-                    v01 = std::min(1.0, r.extra / p.bailout);
-                colorize_field_bgr(v01, p.colormap, px[0], px[1], px[2]);
+                const TransitionIterResult r =
+                    iterate_transition<M, NeedMask>(x0, y0, z0, p.iterations, bail2,
+                                       p.from_variant, p.to_variant,
+                                       p.pairwise_cap, orbit);
+
+                uint8_t* px = row + 3 * x;
+                if constexpr (M == Metric::Escape) {
+                    const int iter = r.escaped ? r.iter : p.iterations;
+                    constexpr bool smooth_escape = iter_result_wants(NeedMask, IterResultField::Norm);
+                    const double norm = smooth_escape && r.escaped ? r.norm : 0.0;
+                    colorize_escape_bgr(iter, p.iterations, p.colormap, norm, smooth_escape, px[0], px[1], px[2]);
+                } else {
+                    if (p.colormap == Colormap::HsRainbow) {
+                        const double fv = transition_raw_value<M>(r);
+                        colorize_field_hs_bgr(fv, px[0], px[1], px[2]);
+                    } else if (p.smooth) {
+                        const double fv = transition_raw_value<M>(r);
+                        colorize_field_smooth_bgr(fv, p.colormap, px[0], px[1], px[2]);
+                    } else {
+                        const double v01 = transition_normalized_value<M>(r, p.bailout);
+                        colorize_field_bgr(v01, p.colormap, px[0], px[1], px[2]);
+                    }
+                }
             }
         }
     }
@@ -223,6 +247,31 @@ MapStats render_transition(const TransitionParams& p, cv::Mat& out) {
     s.elapsed_ms  = std::chrono::duration<double, std::milli>(t1 - t0).count();
     s.pixel_count = p.width * p.height;
     return s;
+}
+
+} // namespace
+
+MapStats render_transition(const TransitionParams& p, cv::Mat& out) {
+    switch (p.metric) {
+        case Metric::Escape:
+            if (p.smooth) {
+                return render_transition_metric<Metric::Escape,
+                    IterResultField::Iter | IterResultField::Escaped | IterResultField::Norm>(p, out);
+            }
+            return render_transition_metric<Metric::Escape,
+                IterResultField::Iter | IterResultField::Escaped>(p, out);
+        case Metric::MinAbs:
+            return render_transition_metric<Metric::MinAbs, IterResultField::MinAbs>(p, out);
+        case Metric::MaxAbs:
+            return render_transition_metric<Metric::MaxAbs, IterResultField::MaxAbs>(p, out);
+        case Metric::Envelope:
+            return render_transition_metric<Metric::Envelope,
+                IterResultField::MinAbs | IterResultField::MaxAbs>(p, out);
+        case Metric::MinPairwiseDist:
+            return render_transition_metric<Metric::MinPairwiseDist, IterResultField::Extra>(p, out);
+    }
+    return render_transition_metric<Metric::Escape,
+        IterResultField::Iter | IterResultField::Escaped>(p, out);
 }
 
 } // namespace fsd::compute

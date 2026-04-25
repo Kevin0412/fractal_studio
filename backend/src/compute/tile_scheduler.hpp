@@ -8,7 +8,7 @@
 //   CPU pool — one worker per visible logical core by default.
 //              Runs the AVX-512 or OpenMP path depending on availability.
 //
-//   GPU pool — one worker. Runs CUDA batches of tiles via cudaGraphLaunch.
+//   GPU pool — one worker. Runs CUDA tiles through the CUDA renderer.
 //              (Only present when HAS_CUDA_KERNEL is defined.)
 //
 // Assignment policy (EMA throughput):

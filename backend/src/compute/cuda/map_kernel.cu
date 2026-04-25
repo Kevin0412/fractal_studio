@@ -1,17 +1,13 @@
 // compute/cuda/map_kernel.cu
 //
 // CUDA fractal renderer supporting all 10 variants, Julia mode,
-// and non-escape metrics (MinAbs, MaxAbs, Envelope). Uses CUDA Graphs.
+// and non-escape metrics (MinAbs, MaxAbs, Envelope).
 //
 // Design:
 //   - One kernel handles all pixels via a flat thread grid (pixel = thread).
-//   - Two variant kernels: fp64 and fx64. Selected at host-call time.
-//   - CUDA Graphs: the first call for a given (width,height) builds a capture
-//     graph. Subsequent calls with the same dimensions just update the
-//     kernel params node and replay the graph — eliminating the ~10µs driver
-//     overhead per launch that dominates for shallow-zoom tiles.
-//   - Output: raw BGR byte array on the host (allocated as pinned memory).
-//     Converted to cv::Mat on the CPU side.
+//   - Variant and metric are selected at host-call time and compiled into
+//     templated fp64/fx64 kernels.
+//   - Output: raw BGR byte array copied into a cv::Mat on the host.
 //
 // Thread layout: 32×8 blocks. Each warp covers a contiguous row segment,
 // improving row-major stores while keeping 256 threads per block.
@@ -231,13 +227,27 @@ __device__ inline void step_ship(double& zre, double& zim, double cre, double ci
     zim = -sq_im + cim;
 }
 
+template <int VariantId>
+__device__ inline void step_fp64_variant(double& zre, double& zim, double cre, double cim) {
+    if constexpr (VariantId == 1)      step_tri(zre, zim, cre, cim);
+    else if constexpr (VariantId == 2) step_boat(zre, zim, cre, cim);
+    else if constexpr (VariantId == 3) step_duck(zre, zim, cre, cim);
+    else if constexpr (VariantId == 4) step_bell(zre, zim, cre, cim);
+    else if constexpr (VariantId == 5) step_fish(zre, zim, cre, cim);
+    else if constexpr (VariantId == 6) step_vase(zre, zim, cre, cim);
+    else if constexpr (VariantId == 7) step_bird(zre, zim, cre, cim);
+    else if constexpr (VariantId == 8) step_mask(zre, zim, cre, cim);
+    else if constexpr (VariantId == 9) step_ship(zre, zim, cre, cim);
+    else                               step_mandelbrot(zre, zim, cre, cim);
+}
+
 // ---- fp64 kernel ----
 
+template <int VariantId, int MetricId>
 __global__ void fractal_fp64(
     double center_re, double center_im, double scale,
     int W, int H, int max_iter, double bail2, int colormap_id,
-    int variant_id, bool julia, double julia_re_p, double julia_im_p,
-    int metric_id,
+    bool julia, double julia_re_p, double julia_im_p,
     uint8_t* __restrict__ out
 ) {
     const int px_x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -260,11 +270,11 @@ __global__ void fractal_fp64(
         cre = re;   cim = im;
     }
 
-    const bool track_min = (metric_id == 1 || metric_id == 3);
-    const bool track_max = (metric_id == 2 || metric_id == 3);
+    constexpr bool track_min = (MetricId == 1 || MetricId == 3);
+    constexpr bool track_max = (MetricId == 2 || MetricId == 3);
     double mn = INFINITY;
     double mx = 0.0;
-    if (track_min || track_max) {
+    if constexpr (track_min || track_max) {
         const double init_abs2 = zre * zre + zim * zim;
         mn = init_abs2;
         mx = init_abs2;
@@ -274,47 +284,34 @@ __global__ void fractal_fp64(
     // r.iter is identical on both paths (both return i when z_{i+1} escapes).
     int i = 0;
     for (; i < max_iter; i++) {
-        switch (variant_id) {
-            case 1:  step_tri(zre, zim, cre, cim);       break;
-            case 2:  step_boat(zre, zim, cre, cim);      break;
-            case 3:  step_duck(zre, zim, cre, cim);      break;
-            case 4:  step_bell(zre, zim, cre, cim);      break;
-            case 5:  step_fish(zre, zim, cre, cim);      break;
-            case 6:  step_vase(zre, zim, cre, cim);      break;
-            case 7:  step_bird(zre, zim, cre, cim);      break;
-            case 8:  step_mask(zre, zim, cre, cim);      break;
-            case 9:  step_ship(zre, zim, cre, cim);      break;
-            default: step_mandelbrot(zre, zim, cre, cim); break;
-        }
+        step_fp64_variant<VariantId>(zre, zim, cre, cim);
         const bool finite_z = isfinite(zre) && isfinite(zim);
         const double abs2 = finite_z ? (zre * zre + zim * zim) : INFINITY;
-        if (track_min && abs2 < mn) mn = abs2;
-        if (track_max && abs2 > mx) mx = abs2;
+        if constexpr (track_min) {
+            if (abs2 < mn) mn = abs2;
+        }
+        if constexpr (track_max) {
+            if (abs2 > mx) mx = abs2;
+        }
         if (!finite_z || abs2 > bail2) break;
     }
 
     uint8_t* px = out + (static_cast<size_t>(px_y) * W + px_x) * 3;
 
-    const double bailout = sqrt(bail2);
-    switch (metric_id) {
-        case 1: {  // MinAbs: v01 = min(1, sqrt(mn) / bailout)
-            const double v01 = fmin(1.0, sqrt(mn) / bailout);
-            colorize_field_bgr(v01, colormap_id, px);
-            break;
-        }
-        case 2: {  // MaxAbs: v01 = min(1, sqrt(mx) / bailout)
-            const double v01 = fmin(1.0, sqrt(mx) / bailout);
-            colorize_field_bgr(v01, colormap_id, px);
-            break;
-        }
-        case 3: {  // Envelope: v01 = min(1, 0.5*(sqrt(mn)+sqrt(mx)) / bailout)
-            const double v01 = fmin(1.0, 0.5 * (sqrt(mn) + sqrt(mx)) / bailout);
-            colorize_field_bgr(v01, colormap_id, px);
-            break;
-        }
-        default:  // 0 = Escape
-            colorize_escape_bgr(i, max_iter, colormap_id, px);
-            break;
+    if constexpr (MetricId == 1) {
+        const double bailout = sqrt(bail2);
+        const double v01 = fmin(1.0, sqrt(mn) / bailout);
+        colorize_field_bgr(v01, colormap_id, px);
+    } else if constexpr (MetricId == 2) {
+        const double bailout = sqrt(bail2);
+        const double v01 = fmin(1.0, sqrt(mx) / bailout);
+        colorize_field_bgr(v01, colormap_id, px);
+    } else if constexpr (MetricId == 3) {
+        const double bailout = sqrt(bail2);
+        const double v01 = fmin(1.0, 0.5 * (sqrt(mn) + sqrt(mx)) / bailout);
+        colorize_field_bgr(v01, colormap_id, px);
+    } else {
+        colorize_escape_bgr(i, max_iter, colormap_id, px);
     }
 }
 
@@ -411,13 +408,27 @@ __device__ inline void step_ship_fx(Fx64& zre, Fx64& zim, const Fx64& cre, const
     zim = cim - sq_im;
 }
 
+template <int VariantId>
+__device__ inline void step_fx64_variant(Fx64& zre, Fx64& zim, const Fx64& cre, const Fx64& cim) {
+    if constexpr (VariantId == 1)      step_tri_fx(zre, zim, cre, cim);
+    else if constexpr (VariantId == 2) step_boat_fx(zre, zim, cre, cim);
+    else if constexpr (VariantId == 3) step_duck_fx(zre, zim, cre, cim);
+    else if constexpr (VariantId == 4) step_bell_fx(zre, zim, cre, cim);
+    else if constexpr (VariantId == 5) step_fish_fx(zre, zim, cre, cim);
+    else if constexpr (VariantId == 6) step_vase_fx(zre, zim, cre, cim);
+    else if constexpr (VariantId == 7) step_bird_fx(zre, zim, cre, cim);
+    else if constexpr (VariantId == 8) step_mask_fx(zre, zim, cre, cim);
+    else if constexpr (VariantId == 9) step_ship_fx(zre, zim, cre, cim);
+    else                               step_mandelbrot_fx(zre, zim, cre, cim);
+}
+
 // ---- fx64 kernel ----
 
+template <int VariantId, int MetricId>
 __global__ void fractal_fx64(
     double center_re_d, double center_im_d, double scale_d,
     int W, int H, int max_iter, double bail2, int colormap_id,
-    int variant_id, bool julia, double julia_re_p, double julia_im_p,
-    int metric_id,
+    bool julia, double julia_re_p, double julia_im_p,
     uint8_t* __restrict__ out
 ) {
     const int px_x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -444,11 +455,11 @@ __global__ void fractal_fx64(
         cim = Fx64::from_double(im_d);
     }
 
-    const bool track_min = (metric_id == 1 || metric_id == 3);
-    const bool track_max = (metric_id == 2 || metric_id == 3);
+    constexpr bool track_min = (MetricId == 1 || MetricId == 3);
+    constexpr bool track_max = (MetricId == 2 || MetricId == 3);
     double mn = INFINITY;
     double mx = 0.0;
-    if (track_min || track_max) {
+    if constexpr (track_min || track_max) {
         const double fre0 = zre.to_double();
         const double fim0 = zim.to_double();
         const double init_abs2 = fre0 * fre0 + fim0 * fim0;
@@ -459,51 +470,38 @@ __global__ void fractal_fx64(
     // Apply step THEN check — matches escape_time.hpp CPU convention.
     int i = 0;
     for (; i < max_iter; i++) {
-        switch (variant_id) {
-            case 1:  step_tri_fx(zre, zim, cre, cim);       break;
-            case 2:  step_boat_fx(zre, zim, cre, cim);      break;
-            case 3:  step_duck_fx(zre, zim, cre, cim);      break;
-            case 4:  step_bell_fx(zre, zim, cre, cim);      break;
-            case 5:  step_fish_fx(zre, zim, cre, cim);      break;
-            case 6:  step_vase_fx(zre, zim, cre, cim);      break;
-            case 7:  step_bird_fx(zre, zim, cre, cim);      break;
-            case 8:  step_mask_fx(zre, zim, cre, cim);      break;
-            case 9:  step_ship_fx(zre, zim, cre, cim);      break;
-            default: step_mandelbrot_fx(zre, zim, cre, cim); break;
-        }
+        step_fx64_variant<VariantId>(zre, zim, cre, cim);
 
         // Escape check in fp64 (avoids fixed-point overflow for large |z|)
         const double fre = zre.to_double();
         const double fim = zim.to_double();
         const bool finite_z = isfinite(fre) && isfinite(fim);
         const double abs2 = finite_z ? (fre * fre + fim * fim) : INFINITY;
-        if (track_min && abs2 < mn) mn = abs2;
-        if (track_max && abs2 > mx) mx = abs2;
+        if constexpr (track_min) {
+            if (abs2 < mn) mn = abs2;
+        }
+        if constexpr (track_max) {
+            if (abs2 > mx) mx = abs2;
+        }
         if (!finite_z || abs2 > bail2) break;
     }
 
     uint8_t* px = out + (static_cast<size_t>(px_y) * W + px_x) * 3;
 
-    const double bailout = sqrt(bail2);
-    switch (metric_id) {
-        case 1: {  // MinAbs
-            const double v01 = fmin(1.0, sqrt(mn) / bailout);
-            colorize_field_bgr(v01, colormap_id, px);
-            break;
-        }
-        case 2: {  // MaxAbs
-            const double v01 = fmin(1.0, sqrt(mx) / bailout);
-            colorize_field_bgr(v01, colormap_id, px);
-            break;
-        }
-        case 3: {  // Envelope
-            const double v01 = fmin(1.0, 0.5 * (sqrt(mn) + sqrt(mx)) / bailout);
-            colorize_field_bgr(v01, colormap_id, px);
-            break;
-        }
-        default:  // 0 = Escape
-            colorize_escape_bgr(i, max_iter, colormap_id, px);
-            break;
+    if constexpr (MetricId == 1) {
+        const double bailout = sqrt(bail2);
+        const double v01 = fmin(1.0, sqrt(mn) / bailout);
+        colorize_field_bgr(v01, colormap_id, px);
+    } else if constexpr (MetricId == 2) {
+        const double bailout = sqrt(bail2);
+        const double v01 = fmin(1.0, sqrt(mx) / bailout);
+        colorize_field_bgr(v01, colormap_id, px);
+    } else if constexpr (MetricId == 3) {
+        const double bailout = sqrt(bail2);
+        const double v01 = fmin(1.0, 0.5 * (sqrt(mn) + sqrt(mx)) / bailout);
+        colorize_field_bgr(v01, colormap_id, px);
+    } else {
+        colorize_escape_bgr(i, max_iter, colormap_id, px);
     }
 }
 
@@ -532,6 +530,70 @@ bool cuda_available() noexcept {
     return cudaGetDeviceCount(&count) == cudaSuccess && count > 0;
 }
 
+template <int MetricId>
+static void launch_fp64_metric(const CudaMapParams& p, dim3 grid, dim3 block, double bail2, uint8_t* out) {
+#define FSD_LAUNCH_FP64(VID) \
+    fractal_fp64<VID, MetricId><<<grid, block>>>( \
+        p.center_re, p.center_im, p.scale, \
+        p.width, p.height, p.iterations, bail2, p.colormap_id, \
+        p.julia, p.julia_re, p.julia_im, out)
+
+    switch (p.variant_id) {
+        case 1:  FSD_LAUNCH_FP64(1); break;
+        case 2:  FSD_LAUNCH_FP64(2); break;
+        case 3:  FSD_LAUNCH_FP64(3); break;
+        case 4:  FSD_LAUNCH_FP64(4); break;
+        case 5:  FSD_LAUNCH_FP64(5); break;
+        case 6:  FSD_LAUNCH_FP64(6); break;
+        case 7:  FSD_LAUNCH_FP64(7); break;
+        case 8:  FSD_LAUNCH_FP64(8); break;
+        case 9:  FSD_LAUNCH_FP64(9); break;
+        default: FSD_LAUNCH_FP64(0); break;
+    }
+#undef FSD_LAUNCH_FP64
+}
+
+static void launch_fp64(const CudaMapParams& p, dim3 grid, dim3 block, double bail2, uint8_t* out) {
+    switch (p.metric_id) {
+        case 1:  launch_fp64_metric<1>(p, grid, block, bail2, out); break;
+        case 2:  launch_fp64_metric<2>(p, grid, block, bail2, out); break;
+        case 3:  launch_fp64_metric<3>(p, grid, block, bail2, out); break;
+        default: launch_fp64_metric<0>(p, grid, block, bail2, out); break;
+    }
+}
+
+template <int MetricId>
+static void launch_fx64_metric(const CudaMapParams& p, dim3 grid, dim3 block, double bail2, uint8_t* out) {
+#define FSD_LAUNCH_FX64(VID) \
+    fractal_fx64<VID, MetricId><<<grid, block>>>( \
+        p.center_re, p.center_im, p.scale, \
+        p.width, p.height, p.iterations, bail2, p.colormap_id, \
+        p.julia, p.julia_re, p.julia_im, out)
+
+    switch (p.variant_id) {
+        case 1:  FSD_LAUNCH_FX64(1); break;
+        case 2:  FSD_LAUNCH_FX64(2); break;
+        case 3:  FSD_LAUNCH_FX64(3); break;
+        case 4:  FSD_LAUNCH_FX64(4); break;
+        case 5:  FSD_LAUNCH_FX64(5); break;
+        case 6:  FSD_LAUNCH_FX64(6); break;
+        case 7:  FSD_LAUNCH_FX64(7); break;
+        case 8:  FSD_LAUNCH_FX64(8); break;
+        case 9:  FSD_LAUNCH_FX64(9); break;
+        default: FSD_LAUNCH_FX64(0); break;
+    }
+#undef FSD_LAUNCH_FX64
+}
+
+static void launch_fx64(const CudaMapParams& p, dim3 grid, dim3 block, double bail2, uint8_t* out) {
+    switch (p.metric_id) {
+        case 1:  launch_fx64_metric<1>(p, grid, block, bail2, out); break;
+        case 2:  launch_fx64_metric<2>(p, grid, block, bail2, out); break;
+        case 3:  launch_fx64_metric<3>(p, grid, block, bail2, out); break;
+        default: launch_fx64_metric<0>(p, grid, block, bail2, out); break;
+    }
+}
+
 CudaMapStats cuda_render_map(const CudaMapParams& p, cv::Mat& out) {
     if (!cuda_available()) throw std::runtime_error("CUDA not available");
 
@@ -555,19 +617,9 @@ CudaMapStats cuda_render_map(const CudaMapParams& p, cv::Mat& out) {
     CUDA_CHECK(cudaEventRecord(ev_start));
 
     if (use_fx) {
-        fractal_fx64<<<grid, block>>>(
-            p.center_re, p.center_im, p.scale,
-            p.width, p.height, p.iterations, bail2, p.colormap_id,
-            p.variant_id, p.julia, p.julia_re, p.julia_im,
-            p.metric_id,
-            g_devbuf.d);
+        launch_fx64(p, grid, block, bail2, g_devbuf.d);
     } else {
-        fractal_fp64<<<grid, block>>>(
-            p.center_re, p.center_im, p.scale,
-            p.width, p.height, p.iterations, bail2, p.colormap_id,
-            p.variant_id, p.julia, p.julia_re, p.julia_im,
-            p.metric_id,
-            g_devbuf.d);
+        launch_fp64(p, grid, block, bail2, g_devbuf.d);
     }
 
     CUDA_CHECK(cudaEventRecord(ev_stop));
