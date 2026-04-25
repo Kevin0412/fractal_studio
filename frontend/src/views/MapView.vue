@@ -5,7 +5,7 @@ import SpecialPointList from '../components/SpecialPointList.vue'
 import {
   api, VARIANTS, METRICS, COLORMAPS, VARIANT_LABELS,
   type Metric, type ColorMap, type SpecialPoint,
-  type VideoExportResponse, type CustomVariant,
+  type VideoExportResponse, type VideoPreviewResponse, type CustomVariant,
 } from '../api'
 import type { StatusState } from '../types'
 import { t, lang } from '../i18n'
@@ -41,6 +41,7 @@ const EXPORT_PRESETS: ExportPreset[] = [
   { key: 'fhd',       label: { en: 'FHD 16:9',       zh: 'FHD 16:9' },       width: 1920, height: 1080 },
   { key: 'qhd',       label: { en: 'QHD 16:9',       zh: 'QHD 16:9' },       width: 2560, height: 1440 },
   { key: '4k',        label: { en: '4K UHD 16:9',    zh: '4K UHD 16:9' },    width: 3840, height: 2160 },
+  { key: '8k',        label: { en: '8K UHD 16:9',    zh: '8K UHD 16:9' },    width: 7680, height: 4320 },
   { key: 'wuxga',     label: { en: 'WUXGA 16:10',    zh: 'WUXGA 16:10' },    width: 1920, height: 1200 },
   { key: 'wqxga',     label: { en: 'WQXGA 16:10',    zh: 'WQXGA 16:10' },    width: 2560, height: 1600 },
   { key: 'uwqhd',     label: { en: 'UWQHD 21:9',     zh: 'UWQHD 21:9' },     width: 3440, height: 1440 },
@@ -274,22 +275,115 @@ async function exportPng() {
 const exportModalOpen = ref(false)
 const exportDepth     = ref(20)
 const exportFps       = ref(30)
-const exportDuration  = ref(8.0)
+const exportSecondsPerOctave = ref(0.4)
 const exportW         = ref(1920)
 const exportH         = ref(1080)
 const exportBusy      = ref(false)
+const exportPreviewBusy = ref(false)
 const exportStatus    = ref('')
+const exportPreviewStatus = ref('')
 const exportResult    = ref<VideoExportResponse | null>(null)
+const exportPreviewResult = ref<VideoPreviewResponse | null>(null)
+const exportDepthDirty = ref(false)
+
+const exportEstimatedDuration = computed(() =>
+  Math.max(0, exportDepth.value) * Math.max(0, exportSecondsPerOctave.value)
+)
+const exportEstimatedFrames = computed(() =>
+  Math.max(2, Math.round(exportEstimatedDuration.value * Math.max(1, exportFps.value)))
+)
+const visiblePreview = computed(() => exportPreviewResult.value ?? exportResult.value)
 
 watch(videoPreset, p => {
   exportW.value = p.width
   exportH.value = p.height
+  if (exportModalOpen.value && !exportDepthDirty.value) syncExportDepthToCurrentView()
 }, { immediate: true })
 
+watch([exportW, exportH], () => {
+  if (exportModalOpen.value && !exportDepthDirty.value) syncExportDepthToCurrentView()
+  if (exportModalOpen.value) clearExportPreview()
+})
+
+function defaultExportDepthForView() {
+  const aspect = Math.max(1e-9, exportW.value / Math.max(1, exportH.value))
+  const rMax = Math.sqrt(aspect * aspect + 1)
+  const kTopStart = Math.log(4) - Math.log(rMax)
+  const kTopEnd = Math.log(Math.max(scale.value, 1e-300) * 0.5)
+  const depth = (kTopStart - kTopEnd) / Math.LN2
+  if (!Number.isFinite(depth)) return 20
+  return Math.min(120, Math.max(0.05, depth))
+}
+
+function syncExportDepthToCurrentView() {
+  exportDepth.value = Number(defaultExportDepthForView().toFixed(2))
+}
+
+function clearExportPreview() {
+  exportPreviewStatus.value = ''
+  exportPreviewResult.value = null
+}
+
+function onExportDepthInput() {
+  exportDepthDirty.value = true
+  clearExportPreview()
+}
+
 function openExportModal() {
+  exportDepthDirty.value = false
+  syncExportDepthToCurrentView()
   exportModalOpen.value = true
   exportStatus.value    = ''
+  exportPreviewStatus.value = ''
   exportResult.value    = null
+  exportPreviewResult.value = null
+}
+
+function videoRequestBase() {
+  return {
+    centerRe:     centerRe.value,
+    centerIm:     centerIm.value,
+    julia:        juliaOn.value,
+    juliaRe:      juliaRe.value,
+    juliaIm:      juliaIm.value,
+    variant:      variant.value,
+    colorMap:     colorMap.value,
+    iterations:   Math.max(iterations.value, 2048),
+    depthOctaves: exportDepth.value,
+    fps:          exportFps.value,
+    secondsPerOctave: exportSecondsPerOctave.value,
+    targetScale:  !exportDepthDirty.value && exportDepth.value > 0.05 ? scale.value : undefined,
+    width:        exportW.value,
+    height:       exportH.value,
+  }
+}
+
+function previewSizeForExport() {
+  const maxSide = 720
+  const longSide = Math.max(exportW.value, exportH.value, 1)
+  const ratio = Math.min(1, maxSide / longSide)
+  return {
+    previewWidth: Math.max(64, Math.round(exportW.value * ratio)),
+    previewHeight: Math.max(64, Math.round(exportH.value * ratio)),
+  }
+}
+
+async function runPreview() {
+  exportPreviewBusy.value = true
+  exportPreviewStatus.value = 'previewing…'
+  exportPreviewResult.value = null
+  try {
+    const resp = await api.videoPreview({
+      ...videoRequestBase(),
+      ...previewSizeForExport(),
+    })
+    exportPreviewResult.value = resp
+    exportPreviewStatus.value = `${resp.width}×${resp.height} · depth ${resp.depthOctaves.toFixed(2)} · ${resp.generatedMs.toFixed(0)} ms`
+  } catch (e: any) {
+    exportPreviewStatus.value = 'failed: ' + (e?.message || e)
+  } finally {
+    exportPreviewBusy.value = false
+  }
 }
 
 async function runExport() {
@@ -297,23 +391,9 @@ async function runExport() {
   exportStatus.value = 'rendering… (ln-map + final frame + video)'
   exportResult.value = null
   try {
-    const resp = await api.videoExport({
-      centerRe:     centerRe.value,
-      centerIm:     centerIm.value,
-      julia:        juliaOn.value,
-      juliaRe:      juliaRe.value,
-      juliaIm:      juliaIm.value,
-      variant:      variant.value,
-      colorMap:     colorMap.value,
-      iterations:   Math.max(iterations.value, 2048),
-      depthOctaves: exportDepth.value,
-      fps:          exportFps.value,
-      durationSec:  exportDuration.value,
-      width:        exportW.value,
-      height:       exportH.value,
-    })
+    const resp = await api.videoExport(videoRequestBase())
     exportResult.value  = resp
-    exportStatus.value  = `${resp.frameCount} frames · ${resp.generatedMs.toFixed(0)} ms`
+    exportStatus.value  = `${resp.frameCount} frames · ${resp.durationSec.toFixed(2)}s · ${resp.generatedMs.toFixed(0)} ms`
   } catch (e: any) {
     exportStatus.value = 'failed: ' + (e?.message || e)
   } finally {
@@ -552,15 +632,19 @@ async function runExport() {
           <div class="modal-body">
             <div class="mrow">
               <label>{{ t('video_depth') }}</label>
-              <input type="number" v-model.number="exportDepth" min="1" max="60" step="1" />
+              <input type="number" v-model.number="exportDepth" min="0.05" max="120" step="0.05" @input="onExportDepthInput" />
             </div>
             <div class="mrow">
               <label>{{ t('video_fps') }}</label>
-              <input type="number" v-model.number="exportFps" min="1" max="60" step="1" />
+              <input type="number" v-model.number="exportFps" min="1" max="120" step="1" />
             </div>
             <div class="mrow">
-              <label>{{ t('video_duration') }}</label>
-              <input type="number" v-model.number="exportDuration" min="1" max="300" step="1" />
+              <label>{{ t('video_seconds_per_octave') }}</label>
+              <input type="number" v-model.number="exportSecondsPerOctave" min="0.05" max="60" step="0.05" />
+            </div>
+            <div class="mrow estimate">
+              <label>{{ t('video_estimate') }}</label>
+              <span class="mono">{{ exportEstimatedDuration.toFixed(2) }}s · {{ exportEstimatedFrames }} frames</span>
             </div>
             <div class="mrow">
               <label>{{ lang === 'en' ? 'Preset' : '预设' }}</label>
@@ -572,20 +656,40 @@ async function runExport() {
             </div>
             <div class="mrow">
               <label>{{ t('video_width') }}</label>
-              <input type="number" v-model.number="exportW" min="128" max="3840" step="64" />
+              <input type="number" v-model.number="exportW" min="128" max="7680" step="64" />
             </div>
             <div class="mrow">
               <label>{{ t('video_height') }}</label>
-              <input type="number" v-model.number="exportH" min="128" max="2560" step="64" />
+              <input type="number" v-model.number="exportH" min="128" max="4320" step="64" />
             </div>
           </div>
           <div class="modal-footer">
             <button @click="exportModalOpen = false" class="btn-cancel">{{ t('video_cancel') }}</button>
-            <button @click="runExport" :disabled="exportBusy" class="btn-go">
+            <button @click="runPreview" :disabled="exportBusy || exportPreviewBusy" class="btn-preview">
+              {{ exportPreviewBusy ? t('loading') : t('video_preview') }}
+            </button>
+            <button @click="runExport" :disabled="exportBusy || exportPreviewBusy" class="btn-go">
               {{ exportBusy ? t('loading') : t('video_render') }}
             </button>
           </div>
+          <div v-if="exportPreviewStatus" class="modal-status mono">{{ exportPreviewStatus }}</div>
           <div v-if="exportStatus" class="modal-status mono">{{ exportStatus }}</div>
+          <div v-if="visiblePreview" class="modal-body" style="gap:6px">
+            <div v-if="visiblePreview.startFrameUrl || visiblePreview.endFrameUrl" class="preview-grid">
+              <a v-if="visiblePreview.startFrameUrl"
+                 :href="api.baseUrl + (visiblePreview.startFrameDownloadUrl || visiblePreview.startFrameUrl)"
+                 class="preview-item" download>
+                <span>{{ t('video_start_frame') }}</span>
+                <img :src="api.baseUrl + visiblePreview.startFrameUrl" alt="" />
+              </a>
+              <a v-if="visiblePreview.endFrameUrl"
+                 :href="api.baseUrl + (visiblePreview.endFrameDownloadUrl || visiblePreview.endFrameUrl)"
+                 class="preview-item" download>
+                <span>{{ t('video_end_frame') }}</span>
+                <img :src="api.baseUrl + visiblePreview.endFrameUrl" alt="" />
+              </a>
+            </div>
+          </div>
           <div v-if="exportResult" class="modal-body" style="gap:6px">
             <a :href="api.baseUrl + exportResult.videoDownloadUrl"    class="dl-link" download>↓ {{ t('video_download') }}</a>
             <a :href="api.baseUrl + exportResult.lnMapDownloadUrl"    class="dl-link" download>↓ ln-map PNG</a>
@@ -729,7 +833,7 @@ async function runExport() {
 .modal {
   background: var(--panel);
   border: 1px solid var(--rule);
-  width: 340px;
+  width: min(420px, calc(100vw - 32px));
   padding: 24px 28px;
   display: flex;
   flex-direction: column;
@@ -757,6 +861,11 @@ async function runExport() {
   min-width: 90px;
 }
 .mrow input[type="number"] { width: 100px; }
+.mrow.estimate span {
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
 .mrow.source {
   flex-direction: column;
   align-items: flex-start;
@@ -774,6 +883,15 @@ async function runExport() {
   font-size: 12px;
   cursor: pointer;
 }
+.btn-preview {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  padding: 6px 14px;
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+}
 .btn-go {
   background: var(--accent);
   color: #000;
@@ -784,8 +902,32 @@ async function runExport() {
   font-weight: 600;
   cursor: pointer;
 }
-.btn-go:disabled { opacity: 0.5; cursor: default; }
+.btn-go:disabled,
+.btn-preview:disabled { opacity: 0.5; cursor: default; }
 .modal-status { font-size: 10px; color: var(--text-dim); }
+.preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.preview-item {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-decoration: none;
+}
+.preview-item img {
+  width: 100%;
+  height: 120px;
+  object-fit: contain;
+  border: 1px solid var(--rule);
+  background: #000;
+}
+.preview-item:hover span { color: var(--accent); }
 .dl-link {
   display: block;
   padding: 5px 0;

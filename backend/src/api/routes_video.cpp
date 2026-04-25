@@ -37,13 +37,16 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/videoio.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fsd {
@@ -54,6 +57,12 @@ constexpr double TAU     = 6.283185307179586;
 constexpr double PI      = 3.141592653589793;
 constexpr double LN_TWO  = 0.6931471805599453;
 constexpr double LN_FOUR = 1.3862943611198906;
+constexpr int    MIN_VIDEO_DIM = 128;
+constexpr int    MAX_VIDEO_DIM = 8192;
+constexpr int64_t MAX_VIDEO_PIXELS = 7680LL * 4320LL;
+constexpr double DEFAULT_SECONDS_PER_OCTAVE = 0.4;
+constexpr double MAX_SECONDS_PER_OCTAVE = 60.0;
+constexpr double MAX_VIDEO_DURATION_SEC = 3600.0;
 
 int roundUpToMultiple(int value, int multiple) {
     if (multiple <= 1) return value;
@@ -72,6 +81,84 @@ int resolveStripWidth(const Json& j, int W, int H) {
     const int derived = derivedMinStripWidth(W, H);
     const int requested = j.value("widthS", derived);
     return roundUpToMultiple(std::max(requested, derived), 8);
+}
+
+void validateVideoOutputSize(int W, int H) {
+    if (W < MIN_VIDEO_DIM || H < MIN_VIDEO_DIM || W > MAX_VIDEO_DIM || H > MAX_VIDEO_DIM) {
+        throw std::runtime_error("invalid output size (128..8192)");
+    }
+    const int64_t pixels = static_cast<int64_t>(W) * static_cast<int64_t>(H);
+    if (pixels > MAX_VIDEO_PIXELS) {
+        throw std::runtime_error("invalid output size (too many pixels; max 7680x4320 area)");
+    }
+}
+
+std::pair<int, int> resolvePreviewSize(const Json& j, int W, int H) {
+    int previewW = j.value("previewWidth", 0);
+    int previewH = j.value("previewHeight", 0);
+    if (previewW <= 0 || previewH <= 0) {
+        constexpr double maxPreviewSide = 720.0;
+        const double scale = std::min(1.0, maxPreviewSide / static_cast<double>(std::max(W, H)));
+        previewW = std::max(64, static_cast<int>(std::llround(static_cast<double>(W) * scale)));
+        previewH = std::max(64, static_cast<int>(std::llround(static_cast<double>(H) * scale)));
+    }
+    if (previewW < 64 || previewH < 64 || previewW > 2048 || previewH > 2048) {
+        throw std::runtime_error("invalid preview size (64..2048)");
+    }
+    if (static_cast<int64_t>(previewW) * static_cast<int64_t>(previewH) > 1920LL * 1080LL) {
+        throw std::runtime_error("invalid preview size (too many pixels)");
+    }
+    return { previewW, previewH };
+}
+
+double kTopStartForFrame(int W, int H) {
+    const double aspect = static_cast<double>(W) / static_cast<double>(H);
+    const double rMax   = std::sqrt(aspect * aspect + 1.0);
+    return LN_FOUR - std::log(rMax);
+}
+
+double resolveDepthOctaves(const Json& j, double kTopStart, double fallbackDepth) {
+    double depth = j.value("depthOctaves", fallbackDepth);
+    if (j.contains("targetScale") && !j["targetScale"].is_null()) {
+        const double targetScale = j.value("targetScale", 0.0);
+        if (!(targetScale > 0.0) || !std::isfinite(targetScale)) {
+            throw std::runtime_error("invalid targetScale");
+        }
+        const double targetKTop = std::log(targetScale * 0.5);
+        depth = (kTopStart - targetKTop) / LN_TWO;
+    }
+    if (!(depth > 0.0) || !std::isfinite(depth)) {
+        throw std::runtime_error("invalid depthOctaves");
+    }
+    return depth;
+}
+
+double resolveSecondsPerOctave(const Json& j, double depthOctaves) {
+    double secondsPerOctave = DEFAULT_SECONDS_PER_OCTAVE;
+    if (j.contains("secondsPerOctave") && !j["secondsPerOctave"].is_null()) {
+        secondsPerOctave = j.value("secondsPerOctave", DEFAULT_SECONDS_PER_OCTAVE);
+    } else if (j.contains("durationSec") && !j["durationSec"].is_null()) {
+        const double durationSec = j.value("durationSec", 0.0);
+        if (!(durationSec > 0.0) || !std::isfinite(durationSec)) {
+            throw std::runtime_error("invalid durationSec");
+        }
+        secondsPerOctave = durationSec / std::max(depthOctaves, 1e-9);
+    }
+    if (!(secondsPerOctave > 0.0) || secondsPerOctave > MAX_SECONDS_PER_OCTAVE || !std::isfinite(secondsPerOctave)) {
+        throw std::runtime_error("invalid secondsPerOctave (0..60)");
+    }
+    return secondsPerOctave;
+}
+
+int frameCountFromSpeed(double depthOctaves, double secondsPerOctave, int fps, double& durationSec) {
+    durationSec = depthOctaves * secondsPerOctave;
+    if (!(durationSec > 0.0) || durationSec > MAX_VIDEO_DURATION_SEC || !std::isfinite(durationSec)) {
+        throw std::runtime_error("invalid video duration");
+    }
+    const long long frames = std::llround(durationSec * static_cast<double>(fps));
+    if (frames < 2) return 2;
+    if (frames > 10000000LL) throw std::runtime_error("too many video frames");
+    return static_cast<int>(frames);
 }
 
 double bailoutSqFromJson(const Json& j, double radius, double defaultSq) {
@@ -225,6 +312,30 @@ void renderWarpFrameShared(
     }
 }
 
+cv::Mat renderZoomPreviewFrame(
+    const cv::Mat& strip,
+    const cv::Mat& finalImg,
+    int W, int H,
+    double kTop,
+    double kTop_end
+) {
+    cv::Mat stripWrap;
+    cv::copyMakeBorder(strip, stripWrap, 0, 0, 0, 1, cv::BORDER_WRAP);
+
+    cv::Mat frame(H, W, CV_8UC3);
+    cv::Mat stripFrame(H, W, CV_8UC3);
+    cv::Mat finalFrame(H, W, CV_8UC3);
+    cv::Mat mapX(H, W, CV_32FC1);
+    cv::Mat mapY(H, W, CV_32FC1);
+    cv::Mat fmapX(H, W, CV_32FC1);
+    cv::Mat fmapY(H, W, CV_32FC1);
+    std::vector<float> useStrip(static_cast<size_t>(W) * H, 0.0f);
+
+    renderWarpFrameShared(stripWrap, finalImg, W, H, kTop, kTop_end,
+                          frame, stripFrame, finalFrame, mapX, mapY, fmapX, fmapY, useStrip);
+    return frame;
+}
+
 // ─── Shared video generation helper ──────────────────────────────────────────
 static std::string generateZoomVideo(
     const cv::Mat& strip,
@@ -328,21 +439,16 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
     const std::string lnArtifactId = j.value("lnMapArtifactId", std::string(""));
     if (lnArtifactId.empty()) throw std::runtime_error("lnMapArtifactId required");
 
-    const int    fps         = j.value("fps",          30);
-    const double durationSec = j.value("durationSec",  8.0);
-    const int    W           = j.value("width",        720);
-    const int    H           = j.value("height",       720);
+    const int    fps         = j.value("fps",    30);
+    const int    W           = j.value("width",  720);
+    const int    H           = j.value("height", 720);
 
-    if (fps < 1 || fps > 120)                  throw std::runtime_error("invalid fps (1..120)");
-    if (durationSec <= 0 || durationSec > 300) throw std::runtime_error("invalid durationSec (0..300)");
-    if (W < 128 || W > 1920 || H < 128 || H > 1080) throw std::runtime_error("invalid output size");
+    if (fps < 1 || fps > 120) throw std::runtime_error("invalid fps (1..120)");
+    validateVideoOutputSize(W, H);
 
     LnMapLookup lk = resolveLnMap(repoRoot, lnArtifactId);
     cv::Mat strip  = compute::read_png(lk.pngPath.string());
 
-    const int    stripW       = strip.cols;
-    const int    stripH       = strip.rows;
-    const int    s            = lk.sidecar.value("widthS",      stripW);
     const double sidecarDepth = lk.sidecar.value("depthOctaves", 40.0);
     const double cr           = lk.sidecar.value("centerRe",    0.0);
     const double ci           = lk.sidecar.value("centerIm",    0.0);
@@ -350,13 +456,16 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
     const std::string variantStr  = lk.sidecar.value("variant",  std::string("mandelbrot"));
     const std::string colormapStr = lk.sidecar.value("colorMap", std::string("classic_cos"));
 
-    double depthOctaves = j.value("depthOctaves", 0.0);
-    if (depthOctaves <= 0.0) depthOctaves = sidecarDepth - 1.5;
+    double depthOctaves = resolveDepthOctaves(j, kTopStartForFrame(W, H), sidecarDepth - 1.5);
+    if (depthOctaves < 0.05 || depthOctaves > 120.0) {
+        throw std::runtime_error("invalid depthOctaves (0.05..120)");
+    }
+    const double secondsPerOctave = resolveSecondsPerOctave(j, depthOctaves);
+    double durationSec = 0.0;
+    const int frameCount = frameCountFromSpeed(depthOctaves, secondsPerOctave, fps, durationSec);
 
     // ── startKTop: corner pixel of first frame hits strip row 0 ──────────────
-    const double aspect  = static_cast<double>(W) / static_cast<double>(H);
-    const double r_max   = std::sqrt(aspect * aspect + 1.0);  // half-diagonal in normalised coords
-    const double kTop_start = LN_FOUR - std::log(r_max);
+    const double kTop_start = kTopStartForFrame(W, H);
     const double kTop_end   = kTop_start - depthOctaves * LN_TWO;
 
     // ── Render final cartesian image at kTop_end ──────────────────────────────
@@ -409,7 +518,6 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
 
     std::string mp4Path;
     double elapsed = 0.0;
-    const int frameCount = static_cast<int>(std::round(durationSec * fps));
 
     try {
         const auto t0 = std::chrono::steady_clock::now();
@@ -470,6 +578,7 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
         {"frameCount",  frameCount},
         {"fps",         fps},
         {"durationSec", durationSec},
+        {"secondsPerOctave", secondsPerOctave},
         {"width",       W},
         {"height",      H},
         {"kTopStart",   kTop_start},
@@ -480,6 +589,132 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
     return resp.dump();
 }
 
+// ─── Fast preview: direct-render start/end frames before video export ─────────
+//
+// This intentionally does not build the ln-map strip or encode video. It renders
+// the first and final views at preview resolution, so the UI can tune depth
+// before paying the full export cost.
+
+std::string videoPreviewRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body) {
+    (void)repoRoot;
+    const Json j = parseJsonBody(body);
+
+    const double cr         = j.value("centerRe", 0.0);
+    const double ci         = j.value("centerIm", 0.0);
+    const bool   julia      = j.value("julia",    false);
+    const double jre        = j.value("juliaRe",  0.0);
+    const double jim        = j.value("juliaIm",  0.0);
+    const std::string variantStr  = j.value("variant",  std::string("mandelbrot"));
+    const std::string colormapStr = j.value("colorMap", std::string("classic_cos"));
+    const int    iters      = j.value("iterations", 2048);
+    const int    fps        = j.value("fps",       30);
+    const int    W          = j.value("width",     720);
+    const int    H          = j.value("height",    720);
+
+    if (fps < 1 || fps > 120) throw std::runtime_error("invalid fps (1..120)");
+    if (iters < 1 || iters > 10000000) throw std::runtime_error("invalid iterations");
+    validateVideoOutputSize(W, H);
+    const auto [previewW, previewH] = resolvePreviewSize(j, W, H);
+
+    const double kTop_start = kTopStartForFrame(W, H);
+    const double depth      = resolveDepthOctaves(j, kTop_start, 20.0);
+    if (depth < 0.05 || depth > 120.0) throw std::runtime_error("invalid depthOctaves (0.05..120)");
+    const double kTop_end   = kTop_start - depth * LN_TWO;
+    const double secondsPerOctave = resolveSecondsPerOctave(j, depth);
+    double durSec = 0.0;
+    const int frameCount = frameCountFromSpeed(depth, secondsPerOctave, fps, durSec);
+
+    compute::Variant v;
+    if (!compute::variant_from_name(variantStr.c_str(), v)) v = compute::Variant::Mandelbrot;
+    double bailout = j.contains("bailout") && !j["bailout"].is_null()
+        ? j.value("bailout", 2.0)
+        : compute::variant_default_bailout(v);
+    const double bailoutSq = bailoutSqFromJson(j, bailout, compute::variant_default_bailout_sq(v));
+    if (j.contains("bailoutSq") && !j["bailoutSq"].is_null() &&
+        !(j.contains("bailout") && !j["bailout"].is_null())) {
+        bailout = std::sqrt(bailoutSq);
+    }
+    if (!(bailout > 0.0) || !std::isfinite(bailout)) throw std::runtime_error("invalid bailout");
+    if (!(bailoutSq > 0.0) || !std::isfinite(bailoutSq)) throw std::runtime_error("invalid bailoutSq");
+    compute::Colormap cm;
+    if (!compute::colormap_from_name(colormapStr.c_str(), cm)) cm = compute::Colormap::ClassicCos;
+
+    auto run = runner.createRun("video-preview", body);
+    runner.setStatus(run.id, "running");
+
+    try {
+        const auto t0 = std::chrono::steady_clock::now();
+
+        auto renderPreview = [&](double kTop) {
+            compute::MapParams mp;
+            mp.center_re  = cr;
+            mp.center_im  = ci;
+            mp.scale      = 2.0 * std::exp(kTop);
+            mp.width      = previewW;
+            mp.height     = previewH;
+            mp.iterations = iters;
+            mp.bailout    = bailout;
+            mp.bailout_sq = bailoutSq;
+            mp.variant    = v;
+            mp.metric     = compute::Metric::Escape;
+            mp.colormap   = cm;
+            mp.smooth     = false;
+            mp.julia      = julia;
+            mp.julia_re   = jre;
+            mp.julia_im   = jim;
+            mp.engine     = "auto";
+            mp.scalar_type = "auto";
+
+            cv::Mat img(previewH, previewW, CV_8UC3);
+            compute::render_map(mp, img);
+            return img;
+        };
+
+        const cv::Mat startPreview = renderPreview(kTop_start);
+        const cv::Mat endPreview   = renderPreview(kTop_end);
+
+        const std::filesystem::path startPath = std::filesystem::path(run.outputDir) / "start_frame.png";
+        const std::filesystem::path endPath   = std::filesystem::path(run.outputDir) / "end_frame.png";
+        compute::write_png(startPath.string(), startPreview);
+        compute::write_png(endPath.string(), endPreview);
+        runner.addArtifact(run.id, Artifact{"start-frame", startPath.string(), "image"});
+        runner.addArtifact(run.id, Artifact{"end-frame",   endPath.string(),   "image"});
+
+        const auto t1 = std::chrono::steady_clock::now();
+        const double elapsed = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+        runner.setStatus(run.id, "completed");
+
+        const std::string startArtId = run.id + ":start_frame.png";
+        const std::string endArtId   = run.id + ":end_frame.png";
+        Json resp = {
+            {"runId",                run.id},
+            {"status",               "completed"},
+            {"startFrameArtifactId", startArtId},
+            {"startFrameUrl",        "/api/artifacts/content?artifactId="  + startArtId},
+            {"startFrameDownloadUrl","/api/artifacts/download?artifactId=" + startArtId},
+            {"endFrameArtifactId",   endArtId},
+            {"endFrameUrl",          "/api/artifacts/content?artifactId="  + endArtId},
+            {"endFrameDownloadUrl",  "/api/artifacts/download?artifactId=" + endArtId},
+            {"frameCount",           frameCount},
+            {"fps",                  fps},
+            {"durationSec",          durSec},
+            {"secondsPerOctave",     secondsPerOctave},
+            {"depthOctaves",         depth},
+            {"targetScale",          2.0 * std::exp(kTop_end)},
+            {"width",                previewW},
+            {"height",               previewH},
+            {"outputWidth",          W},
+            {"outputHeight",         H},
+            {"generatedMs",          elapsed},
+        };
+        return resp.dump();
+    } catch (const std::exception&) {
+        runner.setStatus(run.id, "failed");
+        throw;
+    }
+}
+
 // ─── Unified export: ln-map + final frame + video in one request ─────────────
 //
 // POST /api/video/export
@@ -487,7 +722,7 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
 //   "centerRe", "centerIm", "julia", "juliaRe", "juliaIm",
 //   "variant", "colorMap", "iterations",
 //   "widthS", "depthOctaves",      // ln-map strip size
-//   "fps", "durationSec", "width", "height"  // video output
+//   "fps", "secondsPerOctave", "width", "height"  // video output
 // }
 //
 // Returns {videoArtifactId, lnMapArtifactId, finalFrameArtifactId, ...}.
@@ -505,18 +740,20 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
     const std::string variantStr  = j.value("variant",  std::string("mandelbrot"));
     const std::string colormapStr = j.value("colorMap", std::string("classic_cos"));
     const int    iters      = j.value("iterations", 2048);
-    const double depth      = j.value("depthOctaves", 20.0);
     const int    fps        = j.value("fps",       30);
-    const double durSec     = j.value("durationSec", 8.0);
     const int    W          = j.value("width",     720);
     const int    H          = j.value("height",    720);
+    if (fps < 1 || fps > 120) throw std::runtime_error("invalid fps (1..120)");
+    validateVideoOutputSize(W, H);
+    const double kTop_start = kTopStartForFrame(W, H);
+    const double depth      = resolveDepthOctaves(j, kTop_start, 20.0);
+    const double secondsPerOctave = resolveSecondsPerOctave(j, depth);
+    double durSec = 0.0;
+    const int frameCount = frameCountFromSpeed(depth, secondsPerOctave, fps, durSec);
     const int    s          = resolveStripWidth(j, W, H);
 
-    if (s < 128 || s > 16384)               throw std::runtime_error("invalid widthS (128..16384)");
-    if (depth < 1.0 || depth > 80.0)        throw std::runtime_error("invalid depthOctaves (1..80)");
-    if (fps < 1 || fps > 120)               throw std::runtime_error("invalid fps (1..120)");
-    if (durSec <= 0 || durSec > 300)        throw std::runtime_error("invalid durationSec (0..300)");
-    if (W < 128 || W > 1920 || H < 128 || H > 1080) throw std::runtime_error("invalid output size");
+    if (s < 128 || s > 65536)               throw std::runtime_error("invalid widthS (128..65536)");
+    if (depth < 0.05 || depth > 120.0)      throw std::runtime_error("invalid depthOctaves (0.05..120)");
     if (iters < 1 || iters > 10000000)      throw std::runtime_error("invalid iterations");
 
     compute::Variant v;
@@ -567,9 +804,6 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
         }
 
         // ── 2. Render final cartesian frame ────────────────────────────────────
-        const double aspect     = static_cast<double>(W) / static_cast<double>(H);
-        const double r_max      = std::sqrt(aspect * aspect + 1.0);
-        const double kTop_start = LN_FOUR - std::log(r_max);
         const double kTop_end   = kTop_start - depth * LN_TWO;
 
         compute::MapParams mp;
@@ -598,8 +832,17 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
         compute::write_png(finalPath.string(), finalImg);
         runner.addArtifact(run.id, Artifact{"final-frame", finalPath.string(), "image"});
 
-        // ── 3. Generate video ──────────────────────────────────────────────────
-        const int frameCount = static_cast<int>(std::round(durSec * fps));
+        // ── 3. Render first/last preview frames ───────────────────────────────
+        const cv::Mat startPreview = renderZoomPreviewFrame(strip, finalImg, W, H, kTop_start, kTop_end);
+        const cv::Mat endPreview   = renderZoomPreviewFrame(strip, finalImg, W, H, kTop_end,   kTop_end);
+        const std::filesystem::path startPreviewPath = std::filesystem::path(run.outputDir) / "start_frame.png";
+        const std::filesystem::path endPreviewPath   = std::filesystem::path(run.outputDir) / "end_frame.png";
+        compute::write_png(startPreviewPath.string(), startPreview);
+        compute::write_png(endPreviewPath.string(), endPreview);
+        runner.addArtifact(run.id, Artifact{"start-frame", startPreviewPath.string(), "image"});
+        runner.addArtifact(run.id, Artifact{"end-frame",   endPreviewPath.string(),   "image"});
+
+        // ── 4. Generate video ──────────────────────────────────────────────────
         const std::string videoPath = generateZoomVideo(
             strip, finalImg, W, H, fps, frameCount,
             kTop_start, kTop_end, depth,
@@ -615,6 +858,8 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
 
         const std::string lnArtId    = run.id + ":ln_map.png";
         const std::string finalArtId = run.id + ":final_frame.png";
+        const std::string startArtId = run.id + ":start_frame.png";
+        const std::string endArtId   = run.id + ":end_frame.png";
         const std::string videoArtId = run.id + ":" + videoFile;
 
         Json resp = {
@@ -627,9 +872,18 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
             {"lnMapDownloadUrl",   "/api/artifacts/download?artifactId=" + lnArtId},
             {"finalFrameArtifactId", finalArtId},
             {"finalFrameDownloadUrl", "/api/artifacts/download?artifactId=" + finalArtId},
+            {"startFrameArtifactId", startArtId},
+            {"startFrameUrl",      "/api/artifacts/content?artifactId="  + startArtId},
+            {"startFrameDownloadUrl", "/api/artifacts/download?artifactId=" + startArtId},
+            {"endFrameArtifactId", endArtId},
+            {"endFrameUrl",        "/api/artifacts/content?artifactId="  + endArtId},
+            {"endFrameDownloadUrl", "/api/artifacts/download?artifactId=" + endArtId},
             {"frameCount",         frameCount},
             {"fps",                fps},
             {"durationSec",        durSec},
+            {"secondsPerOctave",   secondsPerOctave},
+            {"depthOctaves",       depth},
+            {"targetScale",        2.0 * std::exp(kTop_end)},
             {"width",              W},
             {"height",             H},
             {"generatedMs",        elapsed},

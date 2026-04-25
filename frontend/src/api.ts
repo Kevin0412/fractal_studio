@@ -277,7 +277,9 @@ export interface VideoExportRequest {
   widthS?: number
   depthOctaves?: number
   fps?: number
+  secondsPerOctave?: number
   durationSec?: number
+  targetScale?: number
   width?: number
   height?: number
 }
@@ -292,11 +294,47 @@ export interface VideoExportResponse {
   lnMapDownloadUrl: string
   finalFrameArtifactId: string
   finalFrameDownloadUrl: string
+  startFrameArtifactId?: string
+  startFrameUrl?: string
+  startFrameDownloadUrl?: string
+  endFrameArtifactId?: string
+  endFrameUrl?: string
+  endFrameDownloadUrl?: string
   frameCount: number
   fps: number
   durationSec: number
+  secondsPerOctave?: number
+  depthOctaves?: number
+  targetScale?: number
   width: number
   height: number
+  generatedMs: number
+}
+
+export interface VideoPreviewRequest extends VideoExportRequest {
+  previewWidth?: number
+  previewHeight?: number
+}
+
+export interface VideoPreviewResponse {
+  runId: string
+  status: string
+  startFrameArtifactId: string
+  startFrameUrl: string
+  startFrameDownloadUrl: string
+  endFrameArtifactId: string
+  endFrameUrl: string
+  endFrameDownloadUrl: string
+  frameCount: number
+  fps: number
+  durationSec: number
+  secondsPerOctave: number
+  depthOctaves: number
+  targetScale: number
+  width: number
+  height: number
+  outputWidth: number
+  outputHeight: number
   generatedMs: number
 }
 
@@ -304,6 +342,8 @@ export interface VideoZoomRequest {
   lnMapArtifactId: string
   fps?: number
   durationSec?: number
+  secondsPerOctave?: number
+  targetScale?: number
   width?: number
   height?: number
   startLnRadius?: number
@@ -319,6 +359,8 @@ export interface VideoZoomResponse {
   frameCount: number
   fps: number
   durationSec: number
+  secondsPerOctave?: number
+  depthOctaves?: number
   width: number
   height: number
   generatedMs: number
@@ -414,6 +456,7 @@ export const api = {
   transitionMesh:   (req: TransitionMeshRequest)  => postJson<MeshResponse>('/api/transition/mesh', req),
   transitionVoxels: (req: TransitionVoxelRequest) => postJson<TransitionVoxelResponse>('/api/transition/voxels', req),
   videoZoom:   (req: VideoZoomRequest)   => postJson<VideoZoomResponse>('/api/video/zoom', req),
+  videoPreview:(req: VideoPreviewRequest)=> postJson<VideoPreviewResponse>('/api/video/preview', req),
   videoExport: (req: VideoExportRequest) => postJson<VideoExportResponse>('/api/video/export', req),
 
   runs: (limit = 50) => getJson<{ items: RunRow[] }>(`/api/runs?limit=${limit}`),

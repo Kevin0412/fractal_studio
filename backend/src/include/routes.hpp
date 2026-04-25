@@ -28,6 +28,7 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
 // Unified export: renders ln-map + final frame + zoom video in one request.
 // Julia-aware: when julia=true, ln-map samples z₀ space with fixed c.
 std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body);
+std::string videoPreviewRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body);
 
 // HS heightfield mesh + transition 3D mesh.
 std::string hsMeshRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body);
