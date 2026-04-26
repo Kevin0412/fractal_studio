@@ -26,6 +26,7 @@
 //
 #include "map_kernel_avx512.hpp"
 #include "colormap.hpp"   // colorize_escape_bgr / colorize_field_bgr
+#include "cpu_features.hpp"
 #include "parallel.hpp"
 #include "variants.hpp"   // Variant enum
 
@@ -52,6 +53,7 @@ namespace fsd::compute {
 bool avx512_available() noexcept {
 #if defined(__AVX512F__) && (defined(__x86_64__) || defined(__i386__))
     // Runtime CPUID check — this TU uses AVX-512F plus AVX-512DQ intrinsics.
+    if (!avx512_os_state_available()) return false;
     unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
     if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
         const bool has_f = static_cast<bool>((ebx >> 16) & 1);

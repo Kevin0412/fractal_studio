@@ -8,6 +8,7 @@
 #include "routes_common.hpp"
 
 #include "../compute/hs/heightfield_mesh.hpp"
+#include "../compute/engine_select.hpp"
 #include "../compute/transition_volume.hpp"
 #include "../compute/marching_cubes.hpp"
 #include "../compute/mesh_io.hpp"
@@ -46,6 +47,39 @@ double bailoutSqFromJson(const Json& j, double radius, double defaultSq) {
         return radius * radius;
     }
     return defaultSq;
+}
+
+uint64_t estimateTransitionBytes(int resolution, bool voxelPreview) {
+    const uint64_t n = static_cast<uint64_t>(resolution);
+    const uint64_t voxels = n * n * n;
+    const uint64_t field = voxels * sizeof(float);
+    const uint64_t voxelMasks = voxelPreview ? voxels * 2u : 0u;
+    const uint64_t working = field;
+    return field + voxelMasks + working;
+}
+
+void validateTransitionResolution(const Json& j, int resolution, bool voxelPreview) {
+    if (resolution < 4 || resolution > 1024) throw std::runtime_error("resolution out of range [4,1024]");
+    const bool allowLarge = j.value("allowLargeVolume", false);
+    if (resolution >= 512 && !allowLarge) {
+        throw std::runtime_error("512^3 transition volumes are disabled by default; set allowLargeVolume=true after checking memory");
+    }
+    if (resolution >= 256) {
+        const uint64_t estimate = estimateTransitionBytes(resolution, voxelPreview);
+        const auto caps = compute::runtime_capabilities();
+        if (caps.cuda_runtime && caps.cuda_free_vram > 0 && estimate > caps.cuda_free_vram * 7ULL / 10ULL) {
+            throw std::runtime_error("transition volume estimate exceeds safe CUDA VRAM budget");
+        }
+        if (!allowLarge && estimate > 2ULL * 1024ULL * 1024ULL * 1024ULL) {
+            throw std::runtime_error("transition volume estimate exceeds 2 GiB; set allowLargeVolume=true to override");
+        }
+    }
+}
+
+int defaultTransitionResolution(bool voxelPreview) {
+    if (voxelPreview) return 128;
+    const auto caps = compute::runtime_capabilities();
+    return caps.cuda_low_end ? 128 : 192;
 }
 
 } // namespace
@@ -213,7 +247,7 @@ std::string transitionMeshRoute(const std::filesystem::path&, JobRunner& runner,
     p.centerY   = j.value("centerY",   0.0);
     p.centerZ   = j.value("centerZ",   0.0);
     p.extent    = j.value("extent",    2.0);
-    p.resolution = j.value("resolution", 96);
+    p.resolution = j.value("resolution", defaultTransitionResolution(false));
     p.iterations = j.value("iterations", 256);
     p.bailout   = j.value("bailout",   2.0);
     p.bailout_sq = bailoutSqFromJson(j, p.bailout, 4.0);
@@ -227,7 +261,8 @@ std::string transitionMeshRoute(const std::filesystem::path&, JobRunner& runner,
     p.scalar_type   = j.value("scalarType", std::string("fp32"));
     const double iso = j.value("iso",  0.5);
 
-    if (p.resolution < 8 || p.resolution > 1024) throw std::runtime_error("invalid resolution");
+    validateTransitionResolution(j, p.resolution, false);
+    if (p.resolution < 8) throw std::runtime_error("invalid resolution");
     if (p.iterations < 1 || p.iterations > 10000) throw std::runtime_error("invalid iterations");
     if (!(p.bailout > 0.0) || !std::isfinite(p.bailout)) throw std::runtime_error("invalid bailout");
     if (!(p.bailout_sq > 0.0) || !std::isfinite(p.bailout_sq)) throw std::runtime_error("invalid bailoutSq");
@@ -309,7 +344,7 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
     p.centerY    = j.value("centerY",    0.0);
     p.centerZ    = j.value("centerZ",    0.0);
     p.extent     = j.value("extent",     2.0);
-    p.resolution = j.value("resolution", 64);
+    p.resolution = j.value("resolution", defaultTransitionResolution(true));
     p.iterations = j.value("iterations", 128);
     p.bailout    = j.value("bailout",    2.0);
     p.bailout_sq = bailoutSqFromJson(j, p.bailout, 4.0);
@@ -323,7 +358,7 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
     p.scalar_type   = j.value("scalarType", std::string("fp32"));
     const float iso = static_cast<float>(j.value("iso", 0.48));
 
-    if (p.resolution < 4 || p.resolution > 1024) throw std::runtime_error("resolution out of range [4,1024]");
+    validateTransitionResolution(j, p.resolution, true);
     if (p.iterations < 1 || p.iterations > 10000) throw std::runtime_error("invalid iterations");
     if (!(p.bailout > 0.0) || !std::isfinite(p.bailout)) throw std::runtime_error("invalid bailout");
     if (!(p.bailout_sq > 0.0) || !std::isfinite(p.bailout_sq)) throw std::runtime_error("invalid bailoutSq");

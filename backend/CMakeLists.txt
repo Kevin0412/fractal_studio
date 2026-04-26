@@ -12,6 +12,17 @@ if(CMAKE_CUDA_COMPILER)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
     set(HAS_CUDA ON)
     message(STATUS "CUDA enabled: ${CMAKE_CUDA_COMPILER}")
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR CMAKE_CUDA_ARCHITECTURES STREQUAL "")
+        if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)
+            set(CMAKE_CUDA_ARCHITECTURES "75;86;89" CACHE STRING "CUDA architectures" FORCE)
+            message(WARNING "CUDA >= 13 detected; Pascal sm_61 offline compilation is no longer supported. Use CUDA 12.x to build GTX1050/Pascal binaries.")
+        else()
+            set(CMAKE_CUDA_ARCHITECTURES "61;75;86;89" CACHE STRING "CUDA architectures" FORCE)
+        endif()
+    elseif(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0 AND
+           CMAKE_CUDA_ARCHITECTURES MATCHES "(^|;)61(;|$)")
+        message(WARNING "CMAKE_CUDA_ARCHITECTURES includes 61, but CUDA >= 13 removed Pascal sm_61 offline compilation/library support. Configure with CUDA 12.x for GTX1050 support.")
+    endif()
 else()
     set(HAS_CUDA OFF)
     message(STATUS "CUDA not found — GPU kernels disabled")
@@ -51,14 +62,17 @@ add_executable(fractal_studio_backend
     src/api/routes_variants.cpp
 
     # Native compute
+    src/compute/cpu_features.cpp
     src/compute/map_kernel.cpp
     src/compute/engine_select.cpp
+    src/compute/map_kernel_avx2.cpp
     src/compute/map_kernel_avx512.cpp
     src/compute/transition_kernel.cpp
     src/compute/image_io.cpp
     src/compute/mesh_io.cpp
     src/compute/marching_cubes.cpp
     src/compute/transition_volume.cpp
+    src/compute/transition_volume_avx2.cpp
     src/compute/hs/heightfield_mesh.cpp
     src/compute/newton/mandelbrot_sp.cpp
     src/compute/tile_scheduler.cpp
@@ -119,6 +133,19 @@ target_compile_options(fractal_studio_backend PRIVATE
 # intrinsic code is inside #if defined(__AVX512F__) guards and avx512_available()
 # returns false unconditionally.
 include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag("-mavx2" COMPILER_HAS_AVX2)
+check_cxx_compiler_flag("-mfma" COMPILER_HAS_FMA)
+if(COMPILER_HAS_AVX2 AND COMPILER_HAS_FMA)
+    set_source_files_properties(
+        src/compute/map_kernel_avx2.cpp
+        src/compute/transition_volume_avx2.cpp
+        PROPERTIES COMPILE_FLAGS "-mavx2 -mfma")
+    target_compile_definitions(fractal_studio_backend PRIVATE HAS_AVX2_KERNEL=1)
+    message(STATUS "AVX2/FMA compile flags enabled")
+else()
+    message(STATUS "Compiler lacks AVX2/FMA support — AVX2 paths disabled at compile time")
+endif()
+
 check_cxx_compiler_flag("-mavx512f" COMPILER_HAS_AVX512F)
 if(COMPILER_HAS_AVX512F)
     set_source_files_properties(src/compute/map_kernel_avx512.cpp PROPERTIES

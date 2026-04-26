@@ -24,6 +24,13 @@ inline int env_render_threads() noexcept {
     return static_cast<int>(parsed);
 }
 
+inline bool thermal_friendly_mode() noexcept {
+    const char* raw = std::getenv("FSD_THERMAL_FRIENDLY");
+    if (!raw || *raw == '\0') return false;
+    return raw[0] == '1' || raw[0] == 't' || raw[0] == 'T' ||
+           raw[0] == 'y' || raw[0] == 'Y';
+}
+
 inline int default_render_threads() noexcept {
     const int env_threads = env_render_threads();
     if (env_threads > 0) return env_threads;
@@ -34,6 +41,10 @@ inline int default_render_threads() noexcept {
 #ifdef _OPENMP
     threads = std::max(threads, omp_get_num_procs());
 #endif
+
+    if (thermal_friendly_mode()) {
+        threads = std::max(1, (threads + 1) / 2);
+    }
 
     return std::max(1, threads);
 }

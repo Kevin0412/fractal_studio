@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <string>
 
 // Forward-declare OpenCV types without pulling in all headers.
@@ -69,8 +70,19 @@ struct CudaMapStats {
     std::string engine_used = "cuda";
 };
 
+struct CudaDeviceInfo {
+    bool available = false;
+    int device_count = 0;
+    int major = 0;
+    int minor = 0;
+    size_t total_global_mem = 0;
+    size_t free_global_mem = 0;
+    std::string name;
+};
+
 // Returns true if a CUDA device is present and initialised.
 bool cuda_available() noexcept;
+CudaDeviceInfo cuda_device_info() noexcept;
 
 // Render a fractal map using the CUDA kernels.
 // Output `out` is allocated as CV_8UC3 BGR on the host.

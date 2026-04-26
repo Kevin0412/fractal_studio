@@ -10,6 +10,7 @@
 #include "routes_common.hpp"
 
 #include "../compute/map_kernel.hpp"
+#include "../compute/map_kernel_avx2.hpp"
 #include "../compute/map_kernel_avx512.hpp"
 #include "../compute/engine_select.hpp"
 #include "../compute/tile_scheduler.hpp"
@@ -89,10 +90,14 @@ std::string benchmarkRoute(const std::string& body) {
     results.push_back(run_bench("openmp", "fp64"));
     results.push_back(run_bench("openmp", "fx64"));
 
+    // AVX2/FMA (mainstream CPU SIMD path)
+    if (compute::avx2_available() && compute::fma_available()) {
+        results.push_back(run_bench("avx2", "fp64"));
+    }
+
     // AVX-512 (only if available)
     if (compute::avx512_available()) {
         results.push_back(run_bench("avx512", "fp64"));
-        results.push_back(run_bench("avx512", "fx64"));
     }
 
     // CUDA (only if available)

@@ -33,7 +33,7 @@ struct TransitionVolumeParams {
     Variant from_variant = Variant::Mandelbrot;
     Variant to_variant   = Variant::Boat;
 
-    // "auto", "hybrid", "cuda", "avx512", "openmp". The current guaranteed
+    // "auto", "hybrid", "cuda", "avx2", "avx512", "openmp". The current guaranteed
     // fallback is OpenMP fp32; accelerated fp32 paths are selected only when
     // runtime capabilities allow them.
     std::string engine = "auto";

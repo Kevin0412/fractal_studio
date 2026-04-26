@@ -5,6 +5,7 @@ import { t } from '../i18n'
 
 const hw    = ref<Hardware | null>(null)
 const check = ref<{ openmp: boolean; cuda: boolean } | null>(null)
+const caps  = ref<Record<string, any> | null>(null)
 const loading = ref(false)
 
 async function refresh() {
@@ -12,6 +13,7 @@ async function refresh() {
   try {
     hw.value    = await api.hardware()
     check.value = await api.systemCheck()
+    caps.value  = await api.capabilities()
   } finally {
     loading.value = false
   }
@@ -92,8 +94,16 @@ function speedBar(mpps: number): string {
             </span>
           </div>
           <div class="row">
+            <span class="k">avx2/fma</span>
+            <span class="v mono" :class="{ good: caps?.avx2?.runtime, bad: !caps?.avx2?.runtime }">
+              {{ caps?.avx2?.runtime ? 'available' : 'unavailable' }}
+            </span>
+          </div>
+          <div class="row">
             <span class="k">avx-512</span>
-            <span class="v mono good">available</span>
+            <span class="v mono" :class="{ good: caps?.avx512?.runtime, bad: !caps?.avx512?.runtime }">
+              {{ caps?.avx512?.runtime ? 'available' : 'unavailable' }}
+            </span>
           </div>
           <div class="row">
             <span class="k">fx64</span>

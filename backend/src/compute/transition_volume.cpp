@@ -3,6 +3,7 @@
 #include "transition_volume.hpp"
 #include "engine_select.hpp"
 #include "parallel.hpp"
+#include "transition_volume_avx2.hpp"
 
 #if defined(HAS_CUDA_KERNEL)
 #  include "cuda/transition_volume.cuh"
@@ -53,12 +54,13 @@ std::string select_transition_engine(const TransitionVolumeParams& p) {
     const bool large = work >= 250000000LL;
 
     if (p.engine == "cuda") return caps.cuda_runtime ? "cuda" : "openmp";
-    if (p.engine == "avx512") return caps.avx512_runtime ? "avx512" : "openmp";
+    if (p.engine == "avx2") return (caps.avx2_compiled && caps.avx2_runtime && caps.fma_runtime) ? "avx2" : "openmp";
+    if (p.engine == "avx512") return "openmp";
     if (p.engine == "hybrid") return (large && caps.cuda_runtime) ? "hybrid" : "openmp";
     if (p.engine == "openmp") return "openmp";
 
-    if (large && caps.cuda_runtime) return "hybrid";
-    if (large && caps.avx512_runtime) return "avx512";
+    if (large && caps.cuda_runtime && !caps.cuda_low_end) return "hybrid";
+    if (caps.avx2_compiled && caps.avx2_runtime && caps.fma_runtime) return "avx2";
     return "openmp";
 }
 
@@ -101,6 +103,14 @@ McField buildTransitionVolume(const TransitionVolumeParams& p) {
         }
     }
 #endif
+
+    if (selected_engine == "avx2") {
+        if (buildTransitionVolumeAvx2(p, field)) {
+            return field;
+        }
+        field.data.assign(static_cast<size_t>(N) * N * N, 1.0f);
+        field.engine_used = "avx2_fp32_openmp_fallback";
+    }
 
     const float span = static_cast<float>(p.extent * 2.0);
     const float xmin = static_cast<float>(p.centerX - p.extent);

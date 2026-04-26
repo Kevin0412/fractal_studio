@@ -168,7 +168,7 @@ function onJuliaViewport(v: { centerRe: number; centerIm: number; scale: number 
 }
 
 // ── Engine / scalar ───────────────────────────────────────────────────────────
-const engineMode = ref<'auto' | 'openmp' | 'avx512' | 'cuda' | 'hybrid'>('auto')
+const engineMode = ref<'auto' | 'openmp' | 'avx2' | 'avx512' | 'cuda' | 'hybrid'>('auto')
 const scalarMode = ref<'auto' | 'fp64' | 'fx64'>('auto')
 
 // ── Status rail sync ─────────────────────────────────────────────────────────
@@ -563,6 +563,7 @@ async function pollVideoExport(initial: VideoExportResponse) {
         <select v-model="engineMode">
           <option value="auto">auto</option>
           <option value="cuda">cuda</option>
+          <option value="avx2">avx2</option>
           <option value="avx512">avx512</option>
           <option value="hybrid">hybrid</option>
           <option value="openmp">openmp</option>

@@ -526,6 +526,31 @@ bool cuda_available() noexcept {
     return cudaGetDeviceCount(&count) == cudaSuccess && count > 0;
 }
 
+CudaDeviceInfo cuda_device_info() noexcept {
+    CudaDeviceInfo info;
+    int count = 0;
+    if (cudaGetDeviceCount(&count) != cudaSuccess || count <= 0) return info;
+    info.available = true;
+    info.device_count = count;
+
+    int device = 0;
+    (void)cudaGetDevice(&device);
+    cudaDeviceProp prop{};
+    if (cudaGetDeviceProperties(&prop, device) == cudaSuccess) {
+        info.major = prop.major;
+        info.minor = prop.minor;
+        info.total_global_mem = prop.totalGlobalMem;
+        info.name = prop.name;
+    }
+
+    size_t free_mem = 0, total_mem = 0;
+    if (cudaMemGetInfo(&free_mem, &total_mem) == cudaSuccess) {
+        info.free_global_mem = free_mem;
+        if (info.total_global_mem == 0) info.total_global_mem = total_mem;
+    }
+    return info;
+}
+
 template <int MetricId>
 static void launch_fp64_metric(const CudaMapParams& p, dim3 grid, dim3 block, double bail2, uint8_t* out) {
 #define FSD_LAUNCH_FP64(VID) \

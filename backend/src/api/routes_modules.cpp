@@ -9,6 +9,7 @@
 #include "system_checks.hpp"
 
 #include "../compute/engine_select.hpp"
+#include "../compute/parallel.hpp"
 
 namespace fsd {
 
@@ -36,17 +37,40 @@ std::string systemCapabilitiesRoute() {
             {"compiled", caps.openmp_compiled},
             {"runtime", caps.openmp_runtime},
         }},
+        {"avx2", {
+            {"compiled", caps.avx2_compiled},
+            {"runtime", caps.avx2_runtime},
+            {"fma", caps.fma_runtime},
+        }},
+        {"bmi2", {
+            {"runtime", caps.bmi2_runtime},
+        }},
         {"avx512", {
             {"compiled", caps.avx512_compiled},
             {"runtime", caps.avx512_runtime},
+            {"ifma", caps.avx512ifma_runtime},
         }},
         {"cuda", {
             {"compiled", caps.cuda_compiled},
             {"runtime", caps.cuda_runtime},
+            {"lowEnd", caps.cuda_low_end},
+            {"deviceCount", caps.cuda_device_count},
+            {"name", caps.cuda_name},
+            {"computeCapability", {
+                {"major", caps.cuda_compute_major},
+                {"minor", caps.cuda_compute_minor},
+            }},
+            {"vram", {
+                {"totalBytes", caps.cuda_total_vram},
+                {"freeBytes", caps.cuda_free_vram},
+                {"totalMiB", caps.cuda_total_vram / (1024 * 1024)},
+                {"freeMiB", caps.cuda_free_vram / (1024 * 1024)},
+            }},
         }},
         {"cpu", {
             {"logicalCores", caps.logical_cores},
             {"physicalCores", caps.physical_cores},
+            {"thermalFriendly", compute::thermal_friendly_mode()},
         }},
         {"benchmarkCache", {
             {"available", compute::has_benchmark_cache()},

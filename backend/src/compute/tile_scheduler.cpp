@@ -6,6 +6,7 @@
 #include "engine_select.hpp"
 #include "fx64_raw.hpp"
 #include "map_kernel.hpp"
+#include "map_kernel_avx2.hpp"
 #include "map_kernel_avx512.hpp"
 #include "parallel.hpp"
 
@@ -84,7 +85,7 @@ struct WorkerStats {
 // Render a single tile into the output mat using the best available CPU path.
 static double render_tile_cpu(
     const MapParams& base, const Tile& t,
-    cv::Mat& out, bool use_avx, bool use_fx
+    cv::Mat& out, bool use_avx2, bool use_avx512, bool use_fx
 ) {
     // Build a MapParams for this tile.
     MapParams p = base;
@@ -104,7 +105,7 @@ static double render_tile_cpu(
     p.scale     = t.h * im_step;    // height of this tile in complex units
     p.width     = t.w;
     p.height    = t.h;
-    p.engine    = use_avx ? "avx512" : "openmp";
+    p.engine    = use_avx2 ? "avx2" : (use_avx512 ? "avx512" : "openmp");
     p.scalar_type = use_fx ? "fx64" : "fp64";
     p.render_threads = 1;
 
@@ -112,7 +113,9 @@ static double render_tile_cpu(
     cv::Mat tile_mat = out(cv::Rect(t.x, t.y, t.w, t.h));
 
     MapStats stats;
-    if (use_avx && !use_fx) {
+    if (use_avx2 && !use_fx) {
+        stats = render_map_avx2_fp64(p, tile_mat);
+    } else if (use_avx512 && !use_fx) {
         stats = render_map_avx512_fp64(p, tile_mat);
     } else {
         // OpenMP path (single-threaded for this tile since the outer scheduler
@@ -193,7 +196,8 @@ TileSchedulerStats render_map_hybrid(
 
     const bool requested_fx = (p.scalar_type == "fx64") || (p.scalar_type == "auto" && p.scale < 1e-13);
     const bool fx       = requested_fx && supports_fx64_int_path(p);
-    const bool use_avx  = map_engine_supported(p, "avx512", fx);
+    const bool use_avx2 = map_engine_supported(p, "avx2", fx);
+    const bool use_avx512 = !use_avx2 && map_engine_supported(p, "avx512", fx);
     const bool use_gpu  = false
 #if USE_CUDA
                        || map_engine_supported(p, "cuda", fx)
@@ -212,7 +216,7 @@ TileSchedulerStats render_map_hybrid(
     WorkerStats gpu_ema;
     if (use_gpu) {
         gpu_thread = std::thread([&]() {
-            constexpr size_t gpu_batch_tiles = 12;
+            const size_t gpu_batch_tiles = runtime_capabilities().cuda_low_end ? 4u : 12u;
             while (true) {
                 const size_t first = next_tile.fetch_add(gpu_batch_tiles);
                 if (first >= n) break;
@@ -226,7 +230,7 @@ TileSchedulerStats render_map_hybrid(
                 try {
                     ms = render_tile_gpu(p, tile, out, fx);
                 } catch (...) {
-                    ms = render_tile_cpu(p, tile, out, use_avx, fx);
+                    ms = render_tile_cpu(p, tile, out, use_avx2, use_avx512, fx);
                 }
 #else
                 (void)tile;
@@ -260,7 +264,7 @@ TileSchedulerStats render_map_hybrid(
                 if (idx >= n) break;
                 const Tile& tile = tiles[idx];
                 const auto t0 = std::chrono::steady_clock::now();
-                const double ms = render_tile_cpu(p, tile, out, use_avx, fx);
+                const double ms = render_tile_cpu(p, tile, out, use_avx2, use_avx512, fx);
                 const auto t1 = std::chrono::steady_clock::now();
                 const double elapsed = std::chrono::duration<double,std::milli>(t1-t0).count();
                 {
@@ -294,7 +298,9 @@ TileSchedulerStats render_map_hybrid(
         result.engine_used = "hybrid";
     else if (use_gpu && gpu_tiles > 0)
         result.engine_used = "cuda";
-    else if (use_avx)
+    else if (use_avx2)
+        result.engine_used = "avx2";
+    else if (use_avx512)
         result.engine_used = "avx512";
     else
         result.engine_used = "openmp";

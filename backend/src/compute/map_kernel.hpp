@@ -57,8 +57,8 @@ struct MapParams {
     // when scale < 1e-13 for precision at extreme zoom depth).
     std::string scalar_type = "auto";
 
-    // Compute engine: "openmp" (default), "avx512" (AVX-512 CPU kernel),
-    // "cuda" (GPU kernel, Phase 3.3). Silently falls back to openmp if
+    // Compute engine: "openmp" (default), "avx2", "avx512",
+    // "cuda" (GPU kernel), or "hybrid". Silently falls back to openmp if
     // requested engine is unavailable.
     std::string engine = "openmp";
 

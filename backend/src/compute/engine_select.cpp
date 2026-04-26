@@ -2,6 +2,8 @@
 
 #include "engine_select.hpp"
 
+#include "cpu_features.hpp"
+#include "map_kernel_avx2.hpp"
 #include "map_kernel_avx512.hpp"
 #include "parallel.hpp"
 
@@ -38,6 +40,13 @@ bool is_vector_metric_supported(Metric metric) {
     return static_cast<int>(metric) >= 0 && static_cast<int>(metric) < 4;
 }
 
+bool is_low_end_cuda_device(const RuntimeCapabilities& c) {
+    const bool pascal_or_older = c.cuda_compute_major > 0 && c.cuda_compute_major <= 6;
+    const bool small_vram = c.cuda_total_vram > 0 &&
+        c.cuda_total_vram <= 4ULL * 1024ULL * 1024ULL * 1024ULL;
+    return pascal_or_older || small_vram;
+}
+
 bool is_small_interactive_map(const MapParams& p) {
     const long long pixels = static_cast<long long>(p.width) * static_cast<long long>(p.height);
     const long long work = pixels * static_cast<long long>(std::max(1, p.iterations));
@@ -66,14 +75,30 @@ RuntimeCapabilities runtime_capabilities() {
     c.openmp_runtime = true;
 #endif
 
+#if defined(HAS_AVX2_KERNEL)
+    c.avx2_compiled = true;
+#endif
+    c.avx2_runtime = avx2_available();
+    c.fma_runtime = fma_available();
+    c.bmi2_runtime = bmi2_available();
+
 #if defined(HAS_AVX512_KERNEL)
     c.avx512_compiled = true;
 #endif
     c.avx512_runtime = avx512_available();
+    c.avx512ifma_runtime = avx512ifma_available();
 
 #if USE_CUDA
     c.cuda_compiled = true;
     c.cuda_runtime = fsd_cuda::cuda_available();
+    const auto cuda = fsd_cuda::cuda_device_info();
+    c.cuda_device_count = cuda.device_count;
+    c.cuda_compute_major = cuda.major;
+    c.cuda_compute_minor = cuda.minor;
+    c.cuda_total_vram = static_cast<unsigned long long>(cuda.total_global_mem);
+    c.cuda_free_vram = static_cast<unsigned long long>(cuda.free_global_mem);
+    c.cuda_name = cuda.name;
+    c.cuda_low_end = is_low_end_cuda_device(c);
 #endif
 
     c.logical_cores = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
@@ -105,8 +130,13 @@ bool map_engine_supported(const MapParams& p, const std::string& engine, bool fx
     const RuntimeCapabilities c = runtime_capabilities();
     if (engine == "openmp") return true;
 
+    if (engine == "avx2") {
+        if (!c.avx2_compiled || !c.avx2_runtime || !c.fma_runtime || !is_vector_metric_supported(p.metric)) return false;
+        return !fx;
+    }
+
     if (engine == "avx512") {
-        if (!c.avx512_runtime || !is_vector_metric_supported(p.metric)) return false;
+        if (!c.avx512_compiled || !c.avx512_runtime || !is_vector_metric_supported(p.metric)) return false;
         return !fx;
     }
 
@@ -130,6 +160,7 @@ bool map_work_is_large(const MapParams& p) {
 std::string select_map_engine(const MapParams& p, bool fx, const std::string& purpose) {
     if (p.engine != "auto") {
         if (p.engine == "hybrid" && !map_work_is_large(p)) {
+            if (map_engine_supported(p, "avx2", fx)) return "avx2";
             return map_engine_supported(p, "avx512", fx) ? "avx512" : "openmp";
         }
         return map_engine_supported(p, p.engine, fx) ? p.engine : "openmp";
@@ -143,7 +174,7 @@ std::string select_map_engine(const MapParams& p, bool fx, const std::string& pu
     const bool large = map_work_is_large(p);
 
     if (has_benchmark_cache()) {
-        std::vector<std::string> candidates = {"openmp", "avx512", "cuda"};
+        std::vector<std::string> candidates = {"openmp", "avx2", "avx512", "cuda"};
         if (large || purpose == "batch" || purpose == "volume") candidates.push_back("hybrid");
 
         std::string best = "openmp";
@@ -160,14 +191,19 @@ std::string select_map_engine(const MapParams& p, bool fx, const std::string& pu
     }
 
     if (!large) {
+        if (map_engine_supported(p, "avx2", fx) && p.iterations >= 256) return "avx2";
         if (map_engine_supported(p, "avx512", fx) && p.iterations >= 512) return "avx512";
         return "openmp";
     }
 
-    if ((purpose == "batch" || purpose == "volume") && map_engine_supported(p, "hybrid", fx)) {
+    const RuntimeCapabilities caps = runtime_capabilities();
+    if ((purpose == "batch" || purpose == "volume") &&
+        !caps.cuda_low_end &&
+        map_engine_supported(p, "hybrid", fx)) {
         return "hybrid";
     }
-    if (map_engine_supported(p, "cuda", fx)) return "cuda";
+    if (!caps.cuda_low_end && map_engine_supported(p, "cuda", fx)) return "cuda";
+    if (map_engine_supported(p, "avx2", fx)) return "avx2";
     if (map_engine_supported(p, "avx512", fx)) return "avx512";
     return "openmp";
 }

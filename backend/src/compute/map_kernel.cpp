@@ -10,6 +10,7 @@
 // The variant is dispatched at compile time via `variant_step<V,S>`.
 
 #include "map_kernel.hpp"
+#include "map_kernel_avx2.hpp"
 #include "map_kernel_avx512.hpp"
 #include "engine_select.hpp"
 #include "escape_time.hpp"
@@ -886,6 +887,22 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
         }
     }
 #endif
+
+    // AVX2 path: all 10 polynomial variants, Julia mode, metrics 0-3 (fp64).
+    const bool can_avx2 = !needs_norm
+                        && !scalar_fallback
+                        && (selected_engine == "avx2")
+                        && (static_cast<int>(p.metric) < 4)
+                        && !fx
+                        && avx2_available()
+                        && fma_available();
+    if (can_avx2) {
+        auto s = render_map_avx2_fp64(p, out);
+        s.pixel_count = p.width * p.height;
+        s.scalar_used = "fp64";
+        s.engine_used = "avx2";
+        return s;
+    }
 
     // AVX-512 path: all 10 polynomial variants, Julia mode, metrics 0-3 (fp64).
     // Fx64 AVX-512 currently falls back to the OpenMP integer path; the old
