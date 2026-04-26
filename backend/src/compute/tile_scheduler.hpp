@@ -50,11 +50,12 @@ using TileCallback = std::function<void(int tx, int ty, int tw, int th)>;
 
 // Render the full viewport described by `p` using a hybrid tile scheduler.
 // The output mat `out` must be pre-allocated to p.width × p.height × CV_8UC3.
-// `tile_size` controls the subdivision granularity.
+// `tile_size` controls CPU subdivision granularity. GPU workers consume small
+// tiles in dynamic batches, so no fixed CPU/GPU throughput split is assumed.
 TileSchedulerStats render_map_hybrid(
     const MapParams& p,
     cv::Mat& out,
-    int tile_size = 256,
+    int tile_size = 96,
     TileCallback on_tile_done = nullptr
 );
 

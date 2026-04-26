@@ -5,7 +5,7 @@ import SpecialPointList from '../components/SpecialPointList.vue'
 import {
   api, VARIANTS, METRICS, COLORMAPS, VARIANT_LABELS,
   type Metric, type ColorMap, type SpecialPoint,
-  type VideoExportResponse, type VideoPreviewResponse, type CustomVariant,
+  type VideoExportResponse, type VideoPreviewResponse, type RunProgress, type RunStatusResponse, type CustomVariant,
 } from '../api'
 import type { StatusState } from '../types'
 import { t, lang } from '../i18n'
@@ -276,6 +276,7 @@ const exportModalOpen = ref(false)
 const exportDepth     = ref(20)
 const exportFps       = ref(30)
 const exportSecondsPerOctave = ref(0.4)
+const exportQualityPreset = ref<'draft' | 'balanced' | 'high' | 'full'>('balanced')
 const exportW         = ref(1920)
 const exportH         = ref(1080)
 const exportBusy      = ref(false)
@@ -284,6 +285,8 @@ const exportStatus    = ref('')
 const exportPreviewStatus = ref('')
 const exportResult    = ref<VideoExportResponse | null>(null)
 const exportPreviewResult = ref<VideoPreviewResponse | null>(null)
+const exportJobId     = ref('')
+const exportProgress  = ref<RunProgress>({})
 const exportDepthDirty = ref(false)
 
 const exportEstimatedDuration = computed(() =>
@@ -293,6 +296,27 @@ const exportEstimatedFrames = computed(() =>
   Math.max(2, Math.round(exportEstimatedDuration.value * Math.max(1, exportFps.value)))
 )
 const visiblePreview = computed(() => exportPreviewResult.value ?? exportResult.value)
+const exportProgressDetail = computed(() => {
+  const p = exportProgress.value
+  if (!p.stage) return ''
+  if (p.stage === 'ln_map') {
+    return `ln-map ${p.current || 0}/${p.total || 0} rows · octave ${(p.depthOctave || 0).toFixed(2)}/${(p.totalDepthOctaves || 0).toFixed(2)}`
+  }
+  if (p.stage === 'video_warp_encode') {
+    return `encode ${p.current || 0}/${p.total || 0} frames`
+  }
+  if (p.stage === 'final_frame') return `final frame ${p.current || 0}/${p.total || 1}`
+  return p.stage
+})
+const exportMemoryEstimateMiB = computed(() => {
+  const fullWidth = Math.ceil(Math.sqrt(exportW.value * exportW.value + exportH.value * exportH.value) * Math.PI)
+  const scaleByPreset: Record<string, number> = { draft: 0.35, balanced: 0.55, high: 0.75, full: 1.0 }
+  const actualWidth = Math.ceil(fullWidth * (scaleByPreset[exportQualityPreset.value] ?? 0.55))
+  const heightT = Math.ceil((2 + exportDepth.value) * Math.LN2 / (Math.PI * 2) * actualWidth)
+  const pixels = exportW.value * exportH.value
+  const bytes = actualWidth * heightT * 3 + pixels * (3 * 4 + 4 * 5 + 1)
+  return bytes / 1024 / 1024
+})
 
 watch(videoPreset, p => {
   exportW.value = p.width
@@ -324,6 +348,16 @@ function clearExportPreview() {
   exportPreviewResult.value = null
 }
 
+function progressRatio(stage: string) {
+  if (exportProgress.value.stage !== stage) {
+    if (stage === 'final_frame' && ['ln_map', 'video_warp_encode'].includes(exportProgress.value.stage || '')) return 1
+    if (stage === 'ln_map' && exportProgress.value.stage === 'video_warp_encode') return 1
+    return 0
+  }
+  const total = Math.max(1, exportProgress.value.total || 1)
+  return Math.max(0, Math.min(1, (exportProgress.value.current || 0) / total))
+}
+
 function onExportDepthInput() {
   exportDepthDirty.value = true
   clearExportPreview()
@@ -337,6 +371,8 @@ function openExportModal() {
   exportPreviewStatus.value = ''
   exportResult.value    = null
   exportPreviewResult.value = null
+  exportJobId.value = ''
+  exportProgress.value = {}
 }
 
 function videoRequestBase() {
@@ -353,6 +389,8 @@ function videoRequestBase() {
     fps:          exportFps.value,
     secondsPerOctave: exportSecondsPerOctave.value,
     targetScale:  !exportDepthDirty.value && exportDepth.value > 0.05 ? scale.value : undefined,
+    qualityPreset: exportQualityPreset.value,
+    background: true,
     width:        exportW.value,
     height:       exportH.value,
   }
@@ -388,16 +426,62 @@ async function runPreview() {
 
 async function runExport() {
   exportBusy.value   = true
-  exportStatus.value = 'rendering… (ln-map + final frame + video)'
+  exportStatus.value = 'queued…'
   exportResult.value = null
+  exportProgress.value = {}
   try {
     const resp = await api.videoExport(videoRequestBase())
-    exportResult.value  = resp
-    exportStatus.value  = `${resp.frameCount} frames · ${resp.durationSec.toFixed(2)}s · ${resp.generatedMs.toFixed(0)} ms`
+    exportJobId.value = resp.runId
+    exportStatus.value = `${resp.runId} · ${resp.frameCount} frames · ${resp.durationSec.toFixed(2)}s`
+    await pollVideoExport(resp)
   } catch (e: any) {
     exportStatus.value = 'failed: ' + (e?.message || e)
   } finally {
     exportBusy.value = false
+  }
+}
+
+function artifactByName(status: RunStatusResponse, name: string) {
+  return status.artifacts.find(a => a.name === name)
+}
+
+async function pollVideoExport(initial: VideoExportResponse) {
+  for (;;) {
+    await new Promise(resolve => setTimeout(resolve, 700))
+    const status = await api.runStatus(initial.runId)
+    exportProgress.value = status.progress || {}
+    if (status.status === 'failed') {
+      const msg = status.progress?.errorMessage || 'video export failed'
+      exportStatus.value = `failed: ${status.progress?.failedStage || status.progress?.stage || 'video_export'} · ${msg}`
+      return
+    }
+    if (status.status !== 'completed') continue
+
+    const video = artifactByName(status, 'zoom.mp4') || status.artifacts.find(a => a.kind === 'video')
+    const lnMap = artifactByName(status, 'ln_map.png')
+    const finalFrame = artifactByName(status, 'final_frame.png')
+    const startFrame = artifactByName(status, 'start_frame.png')
+    const endFrame = artifactByName(status, 'end_frame.png')
+    exportResult.value = {
+      ...initial,
+      status: 'completed',
+      videoArtifactId: video?.artifactId,
+      videoUrl: video?.contentUrl,
+      videoDownloadUrl: video?.downloadUrl,
+      lnMapArtifactId: lnMap?.artifactId,
+      lnMapDownloadUrl: lnMap?.downloadUrl,
+      finalFrameArtifactId: finalFrame?.artifactId,
+      finalFrameDownloadUrl: finalFrame?.downloadUrl,
+      startFrameArtifactId: startFrame?.artifactId,
+      startFrameUrl: startFrame?.contentUrl,
+      startFrameDownloadUrl: startFrame?.downloadUrl,
+      endFrameArtifactId: endFrame?.artifactId,
+      endFrameUrl: endFrame?.contentUrl,
+      endFrameDownloadUrl: endFrame?.downloadUrl,
+      generatedMs: status.finishedAt && status.startedAt ? status.finishedAt - status.startedAt : undefined,
+    }
+    exportStatus.value = `completed · ${initial.frameCount} frames`
+    return
   }
 }
 </script>
@@ -644,7 +728,16 @@ async function runExport() {
             </div>
             <div class="mrow estimate">
               <label>{{ t('video_estimate') }}</label>
-              <span class="mono">{{ exportEstimatedDuration.toFixed(2) }}s · {{ exportEstimatedFrames }} frames</span>
+              <span class="mono">{{ exportEstimatedDuration.toFixed(2) }}s · {{ exportEstimatedFrames }} frames · {{ exportMemoryEstimateMiB.toFixed(0) }} MiB</span>
+            </div>
+            <div class="mrow">
+              <label>Quality</label>
+              <select v-model="exportQualityPreset">
+                <option value="draft">draft</option>
+                <option value="balanced">balanced</option>
+                <option value="high">high</option>
+                <option value="full">full</option>
+              </select>
             </div>
             <div class="mrow">
               <label>{{ lang === 'en' ? 'Preset' : '预设' }}</label>
@@ -674,6 +767,21 @@ async function runExport() {
           </div>
           <div v-if="exportPreviewStatus" class="modal-status mono">{{ exportPreviewStatus }}</div>
           <div v-if="exportStatus" class="modal-status mono">{{ exportStatus }}</div>
+          <div v-if="exportBusy || exportJobId" class="progress-stack">
+            <div class="progress-row">
+              <span>final</span>
+              <progress :value="progressRatio('final_frame')" max="1"></progress>
+            </div>
+            <div class="progress-row">
+              <span>ln-map</span>
+              <progress :value="progressRatio('ln_map')" max="1"></progress>
+            </div>
+            <div class="progress-row">
+              <span>encode</span>
+              <progress :value="progressRatio('video_warp_encode')" max="1"></progress>
+            </div>
+          </div>
+          <div v-if="exportProgressDetail" class="modal-status mono">{{ exportProgressDetail }}</div>
           <div v-if="visiblePreview" class="modal-body" style="gap:6px">
             <div v-if="visiblePreview.startFrameUrl || visiblePreview.endFrameUrl" class="preview-grid">
               <a v-if="visiblePreview.startFrameUrl"
@@ -691,9 +799,9 @@ async function runExport() {
             </div>
           </div>
           <div v-if="exportResult" class="modal-body" style="gap:6px">
-            <a :href="api.baseUrl + exportResult.videoDownloadUrl"    class="dl-link" download>↓ {{ t('video_download') }}</a>
-            <a :href="api.baseUrl + exportResult.lnMapDownloadUrl"    class="dl-link" download>↓ ln-map PNG</a>
-            <a :href="api.baseUrl + exportResult.finalFrameDownloadUrl" class="dl-link" download>↓ {{ t('export_png') }}</a>
+            <a v-if="exportResult.videoDownloadUrl" :href="api.baseUrl + exportResult.videoDownloadUrl" class="dl-link" download>↓ {{ t('video_download') }}</a>
+            <a v-if="exportResult.lnMapDownloadUrl" :href="api.baseUrl + exportResult.lnMapDownloadUrl" class="dl-link" download>↓ ln-map PNG</a>
+            <a v-if="exportResult.finalFrameDownloadUrl" :href="api.baseUrl + exportResult.finalFrameDownloadUrl" class="dl-link" download>↓ {{ t('export_png') }}</a>
           </div>
         </div>
       </div>
@@ -905,6 +1013,25 @@ async function runExport() {
 .btn-go:disabled,
 .btn-preview:disabled { opacity: 0.5; cursor: default; }
 .modal-status { font-size: 10px; color: var(--text-dim); }
+.progress-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.progress-row {
+  display: grid;
+  grid-template-columns: 58px 1fr;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.progress-row progress {
+  width: 100%;
+  height: 7px;
+  accent-color: var(--accent);
+}
 .preview-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

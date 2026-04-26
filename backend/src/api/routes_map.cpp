@@ -217,17 +217,10 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
             p.engine      = engine;
             p.smooth      = smooth;
 
-            if (engine == "hybrid") {
-                auto stats = compute::render_map_hybrid(p, out);
-                elapsed = stats.total_ms;
-                scalarUsed = stats.scalar_used;
-                engineUsed = stats.engine_used;
-            } else {
-                auto stats = compute::render_map(p, out);
-                elapsed = stats.elapsed_ms;
-                scalarUsed = stats.scalar_used;
-                engineUsed = stats.engine_used;
-            }
+            auto stats = compute::render_map(p, out);
+            elapsed = stats.elapsed_ms;
+            scalarUsed = stats.scalar_used;
+            engineUsed = stats.engine_used;
             artifactName = "map.png";
         }
 

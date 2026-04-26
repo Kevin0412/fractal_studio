@@ -11,6 +11,7 @@
 
 #include "../compute/map_kernel.hpp"
 #include "../compute/map_kernel_avx512.hpp"
+#include "../compute/engine_select.hpp"
 #include "../compute/tile_scheduler.hpp"
 
 #if defined(HAS_CUDA_KERNEL)
@@ -106,6 +107,7 @@ std::string benchmarkRoute(const std::string& body) {
 #endif
 
     Json jresults = Json::array();
+    std::vector<compute::BenchmarkEntry> cache_entries;
     for (const auto& r : results) {
         jresults.push_back({
             {"engine",     r.engine},
@@ -114,7 +116,9 @@ std::string benchmarkRoute(const std::string& body) {
             {"elapsedMs",  r.elapsed_ms},
             {"mpixPerSec", r.mpix_per_sec},
         });
+        cache_entries.push_back({r.engine, r.scalar, r.mpix_per_sec, r.available});
     }
+    compute::update_benchmark_cache(cache_entries);
 
     Json resp = {
         {"width",      W},

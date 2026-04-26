@@ -52,6 +52,7 @@ add_executable(fractal_studio_backend
 
     # Native compute
     src/compute/map_kernel.cpp
+    src/compute/engine_select.cpp
     src/compute/map_kernel_avx512.cpp
     src/compute/transition_kernel.cpp
     src/compute/image_io.cpp
@@ -71,6 +72,7 @@ add_executable(fractal_studio_backend
 if(HAS_CUDA)
     add_library(fractal_cuda STATIC
         src/compute/cuda/map_kernel.cu
+        src/compute/cuda/transition_volume.cu
     )
     target_include_directories(fractal_cuda PRIVATE
         src
@@ -78,7 +80,6 @@ if(HAS_CUDA)
         ${OpenCV_INCLUDE_DIRS}
     )
     set_target_properties(fractal_cuda PROPERTIES
-        CUDA_ARCHITECTURES "89"  # RTX 4070 (Ada Lovelace = sm_89)
         CUDA_SEPARABLE_COMPILATION ON
     )
     target_compile_options(fractal_cuda PRIVATE
@@ -122,6 +123,7 @@ check_cxx_compiler_flag("-mavx512f" COMPILER_HAS_AVX512F)
 if(COMPILER_HAS_AVX512F)
     set_source_files_properties(src/compute/map_kernel_avx512.cpp PROPERTIES
         COMPILE_FLAGS "-mavx512f -mavx512dq -mavx512ifma")
+    target_compile_definitions(fractal_studio_backend PRIVATE HAS_AVX512_KERNEL=1)
     message(STATUS "AVX-512 compile flags enabled")
 else()
     message(STATUS "Compiler lacks AVX-512 support — AVX-512 path disabled at compile time")

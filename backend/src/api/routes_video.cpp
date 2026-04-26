@@ -38,14 +38,19 @@
 #include <opencv2/videoio.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <fstream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -77,10 +82,62 @@ int derivedMinStripWidth(int W, int H) {
     return roundUpToMultiple(minWidth, 8);
 }
 
-int resolveStripWidth(const Json& j, int W, int H) {
-    const int derived = derivedMinStripWidth(W, H);
-    const int requested = j.value("widthS", derived);
-    return roundUpToMultiple(std::max(requested, derived), 8);
+struct StripPlan {
+    int fullWidthS = 0;
+    int actualWidthS = 0;
+    int heightT = 0;
+    double qualityScale = 1.0;
+    std::string qualityPreset = "full";
+    uint64_t estimatedPeakMemory = 0;
+};
+
+double presetQualityScale(const std::string& preset) {
+    if (preset == "draft") return 0.35;
+    if (preset == "balanced") return 0.55;
+    if (preset == "high") return 0.75;
+    if (preset == "full") return 1.0;
+    return 0.55;
+}
+
+std::string defaultQualityPresetForSize(int W, int H) {
+    return (W >= 3840 || H >= 2160) ? "balanced" : "high";
+}
+
+uint64_t estimateVideoPeakMemoryBytes(int W, int H, int s, int t) {
+    const uint64_t pixels = static_cast<uint64_t>(W) * static_cast<uint64_t>(H);
+    const uint64_t stripPixels = static_cast<uint64_t>(s) * static_cast<uint64_t>(t);
+    const uint64_t frameBgr = pixels * 3u;
+    const uint64_t remapF32 = pixels * 4u;
+    const uint64_t stripBgr = stripPixels * 3u;
+    return stripBgr + frameBgr * 4u + remapF32 * 5u + pixels;
+}
+
+bool commandSucceeds(const std::string& command) {
+    return std::system(command.c_str()) == 0;
+}
+
+StripPlan resolveStripPlan(const Json& j, int W, int H, double depthOctaves) {
+    StripPlan plan;
+    plan.fullWidthS = derivedMinStripWidth(W, H);
+    plan.qualityPreset = j.value("qualityPreset", defaultQualityPresetForSize(W, H));
+    plan.qualityScale = j.value("qualityScale", presetQualityScale(plan.qualityPreset));
+    if (!(plan.qualityScale > 0.0) || plan.qualityScale > 1.0 || !std::isfinite(plan.qualityScale)) {
+        throw std::runtime_error("invalid qualityScale (0..1)");
+    }
+
+    int requested = 0;
+    if (j.contains("widthS") && !j["widthS"].is_null()) {
+        requested = j.value("widthS", plan.fullWidthS);
+        plan.qualityPreset = "custom";
+        plan.qualityScale = static_cast<double>(requested) / std::max(1, plan.fullWidthS);
+    } else {
+        requested = static_cast<int>(std::ceil(static_cast<double>(plan.fullWidthS) * plan.qualityScale));
+    }
+    plan.actualWidthS = roundUpToMultiple(std::max(128, requested), 8);
+    const double t_exact = (2.0 + depthOctaves) * LN_TWO / TAU * static_cast<double>(plan.actualWidthS);
+    plan.heightT = static_cast<int>(std::ceil(t_exact));
+    plan.estimatedPeakMemory = estimateVideoPeakMemoryBytes(W, H, plan.actualWidthS, plan.heightT);
+    return plan;
 }
 
 void validateVideoOutputSize(int W, int H) {
@@ -183,10 +240,12 @@ void render_ln_strip_dispatch(
     int s, int t,
     int iters, double bailout, double bailoutSq,
     compute::Colormap colormap,
-    cv::Mat& out
+    cv::Mat& out,
+    const std::function<void(int)>& on_row_done = nullptr
 ) {
     const compute::Cx<double> c_julia{jre, jim};
     const int thread_count = compute::default_render_threads();
+    std::atomic<int> rows_done{0};
 
     #pragma omp parallel num_threads(thread_count)
     {
@@ -214,6 +273,10 @@ void render_ln_strip_dispatch(
                 const int    it   = ir.escaped ? ir.iter : iters;
                 compute::colorize_escape_bgr(it, iters, colormap, 0.0, false, px[0], px[1], px[2]);
             }
+            if (on_row_done) {
+                const int done = rows_done.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (done == t || (done % 16) == 0) on_row_done(done);
+            }
         }
     }
 }
@@ -226,10 +289,11 @@ void dispatch_ln_strip_full(
     int s, int t,
     int iters, double bailout, double bailoutSq,
     compute::Colormap colormap,
-    cv::Mat& out
+    cv::Mat& out,
+    const std::function<void(int)>& on_row_done = nullptr
 ) {
     using V = compute::Variant;
-#define CASE(X) case V::X: render_ln_strip_dispatch<V::X>(julia,cr,ci,jre,jim,s,t,iters,bailout,bailoutSq,colormap,out); break
+#define CASE(X) case V::X: render_ln_strip_dispatch<V::X>(julia,cr,ci,jre,jim,s,t,iters,bailout,bailoutSq,colormap,out,on_row_done); break
     switch (v) {
         CASE(Mandelbrot); CASE(Tri); CASE(Boat); CASE(Duck); CASE(Bell);
         CASE(Fish);       CASE(Vase); CASE(Bird); CASE(Mask); CASE(Ship);
@@ -342,7 +406,9 @@ static std::string generateZoomVideo(
     const cv::Mat& finalImg,
     int W, int H, int fps, int frameCount,
     double kTop_start, double kTop_end, double depthOctaves,
-    const std::filesystem::path& outDir, const std::string& baseName
+    const std::filesystem::path& outDir, const std::string& baseName,
+    const std::function<void(int)>& on_frame_done = nullptr,
+    std::string* ffmpeg_stderr_out = nullptr
 ) {
     cv::Mat stripWrap;
     cv::copyMakeBorder(strip, stripWrap, 0, 0, 0, 1, cv::BORDER_WRAP);
@@ -365,14 +431,27 @@ static std::string generateZoomVideo(
             const double kTop  = kTop_start - tNorm * depthOctaves * LN_TWO;
             renderWarpFrameShared(stripWrap, finalImg, W, H, kTop, kTop_end, frame, stripFrame, finalFrame, mapX, mapY, fmapX, fmapY, useStrip);
             writeFrame(frame);
+            if (on_frame_done && (f + 1 == frameCount || ((f + 1) % 8) == 0)) on_frame_done(f + 1);
         }
     };
 
-    const std::string ffmpegCmd =
+    const std::filesystem::path ffmpegErr = outDir / (baseName + "_ffmpeg.stderr.txt");
+    std::vector<std::string> ffmpegCmds;
+    const std::string inputArgs =
         "ffmpeg -y -f rawvideo -pix_fmt bgr24 -s " + std::to_string(W) + "x" + std::to_string(H) +
-        " -r " + std::to_string(fps) +
-        " -i - -an -c:v libx264rgb -preset medium -crf 0 \"" + mp4.string() + "\"";
+        " -r " + std::to_string(fps) + " -i - -an ";
+    if (commandSucceeds("bash -lc \"ffmpeg -hide_banner -encoders 2>/dev/null | grep -q h264_nvenc\"")) {
+        ffmpegCmds.push_back(inputArgs + "-c:v h264_nvenc -pix_fmt yuv420p -preset p5 -cq 18 \"" + mp4.string() +
+                             "\" 2>\"" + ffmpegErr.string() + "\"");
+    }
+    if (commandSucceeds("bash -lc \"ffmpeg -hide_banner -encoders 2>/dev/null | grep -q hevc_nvenc\"")) {
+        ffmpegCmds.push_back(inputArgs + "-c:v hevc_nvenc -pix_fmt yuv420p -preset p5 -cq 20 \"" + mp4.string() +
+                             "\" 2>\"" + ffmpegErr.string() + "\"");
+    }
+    ffmpegCmds.push_back(inputArgs + "-c:v libx264 -pix_fmt yuv420p -preset medium -crf 16 \"" + mp4.string() +
+                         "\" 2>\"" + ffmpegErr.string() + "\"");
 
+    for (const std::string& ffmpegCmd : ffmpegCmds) {
     if (FILE* pipe = popen(ffmpegCmd.c_str(), "w")) {
         bool ok = true;
         try {
@@ -388,14 +467,26 @@ static std::string generateZoomVideo(
             throw;
         }
         const int rc = pclose(pipe);
+        if (ffmpeg_stderr_out) {
+            std::ifstream errIn(ffmpegErr);
+            std::ostringstream ss; ss << errIn.rdbuf();
+            *ffmpeg_stderr_out = ss.str();
+        }
         if (ok && rc == 0 && std::filesystem::exists(mp4)) return mp4.string();
+    }
     }
 
     const int fourcc = cv::VideoWriter::fourcc('m', 'p', '4', 'v');
     cv::VideoWriter writer(mp4.string(), fourcc, static_cast<double>(fps), cv::Size(W, H), true);
     if (!writer.isOpened()) {
         writer.open(avi.string(), cv::VideoWriter::fourcc('M','J','P','G'), static_cast<double>(fps), cv::Size(W, H), true);
-        if (!writer.isOpened()) throw std::runtime_error("VideoWriter failed");
+        if (!writer.isOpened()) {
+            std::string msg = "VideoWriter failed";
+            if (ffmpeg_stderr_out && !ffmpeg_stderr_out->empty()) {
+                msg += "; ffmpeg stderr: " + *ffmpeg_stderr_out;
+            }
+            throw std::runtime_error(msg);
+        }
     }
 
     renderFrames([&](const cv::Mat& rendered) {
@@ -430,6 +521,29 @@ LnMapLookup resolveLnMap(const std::filesystem::path& repoRoot, const std::strin
     std::ifstream in(sidecar);
     std::ostringstream ss; ss << in.rdbuf();
     return { png, Json::parse(ss.str()) };
+}
+
+void setVideoProgress(
+    JobRunner& runner,
+    const std::string& runId,
+    const std::string& stage,
+    int current,
+    int total,
+    double depthCurrent,
+    double depthTotal,
+    const std::string& failedStage = "",
+    const std::string& errorMessage = ""
+) {
+    Json j = {
+        {"stage", stage},
+        {"current", current},
+        {"total", total},
+        {"depthOctave", depthCurrent},
+        {"totalDepthOctaves", depthTotal},
+        {"failedStage", failedStage},
+        {"errorMessage", errorMessage},
+    };
+    runner.setProgress(runId, j.dump());
 }
 
 } // namespace
@@ -750,7 +864,8 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
     const double secondsPerOctave = resolveSecondsPerOctave(j, depth);
     double durSec = 0.0;
     const int frameCount = frameCountFromSpeed(depth, secondsPerOctave, fps, durSec);
-    const int    s          = resolveStripWidth(j, W, H);
+    const StripPlan stripPlan = resolveStripPlan(j, W, H, depth);
+    const int s = stripPlan.actualWidthS;
 
     if (s < 128 || s > 65536)               throw std::runtime_error("invalid widthS (128..65536)");
     if (depth < 0.05 || depth > 120.0)      throw std::runtime_error("invalid depthOctaves (0.05..120)");
@@ -772,38 +887,14 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
     if (!compute::colormap_from_name(colormapStr.c_str(), cm)) cm = compute::Colormap::ClassicCos;
 
     auto run = runner.createRun("video-export", body);
-    runner.setStatus(run.id, "running");
 
+    auto execute = [=, &runner]() mutable -> Json {
+    runner.setStatus(run.id, "running");
     try {
         const auto t0 = std::chrono::steady_clock::now();
 
-        // ── 1. Render ln-map strip ─────────────────────────────────────────────
-        const double t_exact = (2.0 + depth) * LN_TWO / TAU * static_cast<double>(s);
-        const int t = static_cast<int>(std::ceil(t_exact));
-        cv::Mat strip(t, s, CV_8UC3);
-        dispatch_ln_strip_full(v, julia, cr, ci, jre, jim, s, t, iters, bailout, bailoutSq, cm, strip);
-
-        const std::filesystem::path stripPath = std::filesystem::path(run.outputDir) / "ln_map.png";
-        compute::write_png(stripPath.string(), strip);
-        runner.addArtifact(run.id, Artifact{"ln-map", stripPath.string(), "image"});
-
-        // Sidecar so old zoomVideoRoute can also consume this ln-map.
-        {
-            Json sc = {
-                {"centerRe", cr}, {"centerIm", ci},
-                {"julia", julia}, {"juliaRe", jre}, {"juliaIm", jim},
-                {"widthS", s}, {"heightT", t}, {"depthOctaves", depth},
-                {"lnRadiusTop", LN_FOUR}, {"variant", variantStr},
-                {"colorMap", colormapStr}, {"iterations", iters},
-                {"bailout", bailout},
-                {"bailoutSq", bailoutSq},
-            };
-            const std::filesystem::path scPath = std::filesystem::path(run.outputDir) / "ln_map.json";
-            std::ofstream os(scPath);
-            os << sc.dump(2);
-        }
-
-        // ── 2. Render final cartesian frame ────────────────────────────────────
+        // ── 1. Render final cartesian frame ────────────────────────────────────
+        setVideoProgress(runner, run.id, "final_frame", 0, 1, depth, depth);
         const double kTop_end   = kTop_start - depth * LN_TWO;
 
         compute::MapParams mp;
@@ -831,6 +922,42 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
         const std::filesystem::path finalPath = std::filesystem::path(run.outputDir) / "final_frame.png";
         compute::write_png(finalPath.string(), finalImg);
         runner.addArtifact(run.id, Artifact{"final-frame", finalPath.string(), "image"});
+        setVideoProgress(runner, run.id, "final_frame", 1, 1, depth, depth);
+
+        // ── 2. Render ln-map strip ─────────────────────────────────────────────
+        const int t = stripPlan.heightT;
+        cv::Mat strip(t, s, CV_8UC3);
+        setVideoProgress(runner, run.id, "ln_map", 0, t, 0.0, depth);
+        dispatch_ln_strip_full(
+            v, julia, cr, ci, jre, jim, s, t, iters, bailout, bailoutSq, cm, strip,
+            [&](int rowsDone) {
+                const double octave = depth * static_cast<double>(rowsDone) / std::max(1, t);
+                setVideoProgress(runner, run.id, "ln_map", rowsDone, t, octave, depth);
+            });
+
+        const std::filesystem::path stripPath = std::filesystem::path(run.outputDir) / "ln_map.png";
+        compute::write_png(stripPath.string(), strip);
+        runner.addArtifact(run.id, Artifact{"ln-map", stripPath.string(), "image"});
+
+        // Sidecar so old zoomVideoRoute can also consume this ln-map.
+        {
+            Json sc = {
+                {"centerRe", cr}, {"centerIm", ci},
+                {"julia", julia}, {"juliaRe", jre}, {"juliaIm", jim},
+                {"widthS", s}, {"actualWidthS", s}, {"fullWidthS", stripPlan.fullWidthS},
+                {"heightT", t}, {"depthOctaves", depth},
+                {"qualityPreset", stripPlan.qualityPreset},
+                {"qualityScale", stripPlan.qualityScale},
+                {"estimatedPeakMemory", stripPlan.estimatedPeakMemory},
+                {"lnRadiusTop", LN_FOUR}, {"variant", variantStr},
+                {"colorMap", colormapStr}, {"iterations", iters},
+                {"bailout", bailout},
+                {"bailoutSq", bailoutSq},
+            };
+            const std::filesystem::path scPath = std::filesystem::path(run.outputDir) / "ln_map.json";
+            std::ofstream os(scPath);
+            os << sc.dump(2);
+        }
 
         // ── 3. Render first/last preview frames ───────────────────────────────
         const cv::Mat startPreview = renderZoomPreviewFrame(strip, finalImg, W, H, kTop_start, kTop_end);
@@ -843,10 +970,16 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
         runner.addArtifact(run.id, Artifact{"end-frame",   endPreviewPath.string(),   "image"});
 
         // ── 4. Generate video ──────────────────────────────────────────────────
+        setVideoProgress(runner, run.id, "video_warp_encode", 0, frameCount, depth, depth);
+        std::string ffmpegStderr;
         const std::string videoPath = generateZoomVideo(
             strip, finalImg, W, H, fps, frameCount,
             kTop_start, kTop_end, depth,
-            std::filesystem::path(run.outputDir), "zoom"
+            std::filesystem::path(run.outputDir), "zoom",
+            [&](int frameDone) {
+                setVideoProgress(runner, run.id, "video_warp_encode", frameDone, frameCount, depth, depth);
+            },
+            &ffmpegStderr
         );
         const std::string videoFile = std::filesystem::path(videoPath).filename().string();
         runner.addArtifact(run.id, Artifact{"zoom-video", videoPath, "video"});
@@ -884,16 +1017,56 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
             {"secondsPerOctave",   secondsPerOctave},
             {"depthOctaves",       depth},
             {"targetScale",        2.0 * std::exp(kTop_end)},
+            {"fullWidthS",         stripPlan.fullWidthS},
+            {"actualWidthS",       s},
+            {"heightT",            t},
+            {"qualityPreset",      stripPlan.qualityPreset},
+            {"qualityScale",       stripPlan.qualityScale},
+            {"estimatedPeakMemory", stripPlan.estimatedPeakMemory},
             {"width",              W},
             {"height",             H},
             {"generatedMs",        elapsed},
+            {"ffmpegStderr",       ffmpegStderr},
         };
-        return resp.dump();
+        return resp;
 
-    } catch (const std::exception&) {
+    } catch (const std::exception& e) {
+        setVideoProgress(runner, run.id, "failed", 0, 0, 0.0, depth, "video_export", e.what());
         runner.setStatus(run.id, "failed");
         throw;
     }
+    };
+
+    const bool background = j.value("background", true);
+    if (background) {
+        setVideoProgress(runner, run.id, "queued", 0, frameCount, 0.0, depth);
+        std::thread([execute]() mutable {
+            try {
+                (void)execute();
+            } catch (...) {}
+        }).detach();
+
+        Json resp = {
+            {"runId", run.id},
+            {"status", "queued"},
+            {"frameCount", frameCount},
+            {"fps", fps},
+            {"durationSec", durSec},
+            {"secondsPerOctave", secondsPerOctave},
+            {"depthOctaves", depth},
+            {"fullWidthS", stripPlan.fullWidthS},
+            {"actualWidthS", s},
+            {"heightT", stripPlan.heightT},
+            {"qualityPreset", stripPlan.qualityPreset},
+            {"qualityScale", stripPlan.qualityScale},
+            {"estimatedPeakMemory", stripPlan.estimatedPeakMemory},
+            {"width", W},
+            {"height", H},
+        };
+        return resp.dump();
+    }
+
+    return execute().dump();
 }
 
 } // namespace fsd

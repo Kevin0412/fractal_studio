@@ -280,6 +280,9 @@ export interface VideoExportRequest {
   secondsPerOctave?: number
   durationSec?: number
   targetScale?: number
+  qualityPreset?: 'draft' | 'balanced' | 'high' | 'full' | 'custom'
+  qualityScale?: number
+  background?: boolean
   width?: number
   height?: number
 }
@@ -287,13 +290,13 @@ export interface VideoExportRequest {
 export interface VideoExportResponse {
   runId: string
   status: string
-  videoArtifactId: string
-  videoUrl: string
-  videoDownloadUrl: string
-  lnMapArtifactId: string
-  lnMapDownloadUrl: string
-  finalFrameArtifactId: string
-  finalFrameDownloadUrl: string
+  videoArtifactId?: string
+  videoUrl?: string
+  videoDownloadUrl?: string
+  lnMapArtifactId?: string
+  lnMapDownloadUrl?: string
+  finalFrameArtifactId?: string
+  finalFrameDownloadUrl?: string
   startFrameArtifactId?: string
   startFrameUrl?: string
   startFrameDownloadUrl?: string
@@ -306,9 +309,45 @@ export interface VideoExportResponse {
   secondsPerOctave?: number
   depthOctaves?: number
   targetScale?: number
+  fullWidthS?: number
+  actualWidthS?: number
+  heightT?: number
+  qualityPreset?: string
+  qualityScale?: number
+  estimatedPeakMemory?: number
+  ffmpegStderr?: string
   width: number
   height: number
-  generatedMs: number
+  generatedMs?: number
+}
+
+export interface RunProgress {
+  stage?: string
+  current?: number
+  total?: number
+  depthOctave?: number
+  totalDepthOctaves?: number
+  failedStage?: string
+  errorMessage?: string
+}
+
+export interface RunArtifactStatus {
+  artifactId: string
+  name: string
+  kind: string
+  downloadUrl: string
+  contentUrl: string
+}
+
+export interface RunStatusResponse {
+  id: string
+  module: string
+  status: string
+  startedAt: number
+  finishedAt: number
+  outputDir: string
+  progress: RunProgress
+  artifacts: RunArtifactStatus[]
 }
 
 export interface VideoPreviewRequest extends VideoExportRequest {
@@ -434,6 +473,7 @@ export const api = {
 
   systemCheck: () => getJson<{ openmp: boolean; cuda: boolean }>('/api/system/check'),
   hardware:    () => getJson<Hardware>('/api/system/hardware'),
+  capabilities:() => getJson<Record<string, any>>('/api/system/capabilities'),
 
   mapRender:  (req: MapRenderRequest)  => postJson<MapRenderResponse>('/api/map/render', req),
   mapField:   (req: MapFieldRequest)   => postJson<MapFieldResponse>('/api/map/field', req),
@@ -460,6 +500,8 @@ export const api = {
   videoExport: (req: VideoExportRequest) => postJson<VideoExportResponse>('/api/video/export', req),
 
   runs: (limit = 50) => getJson<{ items: RunRow[] }>(`/api/runs?limit=${limit}`),
+  runStatus: (runId: string) =>
+    getJson<RunStatusResponse>(`/api/runs/status?runId=${encodeURIComponent(runId)}`),
 
   artifacts: (kind?: string, runId?: string) => {
     const q = new URLSearchParams()

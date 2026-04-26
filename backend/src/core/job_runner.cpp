@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <stdexcept>
 
 namespace fs = std::filesystem;
@@ -25,6 +26,7 @@ RunRecord JobRunner::createRun(const std::string& module, const std::string& par
     {
         std::lock_guard<std::mutex> lk(mu_);
         runs_[run.id] = run;
+        runModules_[run.id] = module;
         runParams_[run.id] = paramsJson;
         runStarted_[run.id] = started;
     }
@@ -55,7 +57,7 @@ void JobRunner::setStatus(const std::string& runId, const std::string& status) {
         if (it == runs_.end()) throw std::runtime_error("run not found: " + runId);
         it->second.status = status;
         outDir = it->second.outputDir;
-        if (!it->second.artifacts.empty()) module = it->second.artifacts.front().module;
+        module = runModules_[runId];
         paramsJson = runParams_[runId];
         started = runStarted_[runId];
     }
@@ -65,6 +67,43 @@ void JobRunner::setStatus(const std::string& runId, const std::string& status) {
         std::lock_guard<std::mutex> lk(mu_);
         db_->upsertRun(row);
     }
+}
+
+void JobRunner::setProgress(const std::string& runId, const std::string& progressJson) {
+    std::string outDir;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = runs_.find(runId);
+        if (it == runs_.end()) throw std::runtime_error("run not found: " + runId);
+        runProgress_[runId] = progressJson;
+        outDir = it->second.outputDir;
+    }
+    if (!outDir.empty()) {
+        std::ofstream os(fs::path(outDir) / "progress.json");
+        os << progressJson;
+    }
+}
+
+std::string JobRunner::getProgress(const std::string& runId) const {
+    std::string outDir;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = runProgress_.find(runId);
+        if (it != runProgress_.end()) return it->second;
+        auto runIt = runs_.find(runId);
+        if (runIt != runs_.end()) outDir = runIt->second.outputDir;
+    }
+    if (outDir.empty()) {
+        outDir = resolveOutputDir(runId);
+    }
+    if (!outDir.empty()) {
+        std::ifstream is(fs::path(outDir) / "progress.json");
+        if (is) {
+            std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+            if (!text.empty()) return text;
+        }
+    }
+    return "{}";
 }
 
 void JobRunner::addArtifact(const std::string& runId, const Artifact& artifact) {

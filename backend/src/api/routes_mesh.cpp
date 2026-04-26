@@ -223,6 +223,8 @@ std::string transitionMeshRoute(const std::filesystem::path&, JobRunner& runner,
     }
     p.from_variant = parseVariant(j.value("transitionFrom", std::string("mandelbrot")));
     p.to_variant   = parseVariant(j.value("transitionTo",   std::string("burning_ship")));
+    p.engine        = j.value("engine", std::string("auto"));
+    p.scalar_type   = j.value("scalarType", std::string("fp32"));
     const double iso = j.value("iso",  0.5);
 
     if (p.resolution < 8 || p.resolution > 1024) throw std::runtime_error("invalid resolution");
@@ -235,10 +237,14 @@ std::string transitionMeshRoute(const std::filesystem::path&, JobRunner& runner,
 
     double fieldMs = 0.0, mcMs = 0.0;
     size_t vc = 0, tc = 0;
+    std::string fieldEngineUsed = "openmp_fp32";
+    std::string fieldScalarUsed = "fp32";
 
     try {
         const auto t0 = std::chrono::steady_clock::now();
         compute::McField field = compute::buildTransitionVolume(p);
+        fieldEngineUsed = field.engine_used;
+        fieldScalarUsed = field.scalar_used;
         const auto t1 = std::chrono::steady_clock::now();
         compute::Mesh mesh = compute::marchingCubes(field, static_cast<float>(iso));
         const auto t2 = std::chrono::steady_clock::now();
@@ -277,6 +283,8 @@ std::string transitionMeshRoute(const std::filesystem::path&, JobRunner& runner,
         {"triangleCount", tc},
         {"fieldMs",  fieldMs},
         {"mcMs",     mcMs},
+        {"fieldEngineUsed", fieldEngineUsed},
+        {"fieldScalarUsed", fieldScalarUsed},
     };
     return resp.dump();
 }
@@ -311,6 +319,8 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
     }
     p.from_variant = parseVariant(j.value("transitionFrom", std::string("mandelbrot")));
     p.to_variant   = parseVariant(j.value("transitionTo",   std::string("burning_ship")));
+    p.engine        = j.value("engine", std::string("auto"));
+    p.scalar_type   = j.value("scalarType", std::string("fp32"));
     const float iso = static_cast<float>(j.value("iso", 0.48));
 
     if (p.resolution < 4 || p.resolution > 1024) throw std::runtime_error("resolution out of range [4,1024]");
@@ -453,6 +463,8 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
         {"voxelCount",  voxelCount},
         {"faceCount",   faceCount},
         {"generatedMs", elapsed},
+        {"fieldEngineUsed", field.engine_used},
+        {"fieldScalarUsed", field.scalar_used},
         {"stlArtifactId", stlId},
         {"stlUrl",      "/api/artifacts/download?artifactId=" + stlId},
         {"posB64",   base64Encode(reinterpret_cast<const uint8_t*>(posF32.data()), posF32.size() * sizeof(float))},

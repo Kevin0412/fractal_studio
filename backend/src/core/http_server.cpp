@@ -68,6 +68,7 @@ std::string HttpServer::handleRequest(const std::string& request) const {
     // System
     if (method == "GET"  && path == "/api/system/check")    return makeHttpResponse(200, systemCheckRoute());
     if (method == "GET"  && path == "/api/system/hardware") return makeHttpResponse(200, systemHardwareRoute());
+    if (method == "GET"  && path == "/api/system/capabilities") return makeHttpResponse(200, systemCapabilitiesRoute());
 
     // Map (native)
     if (method == "POST" && path == "/api/map/render") return makeHttpResponse(200, mapRenderRoute(repoRoot_, runner_, body));
@@ -95,6 +96,7 @@ std::string HttpServer::handleRequest(const std::string& request) const {
     if (method == "POST" && path == "/api/variants/delete")  return makeHttpResponse(200, variantDeleteRoute(repoRoot_, body));
 
     // Runs
+    if (method == "GET"  && path == "/api/runs/status") return makeHttpResponse(200, runStatusRoute(repoRoot_, runner_, query));
     if (method == "GET"  && path == "/api/runs") return makeHttpResponse(200, runsListRoute(repoRoot_, query));
 
     // Artifacts

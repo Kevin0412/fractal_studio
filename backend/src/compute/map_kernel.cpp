@@ -11,10 +11,12 @@
 
 #include "map_kernel.hpp"
 #include "map_kernel_avx512.hpp"
+#include "engine_select.hpp"
 #include "escape_time.hpp"
 #include "complex.hpp"
 #include "parallel.hpp"
 #include "scalar/fx64.hpp"
+#include "tile_scheduler.hpp"
 
 #if defined(HAS_CUDA_KERNEL)
 #  include "cuda/map_kernel.cuh"
@@ -647,6 +649,17 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
     }
 
     const bool fx  = use_fx64(p);
+    const std::string selected_engine = select_map_engine(p, fx);
+
+    if (selected_engine == "hybrid") {
+        auto ts = render_map_hybrid(p, out);
+        MapStats s;
+        s.elapsed_ms = ts.total_ms;
+        s.pixel_count = p.width * p.height;
+        s.scalar_used = ts.scalar_used;
+        s.engine_used = ts.engine_used;
+        return s;
+    }
 
     // smooth coloring needs per-pixel |z|² which the AVX-512/CUDA paths don't track.
     // Fall through to OpenMP which has access to IterResult.norm.
@@ -661,7 +674,7 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
 #if USE_CUDA
     const bool can_cuda = !needs_norm
                        && !scalar_fallback
-                       && (p.engine == "cuda" || p.engine == "auto" || p.engine == "hybrid")
+                       && (selected_engine == "cuda")
                        && (static_cast<int>(p.metric) < 4)  // excludes MinPairwiseDist
                        && fsd_cuda::cuda_available();
     if (can_cuda) {
@@ -699,7 +712,7 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
     // Trig variants need std::cmath — skip AVX-512 (scalar_fallback).
     const bool can_avx_base = !needs_norm
                            && !scalar_fallback
-                           && (p.engine == "avx512" || p.engine == "auto" || p.engine == "hybrid")
+                           && (selected_engine == "avx512")
                            && (static_cast<int>(p.metric) < 4)
                            && avx512_available();
     // fx64 path: restrict to Mandelbrot escape only. IFMA52 metric

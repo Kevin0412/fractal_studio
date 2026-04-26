@@ -30,9 +30,11 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <string>
 
 namespace fsd {
 
@@ -54,6 +56,22 @@ int derivedMinStripWidth(int W, int H) {
                                 + static_cast<double>(H) * static_cast<double>(H));
     const int minWidth = static_cast<int>(std::ceil(diag * PI));
     return roundUpToMultiple(minWidth, 8);
+}
+
+double presetQualityScale(const std::string& preset) {
+    if (preset == "draft") return 0.35;
+    if (preset == "balanced") return 0.55;
+    if (preset == "high") return 0.75;
+    if (preset == "full") return 1.0;
+    return 0.55;
+}
+
+std::string defaultQualityPresetForSize(int W, int H) {
+    return (W >= 3840 || H >= 2160) ? "balanced" : "high";
+}
+
+uint64_t estimateLnMapBytes(int s, int t) {
+    return static_cast<uint64_t>(s) * static_cast<uint64_t>(t) * 3u;
 }
 
 template <compute::Variant V>
@@ -129,23 +147,34 @@ std::string lnMapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& r
     const double ci            = j.value("centerIm", 0.0);
     const int    outW          = j.value("width", 0);
     const int    outH          = j.value("height", 0);
-    int s = j.value("widthS", 1920);
-    if (outW > 0 && outH > 0) {
-        s = std::max(s, derivedMinStripWidth(outW, outH));
-        s = roundUpToMultiple(s, 8);
-    }
     const double depthOctaves  = j.value("depthOctaves", 40.0);
+    const int fullWidthS = (outW > 0 && outH > 0) ? derivedMinStripWidth(outW, outH) : 1920;
+    std::string qualityPreset = j.value("qualityPreset", defaultQualityPresetForSize(outW, outH));
+    double qualityScale = j.value("qualityScale", presetQualityScale(qualityPreset));
+    if (!(qualityScale > 0.0) || qualityScale > 1.0 || !std::isfinite(qualityScale)) {
+        throw std::runtime_error("invalid qualityScale (0..1)");
+    }
+    int s = 0;
+    if (j.contains("widthS") && !j["widthS"].is_null()) {
+        s = j.value("widthS", fullWidthS);
+        qualityPreset = "custom";
+        qualityScale = static_cast<double>(s) / std::max(1, fullWidthS);
+    } else {
+        s = static_cast<int>(std::ceil(static_cast<double>(fullWidthS) * qualityScale));
+    }
+    s = roundUpToMultiple(std::max(128, s), 8);
     const std::string variantStr  = j.value("variant",  std::string("mandelbrot"));
     const std::string colormapStr = j.value("colorMap", std::string("classic_cos"));
     const int iters            = j.value("iterations", 4096);
 
-    if (s < 128 || s > 8192)               throw std::runtime_error("invalid widthS (128..8192)");
+    if (s < 128 || s > 65536)              throw std::runtime_error("invalid widthS (128..65536)");
     if (depthOctaves < 1.0 || depthOctaves > 80.0) throw std::runtime_error("invalid depthOctaves (1..80)");
     if (iters < 1 || iters > 10000000)     throw std::runtime_error("invalid iterations");
 
     // Same formula as big_png_ln.py:20 — 2 base octaves + requested depth.
     const double t_exact = (2.0 + depthOctaves) * LN_TWO / TAU * static_cast<double>(s);
     const int t = static_cast<int>(std::ceil(t_exact));
+    const uint64_t estimatedPeakMemory = estimateLnMapBytes(s, t);
 
     compute::Variant v;
     if (!compute::variant_from_name(variantStr.c_str(), v)) v = compute::Variant::Mandelbrot;
@@ -190,8 +219,13 @@ std::string lnMapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& r
             {"centerRe",     cr},
             {"centerIm",     ci},
             {"widthS",       s},
+            {"actualWidthS", s},
+            {"fullWidthS",   fullWidthS},
             {"heightT",      t},
             {"depthOctaves", depthOctaves},
+            {"qualityPreset", qualityPreset},
+            {"qualityScale", qualityScale},
+            {"estimatedPeakMemory", estimatedPeakMemory},
             {"lnRadiusTop",  LN_FOUR},
             {"variant",      variantStr},
             {"colorMap",     colormapStr},
@@ -220,8 +254,13 @@ std::string lnMapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& r
         {"artifactId",  artifactId},
         {"imagePath",   "/api/artifacts/content?artifactId=" + artifactId},
         {"widthS",      s},
+        {"actualWidthS", s},
+        {"fullWidthS",  fullWidthS},
         {"heightT",     t},
         {"depthOctaves", depthOctaves},
+        {"qualityPreset", qualityPreset},
+        {"qualityScale", qualityScale},
+        {"estimatedPeakMemory", estimatedPeakMemory},
         {"generatedMs", elapsed},
     };
     return resp.dump();

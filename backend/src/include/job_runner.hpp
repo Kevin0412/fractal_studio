@@ -20,6 +20,8 @@ public:
     RunRecord createRun(const std::string& module, const std::string& paramsJson = "");
     RunRecord getRun(const std::string& runId) const;
     void setStatus(const std::string& runId, const std::string& status);
+    void setProgress(const std::string& runId, const std::string& progressJson);
+    std::string getProgress(const std::string& runId) const;
     void addArtifact(const std::string& runId, const Artifact& artifact);
 
     // Lookup the on-disk path for a run by id, consulting sqlite on miss.
@@ -30,7 +32,9 @@ private:
     Db* db_ = nullptr;
     mutable std::mutex mu_;
     std::unordered_map<std::string, RunRecord> runs_;
+    std::unordered_map<std::string, std::string> runModules_;
     std::unordered_map<std::string, std::string> runParams_;
+    std::unordered_map<std::string, std::string> runProgress_;
     std::unordered_map<std::string, long long>   runStarted_;
 
     static std::string makeRunId();

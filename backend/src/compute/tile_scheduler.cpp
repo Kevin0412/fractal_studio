@@ -3,6 +3,7 @@
 // Hybrid CPU+GPU tile scheduler implementation.
 
 #include "tile_scheduler.hpp"
+#include "engine_select.hpp"
 #include "map_kernel.hpp"
 #include "map_kernel_avx512.hpp"
 #include "parallel.hpp"
@@ -170,10 +171,10 @@ TileSchedulerStats render_map_hybrid(
     std::atomic<size_t> next_tile{0};
 
     const bool fx       = (p.scalar_type == "fx64") || (p.scalar_type == "auto" && p.scale < 1e-13);
-    const bool use_avx  = avx512_available() && p.variant == Variant::Mandelbrot && p.metric == Metric::Escape;
+    const bool use_avx  = map_engine_supported(p, "avx512", fx);
     const bool use_gpu  = false
 #if USE_CUDA
-                       || (fsd_cuda::cuda_available() && p.variant == Variant::Mandelbrot && p.metric == Metric::Escape)
+                       || map_engine_supported(p, "cuda", fx)
 #endif
                        ;
 
@@ -189,8 +190,12 @@ TileSchedulerStats render_map_hybrid(
     WorkerStats gpu_ema;
     if (use_gpu) {
         gpu_thread = std::thread([&]() {
+            constexpr size_t gpu_batch_tiles = 12;
             while (true) {
-                const size_t idx = next_tile.fetch_add(1);
+                const size_t first = next_tile.fetch_add(gpu_batch_tiles);
+                if (first >= n) break;
+                const size_t last = std::min(n, first + gpu_batch_tiles);
+                for (size_t idx = first; idx < last; ++idx) {
                 if (idx >= n) break;
                 const Tile& tile = tiles[idx];
                 const auto t0 = std::chrono::steady_clock::now();
@@ -209,6 +214,7 @@ TileSchedulerStats render_map_hybrid(
                     gpu_tiles++;
                 }
                 if (on_tile_done) on_tile_done(tile.x, tile.y, tile.w, tile.h);
+                }
             }
         });
     }

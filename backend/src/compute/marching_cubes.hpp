@@ -11,6 +11,7 @@
 
 #include "mesh.hpp"
 
+#include <string>
 #include <vector>
 
 namespace fsd::compute {
@@ -18,6 +19,8 @@ namespace fsd::compute {
 struct McField {
     int Nx = 0, Ny = 0, Nz = 0;
     std::vector<float> data;  // size = Nx*Ny*Nz, row-major: data[x + Nx*(y + Ny*z)]
+    std::string scalar_used = "fp32";
+    std::string engine_used = "openmp";
 
     float at(int x, int y, int z) const {
         return data[static_cast<size_t>(x) + static_cast<size_t>(Nx) *

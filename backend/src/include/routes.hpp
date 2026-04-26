@@ -10,6 +10,7 @@ namespace fsd {
 // System / hardware
 std::string systemCheckRoute();
 std::string systemHardwareRoute();
+std::string systemCapabilitiesRoute();
 
 // Map (native): escape/metric/transition all dispatch through here.
 // Body is JSON; response is JSON describing the generated artifact.
@@ -60,6 +61,7 @@ double lookupCustomBailoutSq(const std::filesystem::path& repoRoot, const std::s
 
 // Runs
 std::string runsListRoute(const std::filesystem::path& repoRoot, const std::string& query);
+std::string runStatusRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& query);
 
 // Artifacts (filesystem scan of runs dir; artifactId = "runId:fileName")
 std::string artifactsListRoute(const std::filesystem::path& repoRoot, const std::string& query);
