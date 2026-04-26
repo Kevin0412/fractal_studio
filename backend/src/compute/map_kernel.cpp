@@ -14,6 +14,7 @@
 #include "engine_select.hpp"
 #include "escape_time.hpp"
 #include "complex.hpp"
+#include "fx64_raw.hpp"
 #include "parallel.hpp"
 #include "scalar/fx64.hpp"
 #include "tile_scheduler.hpp"
@@ -175,6 +176,75 @@ void render_variant_metric_impl(const MapParams& p, cv::Mat& out) {
     }
 }
 
+template <Variant V, Metric M, IterResultMask NeedMask>
+void render_variant_metric_fx64_impl(const MapParams& p, cv::Mat& out) {
+    static_assert(!variant_is_transcendental_v<V>(),
+        "Fx64 integer renderer only supports quadratic variants.");
+    static_assert(M != Metric::MinPairwiseDist,
+        "Fx64 integer renderer does not handle pairwise distance.");
+
+    const int W = p.width;
+    const int H = p.height;
+    const Fx64ViewportRaw vp = make_fx64_viewport_raw(
+        p.center_re, p.center_im, p.scale, W, H,
+        p.julia_re, p.julia_im, p.bailout, p.bailout_sq);
+    const int thread_count = resolve_render_threads(p.render_threads);
+    constexpr int tile_size = 32;
+    const int tiles_x = ceil_div(W, tile_size);
+    const int tiles_y = ceil_div(H, tile_size);
+    const int tile_count = tiles_x * tiles_y;
+
+    const Cx<Fx64> c_const{Fx64{vp.julia_re_raw}, Fx64{vp.julia_im_raw}};
+
+    #pragma omp parallel for num_threads(thread_count) schedule(dynamic, 1)
+    for (int tile = 0; tile < tile_count; tile++) {
+        const int tile_x = tile % tiles_x;
+        const int tile_y = tile / tiles_x;
+        const int x0 = tile_x * tile_size;
+        const int y0 = tile_y * tile_size;
+        const int x1 = std::min(W, x0 + tile_size);
+        const int y1 = std::min(H, y0 + tile_size);
+
+        for (int y = y0; y < y1; y++) {
+            uint8_t* row = out.ptr<uint8_t>(y);
+            const Fx64 im{fx64_pixel_im_raw(vp, y)};
+            for (int x = x0; x < x1; x++) {
+                const Fx64 re{fx64_pixel_re_raw(vp, x)};
+
+                Cx<Fx64> z0;
+                Cx<Fx64> c;
+                if (p.julia) {
+                    z0 = Cx<Fx64>{re, im};
+                    c  = c_const;
+                } else {
+                    z0 = Cx<Fx64>{Fx64{INT64_C(0)}, Fx64{INT64_C(0)}};
+                    c  = Cx<Fx64>{re, im};
+                }
+
+                const IterResult r = iterate_fx64_int_masked<NeedMask, V>(
+                    z0, c, p.iterations, vp.bailout_raw, vp.bailout2_q57);
+
+                uint8_t* px = row + 3 * x;
+                if constexpr (M == Metric::Escape) {
+                    const int iter = r.escaped ? r.iter : p.iterations;
+                    colorize_escape_bgr(iter, p.iterations, p.colormap, 0.0, false, px[0], px[1], px[2]);
+                } else {
+                    if (p.colormap == Colormap::HsRainbow) {
+                        const double fv = raw_field_value<M>(r);
+                        colorize_field_hs_bgr(fv, px[0], px[1], px[2]);
+                    } else if (p.smooth) {
+                        const double fv = raw_field_value<M>(r);
+                        colorize_field_smooth_bgr(fv, p.colormap, px[0], px[1], px[2]);
+                    } else {
+                        const double v01 = normalize_field_static<M>(r, p.bailout);
+                        colorize_field_bgr(v01, p.colormap, px[0], px[1], px[2]);
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Variant dispatch helpers — one for fp64, one for fx64.
 template <Variant V>
 void render_variant(const MapParams& p, cv::Mat& out) {
@@ -196,19 +266,20 @@ void render_variant(const MapParams& p, cv::Mat& out) {
 
 template <Variant V>
 void render_variant_fx64(const MapParams& p, cv::Mat& out) {
+    static_assert(!variant_is_transcendental_v<V>(),
+        "Fx64 integer renderer only supports quadratic variants.");
     switch (p.metric) {
         case Metric::Escape:
-            if (p.smooth) render_variant_metric_impl<V, Fx64, Metric::Escape, NeedEscapeSmooth>(p, out);
-            else          render_variant_metric_impl<V, Fx64, Metric::Escape, NeedEscape>(p, out);
+            render_variant_metric_fx64_impl<V, Metric::Escape, NeedEscape>(p, out);
             break;
         case Metric::MinAbs:
-            render_variant_metric_impl<V, Fx64, Metric::MinAbs, NeedMinAbs>(p, out); break;
+            render_variant_metric_fx64_impl<V, Metric::MinAbs, NeedMinAbs>(p, out); break;
         case Metric::MaxAbs:
-            render_variant_metric_impl<V, Fx64, Metric::MaxAbs, NeedMaxAbs>(p, out); break;
+            render_variant_metric_fx64_impl<V, Metric::MaxAbs, NeedMaxAbs>(p, out); break;
         case Metric::Envelope:
-            render_variant_metric_impl<V, Fx64, Metric::Envelope, NeedEnvelope>(p, out); break;
+            render_variant_metric_fx64_impl<V, Metric::Envelope, NeedEnvelope>(p, out); break;
         case Metric::MinPairwiseDist:
-            render_variant_metric_impl<V, Fx64, Metric::MinPairwiseDist, IterResultField::Extra>(p, out); break;
+            render_variant_metric_impl<V, double, Metric::MinPairwiseDist, IterResultField::Extra>(p, out); break;
     }
 }
 
@@ -220,6 +291,14 @@ static bool use_fx64(const MapParams& p) {
     if (p.scalar_type == "fp64") return false;
     // "auto": switch to Fx64 when scale < 1e-13 (fp64 loses too much precision).
     return p.scale < 1e-13;
+}
+
+static bool supports_fx64_int_path(const MapParams& p, bool field_output = false) {
+    const int variant_id = static_cast<int>(p.variant);
+    if (variant_id < 0 || variant_id > 9) return false;
+    if (p.metric == Metric::MinPairwiseDist) return false;
+    if (!field_output && p.smooth) return false;
+    return true;
 }
 
 // Dispatch fp64 variants
@@ -258,13 +337,14 @@ static void dispatch_fx64(const MapParams& p, cv::Mat& out) {
         case Variant::Bird:       render_variant_fx64<Variant::Bird>(p, out);       break;
         case Variant::Mask:       render_variant_fx64<Variant::Mask>(p, out);       break;
         case Variant::Ship:       render_variant_fx64<Variant::Ship>(p, out);       break;
-        // Trig variants: apply_trig already casts Fx64 → double internally.
-        case Variant::SinZ:       render_variant_fx64<Variant::SinZ>(p, out);       break;
-        case Variant::CosZ:       render_variant_fx64<Variant::CosZ>(p, out);       break;
-        case Variant::ExpZ:       render_variant_fx64<Variant::ExpZ>(p, out);       break;
-        case Variant::SinhZ:      render_variant_fx64<Variant::SinhZ>(p, out);      break;
-        case Variant::CoshZ:      render_variant_fx64<Variant::CoshZ>(p, out);      break;
-        case Variant::TanZ:       render_variant_fx64<Variant::TanZ>(p, out);       break;
+        case Variant::SinZ:
+        case Variant::CosZ:
+        case Variant::ExpZ:
+        case Variant::SinhZ:
+        case Variant::CoshZ:
+        case Variant::TanZ:
+            dispatch_fp64(p, out);
+            break;
         default: break;  // Variant::Custom is intercepted before this dispatch
     }
 }
@@ -532,6 +612,88 @@ void field_variant_impl(const MapParams& p, FieldOutput& out) {
     }
 }
 
+template <Variant V, Metric M, IterResultMask NeedMask>
+void field_variant_fx64_impl(const MapParams& p, FieldOutput& out) {
+    static_assert(!variant_is_transcendental_v<V>(),
+        "Fx64 integer field renderer only supports quadratic variants.");
+    static_assert(M != Metric::MinPairwiseDist,
+        "Fx64 integer field renderer does not handle pairwise distance.");
+
+    const int W = p.width;
+    const int H = p.height;
+    const Fx64ViewportRaw vp = make_fx64_viewport_raw(
+        p.center_re, p.center_im, p.scale, W, H,
+        p.julia_re, p.julia_im, p.bailout, p.bailout_sq);
+
+    const int thread_count = resolve_render_threads(p.render_threads);
+    constexpr bool is_escape = (M == Metric::Escape);
+    constexpr int tile_size = 32;
+    const int tiles_x = ceil_div(W, tile_size);
+    const int tiles_y = ceil_div(H, tile_size);
+    const int tile_count = tiles_x * tiles_y;
+
+    if constexpr (is_escape) {
+        out.iter_u32.assign(static_cast<size_t>(W) * H, 0u);
+        out.norm_f32.assign(static_cast<size_t>(W) * H, 0.0f);
+    } else {
+        out.field_f64.assign(static_cast<size_t>(W) * H, 0.0);
+    }
+
+    const Cx<Fx64> c_const{Fx64{vp.julia_re_raw}, Fx64{vp.julia_im_raw}};
+
+    #pragma omp parallel for num_threads(thread_count) schedule(dynamic, 1)
+    for (int tile = 0; tile < tile_count; tile++) {
+        const int tile_x = tile % tiles_x;
+        const int tile_y = tile / tiles_x;
+        const int x0 = tile_x * tile_size;
+        const int y0 = tile_y * tile_size;
+        const int x1 = std::min(W, x0 + tile_size);
+        const int y1 = std::min(H, y0 + tile_size);
+
+        for (int y = y0; y < y1; y++) {
+            const Fx64 im{fx64_pixel_im_raw(vp, y)};
+            for (int x = x0; x < x1; x++) {
+                const Fx64 re{fx64_pixel_re_raw(vp, x)};
+
+                Cx<Fx64> z0, c;
+                if (p.julia) {
+                    z0 = Cx<Fx64>{re, im};
+                    c  = c_const;
+                } else {
+                    z0 = Cx<Fx64>{Fx64{INT64_C(0)}, Fx64{INT64_C(0)}};
+                    c  = Cx<Fx64>{re, im};
+                }
+
+                const IterResult r = iterate_fx64_int_masked<NeedMask, V>(
+                    z0, c, p.iterations, vp.bailout_raw, vp.bailout2_q57);
+
+                const size_t idx = static_cast<size_t>(y) * W + x;
+                if constexpr (is_escape) {
+                    out.iter_u32[idx] = r.escaped
+                        ? static_cast<uint32_t>(r.iter)
+                        : static_cast<uint32_t>(p.iterations);
+                    out.norm_f32[idx] = r.escaped ? static_cast<float>(r.norm) : 0.0f;
+                } else {
+                    out.field_f64[idx] = raw_field_value<M>(r);
+                }
+            }
+        }
+    }
+
+    if constexpr (!is_escape) {
+        double lo =  std::numeric_limits<double>::infinity();
+        double hi = -std::numeric_limits<double>::infinity();
+        for (double v : out.field_f64) {
+            if (std::isfinite(v)) {
+                if (v < lo) lo = v;
+                if (v > hi) hi = v;
+            }
+        }
+        out.field_min = std::isfinite(lo) ? lo : 0.0;
+        out.field_max = std::isfinite(hi) ? hi : 1.0;
+    }
+}
+
 template <Variant V>
 void field_variant_fp64(const MapParams& p, FieldOutput& out) {
     switch (p.metric) {
@@ -550,17 +712,19 @@ void field_variant_fp64(const MapParams& p, FieldOutput& out) {
 
 template <Variant V>
 void field_variant_fx64(const MapParams& p, FieldOutput& out) {
+    static_assert(!variant_is_transcendental_v<V>(),
+        "Fx64 integer field renderer only supports quadratic variants.");
     switch (p.metric) {
         case Metric::Escape:
-            field_variant_impl<V, Fx64, Metric::Escape, NeedEscapeSmooth>(p, out); break;
+            field_variant_fx64_impl<V, Metric::Escape, NeedEscapeSmooth>(p, out); break;
         case Metric::MinAbs:
-            field_variant_impl<V, Fx64, Metric::MinAbs, NeedMinAbs>(p, out); break;
+            field_variant_fx64_impl<V, Metric::MinAbs, NeedMinAbs>(p, out); break;
         case Metric::MaxAbs:
-            field_variant_impl<V, Fx64, Metric::MaxAbs, NeedMaxAbs>(p, out); break;
+            field_variant_fx64_impl<V, Metric::MaxAbs, NeedMaxAbs>(p, out); break;
         case Metric::Envelope:
-            field_variant_impl<V, Fx64, Metric::Envelope, NeedEnvelope>(p, out); break;
+            field_variant_fx64_impl<V, Metric::Envelope, NeedEnvelope>(p, out); break;
         case Metric::MinPairwiseDist:
-            field_variant_impl<V, Fx64, Metric::MinPairwiseDist, IterResultField::Extra>(p, out); break;
+            field_variant_impl<V, double, Metric::MinPairwiseDist, IterResultField::Extra>(p, out); break;
     }
 }
 
@@ -598,12 +762,14 @@ void dispatch_field_fx64(const MapParams& p, FieldOutput& out) {
         case Variant::Bird:       field_variant_fx64<Variant::Bird>      (p, out); break;
         case Variant::Mask:       field_variant_fx64<Variant::Mask>      (p, out); break;
         case Variant::Ship:       field_variant_fx64<Variant::Ship>      (p, out); break;
-        case Variant::SinZ:       field_variant_fx64<Variant::SinZ>      (p, out); break;
-        case Variant::CosZ:       field_variant_fx64<Variant::CosZ>      (p, out); break;
-        case Variant::ExpZ:       field_variant_fx64<Variant::ExpZ>      (p, out); break;
-        case Variant::SinhZ:      field_variant_fx64<Variant::SinhZ>     (p, out); break;
-        case Variant::CoshZ:      field_variant_fx64<Variant::CoshZ>     (p, out); break;
-        case Variant::TanZ:       field_variant_fx64<Variant::TanZ>      (p, out); break;
+        case Variant::SinZ:
+        case Variant::CosZ:
+        case Variant::ExpZ:
+        case Variant::SinhZ:
+        case Variant::CoshZ:
+        case Variant::TanZ:
+            dispatch_field_fp64(p, out);
+            break;
         default: break;  // Variant::Custom intercepted before this dispatch
     }
 }
@@ -620,7 +786,7 @@ MapStats render_map_field(const MapParams& p, FieldOutput& fo) {
     fo.height = p.height;
     fo.metric = p.metric;
 
-    const bool fx = use_fx64(p);
+    const bool fx = use_fx64(p) && supports_fx64_int_path(p, true);
     const auto t0 = std::chrono::steady_clock::now();
 
     if (fx) dispatch_field_fx64(p, fo);
@@ -648,7 +814,7 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
         return render_custom_openmp(p, out);
     }
 
-    const bool fx  = use_fx64(p);
+    const bool fx  = use_fx64(p) && supports_fx64_int_path(p, false);
     const std::string selected_engine = select_map_engine(p, fx);
 
     if (selected_engine == "hybrid") {
@@ -694,19 +860,36 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
         cp.julia_re     = p.julia_re;
         cp.julia_im     = p.julia_im;
         cp.metric_id    = static_cast<int>(p.metric);
-        auto cs = fsd_cuda::cuda_render_map(cp, out);
-        MapStats s;
-        s.elapsed_ms  = cs.elapsed_ms;
-        s.pixel_count = p.width * p.height;
-        s.scalar_used = cs.scalar_used;
-        s.engine_used = "cuda";
-        return s;
+        if (fx) {
+            const Fx64ViewportRaw vp = make_fx64_viewport_raw(
+                p.center_re, p.center_im, p.scale, p.width, p.height,
+                p.julia_re, p.julia_im, p.bailout, p.bailout_sq);
+            cp.fx64_viewport.first_re_raw = vp.first_re_raw;
+            cp.fx64_viewport.first_im_raw = vp.first_im_raw;
+            cp.fx64_viewport.step_re_raw = vp.step_re_raw;
+            cp.fx64_viewport.step_im_raw = vp.step_im_raw;
+            cp.fx64_viewport.julia_re_raw = vp.julia_re_raw;
+            cp.fx64_viewport.julia_im_raw = vp.julia_im_raw;
+            cp.fx64_viewport.bailout_raw = vp.bailout_raw;
+            cp.fx64_viewport.bailout2_q57 = vp.bailout2_q57;
+        }
+        try {
+            auto cs = fsd_cuda::cuda_render_map(cp, out);
+            MapStats s;
+            s.elapsed_ms  = cs.elapsed_ms;
+            s.pixel_count = p.width * p.height;
+            s.scalar_used = cs.scalar_used;
+            s.engine_used = "cuda";
+            return s;
+        } catch (...) {
+            // CUDA launch/runtime failures fall through to the CPU path.
+        }
     }
 #endif
 
     // AVX-512 path: all 10 polynomial variants, Julia mode, metrics 0-3 (fp64).
-    // For fx64 (IFMA52): Mandelbrot-only variant is supported; non-Mandelbrot
-    // variants fall through to scalar OpenMP for correctness.
+    // Fx64 AVX-512 currently falls back to the OpenMP integer path; the old
+    // IFMA route used fp64 escape checks inside the hot loop.
     // MinPairwiseDist (metric 4) is excluded: O(N²) orbit buffer not vectorised.
     // Smooth coloring needs per-pixel norm from IterResult — falls to OpenMP.
     // Trig variants need std::cmath — skip AVX-512 (scalar_fallback).
@@ -715,16 +898,12 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
                            && (selected_engine == "avx512")
                            && (static_cast<int>(p.metric) < 4)
                            && avx512_available();
-    // fx64 path: restrict to Mandelbrot escape only. IFMA52 metric
-    // accumulators and non-Mandelbrot variants fall through to OpenMP.
-    const bool can_avx = can_avx_base
-                      && (!fx || (p.variant == Variant::Mandelbrot && p.metric == Metric::Escape));
+    const bool can_avx = can_avx_base && !fx;
 
     if (can_avx) {
-        auto s = fx ? render_map_avx512_fx64(p, out)
-                    : render_map_avx512_fp64(p, out);
+        auto s = render_map_avx512_fp64(p, out);
         s.pixel_count = p.width * p.height;
-        s.scalar_used = fx ? "fx64" : "fp64";
+        s.scalar_used = "fp64";
         s.engine_used = "avx512";
         return s;
     }

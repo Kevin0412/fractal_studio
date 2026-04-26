@@ -14,6 +14,17 @@ namespace cv { class Mat; }
 
 namespace fsd_cuda {
 
+struct Fx64ViewportRaw {
+    int64_t first_re_raw = 0;
+    int64_t first_im_raw = 0;
+    int64_t step_re_raw = 0;
+    int64_t step_im_raw = 0;
+    int64_t julia_re_raw = 0;
+    int64_t julia_im_raw = 0;
+    uint64_t bailout_raw = 0;
+    uint64_t bailout2_q57 = 0;
+};
+
 struct CudaMapParams {
     double center_re = -0.75;
     double center_im =  0.0;
@@ -47,6 +58,9 @@ struct CudaMapParams {
     //   0=Escape, 1=MinAbs, 2=MaxAbs, 3=Envelope
     //   (MinPairwiseDist=4 is NOT supported on CUDA — use CPU path)
     int metric_id = 0;
+
+    // Host-precomputed Q6.57 viewport for the fx64 integer kernel.
+    Fx64ViewportRaw fx64_viewport;
 };
 
 struct CudaMapStats {

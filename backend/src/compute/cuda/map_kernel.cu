@@ -422,83 +422,79 @@ __device__ inline void step_fx64_variant(Fx64& zre, Fx64& zim, const Fx64& cre, 
     else                               step_mandelbrot_fx(zre, zim, cre, cim);
 }
 
-// ---- fx64 kernel ----
+// ---- fx64 integer kernel ----
 
-template <int VariantId, int MetricId>
-__global__ void fractal_fx64(
-    double center_re_d, double center_im_d, double scale_d,
-    int W, int H, int max_iter, double bail2, int colormap_id,
-    bool julia, double julia_re_p, double julia_im_p,
+__device__ inline double fx64_mag2_q57_to_abs_double(uint64_t mag2_q57) {
+    return sqrt(static_cast<double>(mag2_q57) / Fx64::SCALE);
+}
+
+__device__ inline double fx64_raw_to_double_u(uint64_t raw) {
+    return static_cast<double>(raw) / Fx64::SCALE;
+}
+
+template <int VariantId, int MetricId, bool Julia>
+__global__ void fractal_fx64_int_kernel(
+    Fx64ViewportRaw vp,
+    int W, int H, int max_iter, int colormap_id,
     uint8_t* __restrict__ out
 ) {
     const int px_x = blockIdx.x * blockDim.x + threadIdx.x;
     const int px_y = blockIdx.y * blockDim.y + threadIdx.y;
     if (px_x >= W || px_y >= H) return;
 
-    const double aspect  = static_cast<double>(W) / static_cast<double>(H);
-    const double span_im = scale_d;
-    const double span_re = scale_d * aspect;
-    const double re_d = (center_re_d - span_re * 0.5) + (static_cast<double>(px_x) + 0.5) / W * span_re;
-    const double im_d = (center_im_d + span_im * 0.5) - (static_cast<double>(px_y) + 0.5) / H * span_im;
+    const int64_t pixel_re_raw = vp.first_re_raw + static_cast<int64_t>(px_x) * vp.step_re_raw;
+    const int64_t pixel_im_raw = vp.first_im_raw - static_cast<int64_t>(px_y) * vp.step_im_raw;
 
-    // Initialise z and c in Fx64 based on julia flag.
     Fx64 zre, zim, cre, cim;
-    if (julia) {
-        zre = Fx64::from_double(re_d);
-        zim = Fx64::from_double(im_d);
-        cre = Fx64::from_double(julia_re_p);
-        cim = Fx64::from_double(julia_im_p);
+    if constexpr (Julia) {
+        zre = {pixel_re_raw};
+        zim = {pixel_im_raw};
+        cre = {vp.julia_re_raw};
+        cim = {vp.julia_im_raw};
     } else {
         zre = {0LL};
         zim = {0LL};
-        cre = Fx64::from_double(re_d);
-        cim = Fx64::from_double(im_d);
+        cre = {pixel_re_raw};
+        cim = {pixel_im_raw};
     }
 
     constexpr bool track_min = (MetricId == 1 || MetricId == 3);
     constexpr bool track_max = (MetricId == 2 || MetricId == 3);
-    double mn = INFINITY;
-    double mx = 0.0;
-    if constexpr (track_min || track_max) {
-        const double fre0 = zre.to_double();
-        const double fim0 = zim.to_double();
-        const double init_abs2 = fre0 * fre0 + fim0 * fim0;
-        mn = init_abs2;
-        mx = init_abs2;
-    }
+    uint64_t mn = UINT64_MAX;
+    uint64_t mx = 0;
 
     // Apply step THEN check — matches escape_time.hpp CPU convention.
     int i = 0;
     for (; i < max_iter; i++) {
         step_fx64_variant<VariantId>(zre, zim, cre, cim);
 
-        // Escape check in fp64 (avoids fixed-point overflow for large |z|)
-        const double fre = zre.to_double();
-        const double fim = zim.to_double();
-        const bool finite_z = isfinite(fre) && isfinite(fim);
-        const double abs2 = finite_z ? (fre * fre + fim * fim) : INFINITY;
-        if constexpr (track_min) {
-            if (abs2 < mn) mn = abs2;
+        bool escaped = fx64_component_escaped_q57(zre.raw, zim.raw, vp.bailout_raw);
+        if constexpr (track_min || track_max) {
+            const uint64_t mag2_q57 = fx64_mag2_q57_sat(zre.raw, zim.raw);
+            if constexpr (track_min) mn = mag2_q57 < mn ? mag2_q57 : mn;
+            if constexpr (track_max) mx = mag2_q57 > mx ? mag2_q57 : mx;
+            escaped = escaped || (mag2_q57 > vp.bailout2_q57);
+        } else if (!escaped) {
+            escaped = fx64_escaped_q57(zre.raw, zim.raw, vp.bailout2_q57);
         }
-        if constexpr (track_max) {
-            if (abs2 > mx) mx = abs2;
-        }
-        if (!finite_z || abs2 > bail2) break;
+        if (escaped) break;
     }
 
     uint8_t* px = out + (static_cast<size_t>(px_y) * W + px_x) * 3;
 
     if constexpr (MetricId == 1) {
-        const double bailout = sqrt(bail2);
-        const double v01 = fmin(1.0, sqrt(mn) / bailout);
+        const double bailout = fx64_raw_to_double_u(vp.bailout_raw);
+        const double v01 = bailout > 0.0 ? fmin(1.0, fx64_mag2_q57_to_abs_double(mn) / bailout) : 0.0;
         colorize_field_bgr(v01, colormap_id, px);
     } else if constexpr (MetricId == 2) {
-        const double bailout = sqrt(bail2);
-        const double v01 = fmin(1.0, sqrt(mx) / bailout);
+        const double bailout = fx64_raw_to_double_u(vp.bailout_raw);
+        const double v01 = bailout > 0.0 ? fmin(1.0, fx64_mag2_q57_to_abs_double(mx) / bailout) : 0.0;
         colorize_field_bgr(v01, colormap_id, px);
     } else if constexpr (MetricId == 3) {
-        const double bailout = sqrt(bail2);
-        const double v01 = fmin(1.0, 0.5 * (sqrt(mn) + sqrt(mx)) / bailout);
+        const double bailout = fx64_raw_to_double_u(vp.bailout_raw);
+        const double v01 = bailout > 0.0
+            ? fmin(1.0, 0.5 * (fx64_mag2_q57_to_abs_double(mn) + fx64_mag2_q57_to_abs_double(mx)) / bailout)
+            : 0.0;
         colorize_field_bgr(v01, colormap_id, px);
     } else {
         colorize_escape_bgr(i, max_iter, colormap_id, px);
@@ -562,13 +558,22 @@ static void launch_fp64(const CudaMapParams& p, dim3 grid, dim3 block, double ba
     }
 }
 
+template <int VariantId, int MetricId, bool Julia>
+static void launch_fx64_one(const CudaMapParams& p, dim3 grid, dim3 block, uint8_t* out) {
+    fractal_fx64_int_kernel<VariantId, MetricId, Julia><<<grid, block>>>(
+        p.fx64_viewport, p.width, p.height, p.iterations, p.colormap_id, out);
+}
+
+template <int VariantId, int MetricId>
+static void launch_fx64_julia(const CudaMapParams& p, dim3 grid, dim3 block, uint8_t* out) {
+    if (p.julia) launch_fx64_one<VariantId, MetricId, true>(p, grid, block, out);
+    else         launch_fx64_one<VariantId, MetricId, false>(p, grid, block, out);
+}
+
 template <int MetricId>
-static void launch_fx64_metric(const CudaMapParams& p, dim3 grid, dim3 block, double bail2, uint8_t* out) {
+static void launch_fx64_metric(const CudaMapParams& p, dim3 grid, dim3 block, uint8_t* out) {
 #define FSD_LAUNCH_FX64(VID) \
-    fractal_fx64<VID, MetricId><<<grid, block>>>( \
-        p.center_re, p.center_im, p.scale, \
-        p.width, p.height, p.iterations, bail2, p.colormap_id, \
-        p.julia, p.julia_re, p.julia_im, out)
+    launch_fx64_julia<VID, MetricId>(p, grid, block, out)
 
     switch (p.variant_id) {
         case 1:  FSD_LAUNCH_FX64(1); break;
@@ -585,12 +590,12 @@ static void launch_fx64_metric(const CudaMapParams& p, dim3 grid, dim3 block, do
 #undef FSD_LAUNCH_FX64
 }
 
-static void launch_fx64(const CudaMapParams& p, dim3 grid, dim3 block, double bail2, uint8_t* out) {
+static void launch_fx64(const CudaMapParams& p, dim3 grid, dim3 block, uint8_t* out) {
     switch (p.metric_id) {
-        case 1:  launch_fx64_metric<1>(p, grid, block, bail2, out); break;
-        case 2:  launch_fx64_metric<2>(p, grid, block, bail2, out); break;
-        case 3:  launch_fx64_metric<3>(p, grid, block, bail2, out); break;
-        default: launch_fx64_metric<0>(p, grid, block, bail2, out); break;
+        case 1:  launch_fx64_metric<1>(p, grid, block, out); break;
+        case 2:  launch_fx64_metric<2>(p, grid, block, out); break;
+        case 3:  launch_fx64_metric<3>(p, grid, block, out); break;
+        default: launch_fx64_metric<0>(p, grid, block, out); break;
     }
 }
 
@@ -617,7 +622,7 @@ CudaMapStats cuda_render_map(const CudaMapParams& p, cv::Mat& out) {
     CUDA_CHECK(cudaEventRecord(ev_start));
 
     if (use_fx) {
-        launch_fx64(p, grid, block, bail2, g_devbuf.d);
+        launch_fx64(p, grid, block, g_devbuf.d);
     } else {
         launch_fp64(p, grid, block, bail2, g_devbuf.d);
     }

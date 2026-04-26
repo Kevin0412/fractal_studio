@@ -12,7 +12,7 @@
 // Arithmetic rules:
 //   add / sub  → direct int64 add/sub (no overflow in practice — values stay < 64)
 //   mul / sqr  → __int128 intermediate: ((__int128)a * b) >> 57
-//   cabs       → sqrt via fp64 round-trip (cheap, used only on escape check)
+//   cabs       → sqrt via fp64 round-trip for non-hot output/helper paths
 //   from/to    → round toward zero, saturating
 //
 // This header is self-contained — include it wherever Fx64 kernels are needed.
@@ -21,6 +21,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 
 namespace fsd::compute {
 
@@ -58,18 +59,33 @@ struct Fx64 {
     // Arithmetic
     Fx64 operator+(Fx64 b) const noexcept { return Fx64{ raw + b.raw }; }
     Fx64 operator-(Fx64 b) const noexcept { return Fx64{ raw - b.raw }; }
-    Fx64 operator-()        const noexcept { return Fx64{ -raw }; }
+    Fx64 operator-()        const noexcept {
+        return Fx64{ raw == std::numeric_limits<int64_t>::min()
+            ? std::numeric_limits<int64_t>::max()
+            : -raw };
+    }
 
     // Multiply: use __int128 to avoid overflow in the product
     Fx64 operator*(Fx64 b) const noexcept {
         const __int128 p = static_cast<__int128>(raw) * b.raw;
-        return Fx64{ static_cast<int64_t>(p >> FRAC) };
+        const __int128 q = p >> FRAC;
+        if (q > static_cast<__int128>(std::numeric_limits<int64_t>::max())) {
+            return Fx64{std::numeric_limits<int64_t>::max()};
+        }
+        if (q < static_cast<__int128>(std::numeric_limits<int64_t>::min())) {
+            return Fx64{std::numeric_limits<int64_t>::min()};
+        }
+        return Fx64{ static_cast<int64_t>(q) };
     }
 
     // Square (a == b optimised path)
     Fx64 sqr() const noexcept {
         const __int128 p = static_cast<__int128>(raw) * raw;
-        return Fx64{ static_cast<int64_t>(p >> FRAC) };
+        const __int128 q = p >> FRAC;
+        if (q > static_cast<__int128>(std::numeric_limits<int64_t>::max())) {
+            return Fx64{std::numeric_limits<int64_t>::max()};
+        }
+        return Fx64{ static_cast<int64_t>(q) };
     }
 
     // Comparisons
@@ -82,11 +98,15 @@ struct Fx64 {
 
 // Scalar overload points for Fx64
 inline Fx64 scalar_abs(Fx64 x) noexcept {
-    return x.raw >= 0 ? x : Fx64{ -x.raw };
+    if (x.raw >= 0) return x;
+    if (x.raw == std::numeric_limits<int64_t>::min()) {
+        return Fx64{std::numeric_limits<int64_t>::max()};
+    }
+    return Fx64{ -x.raw };
 }
 
 inline Fx64 scalar_sqrt(Fx64 x) noexcept {
-    // Route through fp64 — only called for cabs in the escape check.
+    // Route through fp64 outside the fx64 render hot loops.
     return Fx64::from_double(std::sqrt(x.to_double()));
 }
 

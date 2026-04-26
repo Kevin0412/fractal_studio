@@ -100,14 +100,14 @@ bool map_engine_supported(const MapParams& p, const std::string& engine, bool fx
     if (p.variant == Variant::Custom || p.custom_step_fn) return engine == "openmp";
     if (p.smooth) return engine == "openmp";
     if (variant_needs_scalar_fallback(p.variant)) return engine == "openmp";
+    if (fx && p.metric == Metric::MinPairwiseDist) return engine == "openmp";
 
     const RuntimeCapabilities c = runtime_capabilities();
     if (engine == "openmp") return true;
 
     if (engine == "avx512") {
         if (!c.avx512_runtime || !is_vector_metric_supported(p.metric)) return false;
-        if (!fx) return true;
-        return p.variant == Variant::Mandelbrot && p.metric == Metric::Escape;
+        return !fx;
     }
 
     if (engine == "cuda") {

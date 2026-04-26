@@ -18,12 +18,14 @@
 #pragma once
 
 #include "complex.hpp"
+#include "fx64_raw.hpp"
 #include "variants.hpp"
 
 #include <algorithm>
 #include <cstdint>
 #include <cmath>
 #include <limits>
+#include <type_traits>
 #include <vector>
 
 namespace fsd::compute {
@@ -92,6 +94,73 @@ struct IterResult {
     IterResultMask valid_mask;
 };
 
+template <IterResultMask NeedMask, Variant V>
+inline IterResult iterate_fx64_int_masked(
+    Cx<Fx64> z,
+    const Cx<Fx64>& c,
+    int max_iter,
+    uint64_t bailout_raw,
+    uint64_t bailout2_q57
+) {
+    static_assert(!iter_result_wants(NeedMask, IterResultField::Extra),
+        "Use iterate_pairwise for MinPairwiseDist.");
+    static_assert(!variant_is_transcendental_v<V>(),
+        "Fx64 integer iteration only supports quadratic variants.");
+
+    IterResult r{};
+    r.iter    = 0;
+    r.min_abs = std::numeric_limits<double>::infinity();
+    r.max_abs = 0.0;
+    r.extra   = std::numeric_limits<double>::infinity();
+    r.norm    = 0.0;
+    r.escaped = false;
+    r.valid_mask = 0;
+
+    if constexpr (iter_result_wants(NeedMask, IterResultField::Iter))    r.valid_mask |= IterResultField::Iter;
+    if constexpr (iter_result_wants(NeedMask, IterResultField::MinAbs))  r.valid_mask |= IterResultField::MinAbs;
+    if constexpr (iter_result_wants(NeedMask, IterResultField::MaxAbs))  r.valid_mask |= IterResultField::MaxAbs;
+    if constexpr (iter_result_wants(NeedMask, IterResultField::Norm))    r.valid_mask |= IterResultField::Norm;
+    if constexpr (iter_result_wants(NeedMask, IterResultField::Escaped)) r.valid_mask |= IterResultField::Escaped;
+
+    constexpr bool track_min = iter_result_wants(NeedMask, IterResultField::MinAbs);
+    constexpr bool track_max = iter_result_wants(NeedMask, IterResultField::MaxAbs);
+    constexpr bool wants_norm = iter_result_wants(NeedMask, IterResultField::Norm);
+
+    uint64_t min_mag2_raw = std::numeric_limits<uint64_t>::max();
+    uint64_t max_mag2_raw = 0;
+
+    for (int i = 0; i < max_iter; i++) {
+        z = variant_step<V, Fx64>(z, c);
+
+        uint64_t mag2_q57 = 0;
+        bool escaped_now = fx64_component_escaped_q57(z.re.raw, z.im.raw, bailout_raw);
+        if constexpr (track_min || track_max || wants_norm) {
+            mag2_q57 = fx64_mag2_q57_sat_cpu(z.re.raw, z.im.raw);
+            if constexpr (track_min) min_mag2_raw = std::min(min_mag2_raw, mag2_q57);
+            if constexpr (track_max) max_mag2_raw = std::max(max_mag2_raw, mag2_q57);
+            escaped_now = escaped_now || (mag2_q57 > bailout2_q57);
+        } else if (!escaped_now) {
+            mag2_q57 = fx64_mag2_q57_sat_cpu(z.re.raw, z.im.raw);
+            escaped_now = mag2_q57 > bailout2_q57;
+        }
+
+        if (escaped_now) {
+            if constexpr (iter_result_wants(NeedMask, IterResultField::Iter))    r.iter = i;
+            if constexpr (iter_result_wants(NeedMask, IterResultField::Norm))    r.norm = fx64_mag2_q57_to_double(mag2_q57);
+            if constexpr (iter_result_wants(NeedMask, IterResultField::Escaped)) r.escaped = true;
+            if constexpr (track_min) r.min_abs = fx64_mag2_q57_to_abs(min_mag2_raw);
+            if constexpr (track_max) r.max_abs = fx64_mag2_q57_to_abs(max_mag2_raw);
+            return r;
+        }
+    }
+
+    if constexpr (iter_result_wants(NeedMask, IterResultField::Iter))    r.iter = max_iter;
+    if constexpr (iter_result_wants(NeedMask, IterResultField::Escaped)) r.escaped = false;
+    if constexpr (track_min) r.min_abs = fx64_mag2_q57_to_abs(min_mag2_raw);
+    if constexpr (track_max) r.max_abs = fx64_mag2_q57_to_abs(max_mag2_raw);
+    return r;
+}
+
 // Iterate up to max_iter steps of variant V on seed (z0, c). NeedMask is a
 // compile-time contract: unused metric maintenance is compiled out of hot loops.
 template <IterResultMask NeedMask, Variant V, typename S>
@@ -104,6 +173,8 @@ inline IterResult iterate_masked(
 ) {
     static_assert(!iter_result_wants(NeedMask, IterResultField::Extra),
         "Use iterate_pairwise for MinPairwiseDist.");
+    static_assert(!std::is_same_v<S, Fx64>,
+        "Use iterate_fx64_int_masked for Fx64 render paths.");
 
     IterResult r{};
     r.iter    = 0;
@@ -179,6 +250,8 @@ inline IterResult iterate_pairwise(
     int pairwise_cap,
     std::vector<Cx<S>>& orbit_scratch
 ) {
+    static_assert(!std::is_same_v<S, Fx64>,
+        "Fx64 MinPairwiseDist currently falls back to the fp64 CPU path.");
     IterResult r{};
     r.iter    = 0;
     r.min_abs = std::numeric_limits<double>::infinity();

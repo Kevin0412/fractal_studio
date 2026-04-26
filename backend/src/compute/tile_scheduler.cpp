@@ -4,6 +4,7 @@
 
 #include "tile_scheduler.hpp"
 #include "engine_select.hpp"
+#include "fx64_raw.hpp"
 #include "map_kernel.hpp"
 #include "map_kernel_avx512.hpp"
 #include "parallel.hpp"
@@ -49,6 +50,14 @@ static std::vector<Tile> make_tiles(int W, int H, int tile_size) {
         }
     }
     return tiles;
+}
+
+static bool supports_fx64_int_path(const MapParams& p) {
+    const int variant_id = static_cast<int>(p.variant);
+    return variant_id >= 0
+        && variant_id <= 9
+        && p.metric != Metric::MinPairwiseDist
+        && !p.smooth;
 }
 
 // ---- Worker EMA throughput tracker ----
@@ -103,9 +112,8 @@ static double render_tile_cpu(
     cv::Mat tile_mat = out(cv::Rect(t.x, t.y, t.w, t.h));
 
     MapStats stats;
-    if (use_avx && p.variant == Variant::Mandelbrot && p.metric == Metric::Escape) {
-        stats = use_fx ? render_map_avx512_fx64(p, tile_mat)
-                       : render_map_avx512_fp64(p, tile_mat);
+    if (use_avx && !use_fx) {
+        stats = render_map_avx512_fp64(p, tile_mat);
     } else {
         // OpenMP path (single-threaded for this tile since the outer scheduler
         // calls render_tile_cpu from multiple CPU workers concurrently).
@@ -144,6 +152,19 @@ static double render_tile_gpu(
     cp.julia_re     = base.julia_re;
     cp.julia_im     = base.julia_im;
     cp.metric_id    = static_cast<int>(base.metric);
+    if (use_fx) {
+        const Fx64ViewportRaw vp = make_fx64_viewport_raw(
+            cp.center_re, cp.center_im, cp.scale, cp.width, cp.height,
+            cp.julia_re, cp.julia_im, cp.bailout, cp.bailout_sq);
+        cp.fx64_viewport.first_re_raw = vp.first_re_raw;
+        cp.fx64_viewport.first_im_raw = vp.first_im_raw;
+        cp.fx64_viewport.step_re_raw = vp.step_re_raw;
+        cp.fx64_viewport.step_im_raw = vp.step_im_raw;
+        cp.fx64_viewport.julia_re_raw = vp.julia_re_raw;
+        cp.fx64_viewport.julia_im_raw = vp.julia_im_raw;
+        cp.fx64_viewport.bailout_raw = vp.bailout_raw;
+        cp.fx64_viewport.bailout2_q57 = vp.bailout2_q57;
+    }
 
     // cuda_render_map does cudaMemcpy into a contiguous buffer; passing a submat
     // (whose rows are separated by the full-image stride) would corrupt adjacent
@@ -170,7 +191,8 @@ TileSchedulerStats render_map_hybrid(
 
     std::atomic<size_t> next_tile{0};
 
-    const bool fx       = (p.scalar_type == "fx64") || (p.scalar_type == "auto" && p.scale < 1e-13);
+    const bool requested_fx = (p.scalar_type == "fx64") || (p.scalar_type == "auto" && p.scale < 1e-13);
+    const bool fx       = requested_fx && supports_fx64_int_path(p);
     const bool use_avx  = map_engine_supported(p, "avx512", fx);
     const bool use_gpu  = false
 #if USE_CUDA
@@ -200,7 +222,12 @@ TileSchedulerStats render_map_hybrid(
                 const Tile& tile = tiles[idx];
                 const auto t0 = std::chrono::steady_clock::now();
 #if USE_CUDA
-                const double ms = render_tile_gpu(p, tile, out, fx);
+                double ms = 0.0;
+                try {
+                    ms = render_tile_gpu(p, tile, out, fx);
+                } catch (...) {
+                    ms = render_tile_cpu(p, tile, out, use_avx, fx);
+                }
 #else
                 (void)tile;
                 const double ms = 0.0;
