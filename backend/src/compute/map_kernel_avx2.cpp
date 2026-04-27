@@ -46,6 +46,8 @@ template <int VariantId>
 inline void avx2_step(
     __m256d zre,
     __m256d zim,
+    __m256d zre2,
+    __m256d zim2,
     __m256d cre,
     __m256d cim,
     __m256d& new_re,
@@ -53,72 +55,49 @@ inline void avx2_step(
 ) {
     const __m256d two = _mm256_set1_pd(2.0);
     const __m256d zero = _mm256_setzero_pd();
+    const __m256d sq_re = _mm256_sub_pd(zre2, zim2);
     if constexpr (VariantId == 1) {
-        const __m256d re2 = _mm256_mul_pd(zre, zre);
-        const __m256d im2 = _mm256_mul_pd(zim, zim);
-        new_re = _mm256_add_pd(_mm256_sub_pd(re2, im2), cre);
-        new_im = _mm256_fnmadd_pd(_mm256_mul_pd(two, zre), zim, cim);
+        const __m256d sq_im = _mm256_mul_pd(_mm256_mul_pd(two, zre), zim);
+        new_re = _mm256_add_pd(sq_re, cre);
+        new_im = _mm256_fnmadd_pd(_mm256_set1_pd(1.0), sq_im, cim);
     } else if constexpr (VariantId == 2) {
         const __m256d wre = avx2_abs_pd(zre);
         const __m256d wim = avx2_abs_pd(zim);
-        const __m256d re2 = _mm256_mul_pd(wre, wre);
-        const __m256d im2 = _mm256_mul_pd(wim, wim);
-        new_re = _mm256_add_pd(_mm256_sub_pd(re2, im2), cre);
+        new_re = _mm256_add_pd(sq_re, cre);
         new_im = _mm256_add_pd(_mm256_mul_pd(_mm256_mul_pd(two, wre), wim), cim);
     } else if constexpr (VariantId == 3) {
         const __m256d wim = avx2_abs_pd(zim);
-        const __m256d re2 = _mm256_mul_pd(zre, zre);
-        const __m256d im2 = _mm256_mul_pd(wim, wim);
-        new_re = _mm256_add_pd(_mm256_sub_pd(re2, im2), cre);
+        new_re = _mm256_add_pd(sq_re, cre);
         new_im = _mm256_add_pd(_mm256_mul_pd(_mm256_mul_pd(two, zre), wim), cim);
     } else if constexpr (VariantId == 4) {
         const __m256d wre = avx2_abs_pd(zre);
         const __m256d wim = _mm256_sub_pd(zero, zim);
-        const __m256d re2 = _mm256_mul_pd(wre, wre);
-        const __m256d im2 = _mm256_mul_pd(wim, wim);
-        new_re = _mm256_add_pd(_mm256_sub_pd(re2, im2), cre);
+        new_re = _mm256_add_pd(sq_re, cre);
         new_im = _mm256_add_pd(_mm256_mul_pd(_mm256_mul_pd(two, wre), wim), cim);
     } else if constexpr (VariantId == 5) {
-        const __m256d re2 = _mm256_mul_pd(zre, zre);
-        const __m256d im2 = _mm256_mul_pd(zim, zim);
-        const __m256d sq_re = _mm256_sub_pd(re2, im2);
         const __m256d sq_im = _mm256_mul_pd(_mm256_mul_pd(two, zre), zim);
         new_re = _mm256_add_pd(avx2_abs_pd(sq_re), cre);
         new_im = _mm256_add_pd(sq_im, cim);
     } else if constexpr (VariantId == 6) {
-        const __m256d re2 = _mm256_mul_pd(zre, zre);
-        const __m256d im2 = _mm256_mul_pd(zim, zim);
-        const __m256d sq_re = _mm256_sub_pd(re2, im2);
         const __m256d sq_im = _mm256_mul_pd(_mm256_mul_pd(two, zre), zim);
         new_re = _mm256_add_pd(avx2_abs_pd(sq_re), cre);
         new_im = _mm256_fnmadd_pd(_mm256_set1_pd(1.0), sq_im, cim);
     } else if constexpr (VariantId == 7) {
-        const __m256d re2 = _mm256_mul_pd(zre, zre);
-        const __m256d im2 = _mm256_mul_pd(zim, zim);
-        const __m256d sq_re = _mm256_sub_pd(re2, im2);
         const __m256d sq_im = _mm256_mul_pd(_mm256_mul_pd(two, zre), zim);
         new_re = _mm256_add_pd(avx2_abs_pd(sq_re), cre);
         new_im = _mm256_add_pd(avx2_abs_pd(sq_im), cim);
     } else if constexpr (VariantId == 8) {
         const __m256d wim = avx2_abs_pd(zim);
-        const __m256d re2 = _mm256_mul_pd(zre, zre);
-        const __m256d im2 = _mm256_mul_pd(wim, wim);
-        const __m256d sq_re = _mm256_sub_pd(re2, im2);
         const __m256d sq_im = _mm256_mul_pd(_mm256_mul_pd(two, zre), wim);
         new_re = _mm256_add_pd(avx2_abs_pd(sq_re), cre);
         new_im = _mm256_add_pd(sq_im, cim);
     } else if constexpr (VariantId == 9) {
         const __m256d wre = avx2_abs_pd(zre);
-        const __m256d re2 = _mm256_mul_pd(wre, wre);
-        const __m256d im2 = _mm256_mul_pd(zim, zim);
-        const __m256d sq_re = _mm256_sub_pd(re2, im2);
         const __m256d sq_im = _mm256_mul_pd(_mm256_mul_pd(two, wre), zim);
         new_re = _mm256_add_pd(avx2_abs_pd(sq_re), cre);
         new_im = _mm256_fnmadd_pd(_mm256_set1_pd(1.0), sq_im, cim);
     } else {
-        const __m256d re2 = _mm256_mul_pd(zre, zre);
-        const __m256d im2 = _mm256_mul_pd(zim, zim);
-        new_re = _mm256_add_pd(_mm256_sub_pd(re2, im2), cre);
+        new_re = _mm256_add_pd(sq_re, cre);
         new_im = _mm256_add_pd(_mm256_mul_pd(_mm256_mul_pd(two, zre), zim), cim);
     }
 }
@@ -169,23 +148,20 @@ void avx2_fp64_row(
             cim = vpx_im;
         }
 
+        __m256d zre2 = _mm256_mul_pd(zre, zre);
+        __m256d zim2 = _mm256_mul_pd(zim, zim);
         __m256d vmn = _mm256_set1_pd(std::numeric_limits<double>::infinity());
         __m256d vmx = vzero;
-        if (track_min || track_max) {
-            const __m256d init = _mm256_fmadd_pd(zim, zim, _mm256_mul_pd(zre, zre));
-            vmn = init;
-            vmx = init;
-        }
 
         int active = lane_mask;
         for (int i = 0; i < max_iter && active; ++i) {
             const __m256d active_vec = avx2_lane_mask_pd(active);
             __m256d new_re, new_im;
-            avx2_step<VariantId>(zre, zim, cre, cim, new_re, new_im);
-            zre = _mm256_blendv_pd(zre, new_re, active_vec);
-            zim = _mm256_blendv_pd(zim, new_im, active_vec);
+            avx2_step<VariantId>(zre, zim, zre2, zim2, cre, cim, new_re, new_im);
 
-            const __m256d n2 = _mm256_fmadd_pd(zim, zim, _mm256_mul_pd(zre, zre));
+            const __m256d new_re2 = _mm256_mul_pd(new_re, new_re);
+            const __m256d new_im2 = _mm256_mul_pd(new_im, new_im);
+            const __m256d n2 = _mm256_add_pd(new_re2, new_im2);
             if (track_min) {
                 vmn = _mm256_blendv_pd(vmn, _mm256_min_pd(vmn, n2), active_vec);
             }
@@ -202,6 +178,11 @@ void avx2_fp64_row(
                 }
                 active &= ~escaped;
             }
+
+            zre = _mm256_blendv_pd(zre, new_re, active_vec);
+            zim = _mm256_blendv_pd(zim, new_im, active_vec);
+            zre2 = _mm256_blendv_pd(zre2, new_re2, active_vec);
+            zim2 = _mm256_blendv_pd(zim2, new_im2, active_vec);
         }
 
         double mn_arr[4], mx_arr[4];

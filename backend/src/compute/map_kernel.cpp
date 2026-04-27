@@ -177,16 +177,17 @@ void render_variant_metric_impl(const MapParams& p, cv::Mat& out) {
     }
 }
 
-template <Variant V, Metric M, IterResultMask NeedMask>
-void render_variant_metric_fx64_impl(const MapParams& p, cv::Mat& out) {
+template <int FRAC, Variant V, Metric M, IterResultMask NeedMask>
+void render_variant_metric_fixed_impl(const MapParams& p, cv::Mat& out) {
     static_assert(!variant_is_transcendental_v<V>(),
-        "Fx64 integer renderer only supports quadratic variants.");
+        "Fixed-point integer renderer only supports quadratic variants.");
     static_assert(M != Metric::MinPairwiseDist,
-        "Fx64 integer renderer does not handle pairwise distance.");
+        "Fixed-point integer renderer does not handle pairwise distance.");
 
+    using S = Fixed64<FRAC>;
     const int W = p.width;
     const int H = p.height;
-    const Fx64ViewportRaw vp = make_fx64_viewport_raw(
+    const FixedViewportRaw<FRAC> vp = make_fixed_viewport_raw<FRAC>(
         p.center_re, p.center_im, p.scale, W, H,
         p.julia_re, p.julia_im, p.bailout, p.bailout_sq);
     const int thread_count = resolve_render_threads(p.render_threads);
@@ -195,7 +196,7 @@ void render_variant_metric_fx64_impl(const MapParams& p, cv::Mat& out) {
     const int tiles_y = ceil_div(H, tile_size);
     const int tile_count = tiles_x * tiles_y;
 
-    const Cx<Fx64> c_const{Fx64{vp.julia_re_raw}, Fx64{vp.julia_im_raw}};
+    const Cx<S> c_const{S{vp.julia_re_raw}, S{vp.julia_im_raw}};
 
     #pragma omp parallel for num_threads(thread_count) schedule(dynamic, 1)
     for (int tile = 0; tile < tile_count; tile++) {
@@ -208,22 +209,23 @@ void render_variant_metric_fx64_impl(const MapParams& p, cv::Mat& out) {
 
         for (int y = y0; y < y1; y++) {
             uint8_t* row = out.ptr<uint8_t>(y);
-            const Fx64 im{fx64_pixel_im_raw(vp, y)};
+            const S im{fixed_pixel_im_raw<FRAC>(vp, y)};
             for (int x = x0; x < x1; x++) {
-                const Fx64 re{fx64_pixel_re_raw(vp, x)};
+                const S re{fixed_pixel_re_raw<FRAC>(vp, x)};
 
-                Cx<Fx64> z0;
-                Cx<Fx64> c;
+                Cx<S> z0;
+                Cx<S> c;
                 if (p.julia) {
-                    z0 = Cx<Fx64>{re, im};
+                    z0 = Cx<S>{re, im};
                     c  = c_const;
                 } else {
-                    z0 = Cx<Fx64>{Fx64{INT64_C(0)}, Fx64{INT64_C(0)}};
-                    c  = Cx<Fx64>{re, im};
+                    z0 = Cx<S>{S{INT64_C(0)}, S{INT64_C(0)}};
+                    c  = Cx<S>{re, im};
                 }
 
-                const IterResult r = iterate_fx64_int_masked<NeedMask, V>(
-                    z0, c, p.iterations, vp.bailout_raw, vp.bailout2_q57);
+                constexpr bool component_gate = (FRAC == 59);
+                const IterResult r = iterate_fixed_int_masked<FRAC, component_gate, NeedMask, V>(
+                    z0, c, p.iterations, vp.bailout_raw, vp.bailout2_raw);
 
                 uint8_t* px = row + 3 * x;
                 if constexpr (M == Metric::Escape) {
@@ -265,20 +267,20 @@ void render_variant(const MapParams& p, cv::Mat& out) {
     }
 }
 
-template <Variant V>
-void render_variant_fx64(const MapParams& p, cv::Mat& out) {
+template <int FRAC, Variant V>
+void render_variant_fixed(const MapParams& p, cv::Mat& out) {
     static_assert(!variant_is_transcendental_v<V>(),
-        "Fx64 integer renderer only supports quadratic variants.");
+        "Fixed-point integer renderer only supports quadratic variants.");
     switch (p.metric) {
         case Metric::Escape:
-            render_variant_metric_fx64_impl<V, Metric::Escape, NeedEscape>(p, out);
+            render_variant_metric_fixed_impl<FRAC, V, Metric::Escape, NeedEscape>(p, out);
             break;
         case Metric::MinAbs:
-            render_variant_metric_fx64_impl<V, Metric::MinAbs, NeedMinAbs>(p, out); break;
+            render_variant_metric_fixed_impl<FRAC, V, Metric::MinAbs, NeedMinAbs>(p, out); break;
         case Metric::MaxAbs:
-            render_variant_metric_fx64_impl<V, Metric::MaxAbs, NeedMaxAbs>(p, out); break;
+            render_variant_metric_fixed_impl<FRAC, V, Metric::MaxAbs, NeedMaxAbs>(p, out); break;
         case Metric::Envelope:
-            render_variant_metric_fx64_impl<V, Metric::Envelope, NeedEnvelope>(p, out); break;
+            render_variant_metric_fixed_impl<FRAC, V, Metric::Envelope, NeedEnvelope>(p, out); break;
         case Metric::MinPairwiseDist:
             render_variant_metric_impl<V, double, Metric::MinPairwiseDist, IterResultField::Extra>(p, out); break;
     }
@@ -286,15 +288,36 @@ void render_variant_fx64(const MapParams& p, cv::Mat& out) {
 
 } // namespace
 
-// Determine whether to use Fx64 based on params.
-static bool use_fx64(const MapParams& p) {
-    if (p.scalar_type == "fx64") return true;
-    if (p.scalar_type == "fp64") return false;
+enum class FixedPrecision {
+    None,
+    Q657,
+    Q459,
+};
+
+static FixedPrecision requested_fixed_precision(const MapParams& p) {
+    if (p.scalar_type == "q4.59" || p.scalar_type == "q459" ||
+        p.scalar_type == "fx59" || p.scalar_type == "fixed59") {
+        return FixedPrecision::Q459;
+    }
+    if (p.scalar_type == "fx64" || p.scalar_type == "q6.57" ||
+        p.scalar_type == "q657" || p.scalar_type == "fixed57") {
+        return FixedPrecision::Q657;
+    }
+    if (p.scalar_type == "fp64") return FixedPrecision::None;
     // "auto": switch to Fx64 when scale < 1e-13 (fp64 loses too much precision).
-    return p.scale < 1e-13;
+    return p.scale < 1e-13 ? FixedPrecision::Q657 : FixedPrecision::None;
 }
 
-static bool supports_fx64_int_path(const MapParams& p, bool field_output = false) {
+static const char* fixed_precision_name(FixedPrecision precision) {
+    switch (precision) {
+        case FixedPrecision::Q459: return "q4.59";
+        case FixedPrecision::Q657: return "fx64";
+        case FixedPrecision::None: return "fp64";
+    }
+    return "fp64";
+}
+
+static bool supports_fixed_int_path(const MapParams& p, bool field_output = false) {
     const int variant_id = static_cast<int>(p.variant);
     if (variant_id < 0 || variant_id > 9) return false;
     if (p.metric == Metric::MinPairwiseDist) return false;
@@ -325,19 +348,20 @@ static void dispatch_fp64(const MapParams& p, cv::Mat& out) {
     }
 }
 
-// Dispatch fx64 variants (trig variants fall back to fp64 via apply_trig)
-static void dispatch_fx64(const MapParams& p, cv::Mat& out) {
+// Dispatch fixed-point variants (trig variants fall back to fp64).
+template <int FRAC>
+static void dispatch_fixed(const MapParams& p, cv::Mat& out) {
     switch (p.variant) {
-        case Variant::Mandelbrot: render_variant_fx64<Variant::Mandelbrot>(p, out); break;
-        case Variant::Tri:        render_variant_fx64<Variant::Tri>(p, out);        break;
-        case Variant::Boat:       render_variant_fx64<Variant::Boat>(p, out);       break;
-        case Variant::Duck:       render_variant_fx64<Variant::Duck>(p, out);       break;
-        case Variant::Bell:       render_variant_fx64<Variant::Bell>(p, out);       break;
-        case Variant::Fish:       render_variant_fx64<Variant::Fish>(p, out);       break;
-        case Variant::Vase:       render_variant_fx64<Variant::Vase>(p, out);       break;
-        case Variant::Bird:       render_variant_fx64<Variant::Bird>(p, out);       break;
-        case Variant::Mask:       render_variant_fx64<Variant::Mask>(p, out);       break;
-        case Variant::Ship:       render_variant_fx64<Variant::Ship>(p, out);       break;
+        case Variant::Mandelbrot: render_variant_fixed<FRAC, Variant::Mandelbrot>(p, out); break;
+        case Variant::Tri:        render_variant_fixed<FRAC, Variant::Tri>(p, out);        break;
+        case Variant::Boat:       render_variant_fixed<FRAC, Variant::Boat>(p, out);       break;
+        case Variant::Duck:       render_variant_fixed<FRAC, Variant::Duck>(p, out);       break;
+        case Variant::Bell:       render_variant_fixed<FRAC, Variant::Bell>(p, out);       break;
+        case Variant::Fish:       render_variant_fixed<FRAC, Variant::Fish>(p, out);       break;
+        case Variant::Vase:       render_variant_fixed<FRAC, Variant::Vase>(p, out);       break;
+        case Variant::Bird:       render_variant_fixed<FRAC, Variant::Bird>(p, out);       break;
+        case Variant::Mask:       render_variant_fixed<FRAC, Variant::Mask>(p, out);       break;
+        case Variant::Ship:       render_variant_fixed<FRAC, Variant::Ship>(p, out);       break;
         case Variant::SinZ:
         case Variant::CosZ:
         case Variant::ExpZ:
@@ -613,16 +637,17 @@ void field_variant_impl(const MapParams& p, FieldOutput& out) {
     }
 }
 
-template <Variant V, Metric M, IterResultMask NeedMask>
-void field_variant_fx64_impl(const MapParams& p, FieldOutput& out) {
+template <int FRAC, Variant V, Metric M, IterResultMask NeedMask>
+void field_variant_fixed_impl(const MapParams& p, FieldOutput& out) {
     static_assert(!variant_is_transcendental_v<V>(),
-        "Fx64 integer field renderer only supports quadratic variants.");
+        "Fixed-point integer field renderer only supports quadratic variants.");
     static_assert(M != Metric::MinPairwiseDist,
-        "Fx64 integer field renderer does not handle pairwise distance.");
+        "Fixed-point integer field renderer does not handle pairwise distance.");
 
+    using S = Fixed64<FRAC>;
     const int W = p.width;
     const int H = p.height;
-    const Fx64ViewportRaw vp = make_fx64_viewport_raw(
+    const FixedViewportRaw<FRAC> vp = make_fixed_viewport_raw<FRAC>(
         p.center_re, p.center_im, p.scale, W, H,
         p.julia_re, p.julia_im, p.bailout, p.bailout_sq);
 
@@ -640,7 +665,7 @@ void field_variant_fx64_impl(const MapParams& p, FieldOutput& out) {
         out.field_f64.assign(static_cast<size_t>(W) * H, 0.0);
     }
 
-    const Cx<Fx64> c_const{Fx64{vp.julia_re_raw}, Fx64{vp.julia_im_raw}};
+    const Cx<S> c_const{S{vp.julia_re_raw}, S{vp.julia_im_raw}};
 
     #pragma omp parallel for num_threads(thread_count) schedule(dynamic, 1)
     for (int tile = 0; tile < tile_count; tile++) {
@@ -652,21 +677,22 @@ void field_variant_fx64_impl(const MapParams& p, FieldOutput& out) {
         const int y1 = std::min(H, y0 + tile_size);
 
         for (int y = y0; y < y1; y++) {
-            const Fx64 im{fx64_pixel_im_raw(vp, y)};
+            const S im{fixed_pixel_im_raw<FRAC>(vp, y)};
             for (int x = x0; x < x1; x++) {
-                const Fx64 re{fx64_pixel_re_raw(vp, x)};
+                const S re{fixed_pixel_re_raw<FRAC>(vp, x)};
 
-                Cx<Fx64> z0, c;
+                Cx<S> z0, c;
                 if (p.julia) {
-                    z0 = Cx<Fx64>{re, im};
+                    z0 = Cx<S>{re, im};
                     c  = c_const;
                 } else {
-                    z0 = Cx<Fx64>{Fx64{INT64_C(0)}, Fx64{INT64_C(0)}};
-                    c  = Cx<Fx64>{re, im};
+                    z0 = Cx<S>{S{INT64_C(0)}, S{INT64_C(0)}};
+                    c  = Cx<S>{re, im};
                 }
 
-                const IterResult r = iterate_fx64_int_masked<NeedMask, V>(
-                    z0, c, p.iterations, vp.bailout_raw, vp.bailout2_q57);
+                constexpr bool component_gate = (FRAC == 59);
+                const IterResult r = iterate_fixed_int_masked<FRAC, component_gate, NeedMask, V>(
+                    z0, c, p.iterations, vp.bailout_raw, vp.bailout2_raw);
 
                 const size_t idx = static_cast<size_t>(y) * W + x;
                 if constexpr (is_escape) {
@@ -711,19 +737,19 @@ void field_variant_fp64(const MapParams& p, FieldOutput& out) {
     }
 }
 
-template <Variant V>
-void field_variant_fx64(const MapParams& p, FieldOutput& out) {
+template <int FRAC, Variant V>
+void field_variant_fixed(const MapParams& p, FieldOutput& out) {
     static_assert(!variant_is_transcendental_v<V>(),
-        "Fx64 integer field renderer only supports quadratic variants.");
+        "Fixed-point integer field renderer only supports quadratic variants.");
     switch (p.metric) {
         case Metric::Escape:
-            field_variant_fx64_impl<V, Metric::Escape, NeedEscapeSmooth>(p, out); break;
+            field_variant_fixed_impl<FRAC, V, Metric::Escape, NeedEscapeSmooth>(p, out); break;
         case Metric::MinAbs:
-            field_variant_fx64_impl<V, Metric::MinAbs, NeedMinAbs>(p, out); break;
+            field_variant_fixed_impl<FRAC, V, Metric::MinAbs, NeedMinAbs>(p, out); break;
         case Metric::MaxAbs:
-            field_variant_fx64_impl<V, Metric::MaxAbs, NeedMaxAbs>(p, out); break;
+            field_variant_fixed_impl<FRAC, V, Metric::MaxAbs, NeedMaxAbs>(p, out); break;
         case Metric::Envelope:
-            field_variant_fx64_impl<V, Metric::Envelope, NeedEnvelope>(p, out); break;
+            field_variant_fixed_impl<FRAC, V, Metric::Envelope, NeedEnvelope>(p, out); break;
         case Metric::MinPairwiseDist:
             field_variant_impl<V, double, Metric::MinPairwiseDist, IterResultField::Extra>(p, out); break;
     }
@@ -751,18 +777,19 @@ void dispatch_field_fp64(const MapParams& p, FieldOutput& out) {
     }
 }
 
-void dispatch_field_fx64(const MapParams& p, FieldOutput& out) {
+template <int FRAC>
+void dispatch_field_fixed(const MapParams& p, FieldOutput& out) {
     switch (p.variant) {
-        case Variant::Mandelbrot: field_variant_fx64<Variant::Mandelbrot>(p, out); break;
-        case Variant::Tri:        field_variant_fx64<Variant::Tri>       (p, out); break;
-        case Variant::Boat:       field_variant_fx64<Variant::Boat>      (p, out); break;
-        case Variant::Duck:       field_variant_fx64<Variant::Duck>      (p, out); break;
-        case Variant::Bell:       field_variant_fx64<Variant::Bell>      (p, out); break;
-        case Variant::Fish:       field_variant_fx64<Variant::Fish>      (p, out); break;
-        case Variant::Vase:       field_variant_fx64<Variant::Vase>      (p, out); break;
-        case Variant::Bird:       field_variant_fx64<Variant::Bird>      (p, out); break;
-        case Variant::Mask:       field_variant_fx64<Variant::Mask>      (p, out); break;
-        case Variant::Ship:       field_variant_fx64<Variant::Ship>      (p, out); break;
+        case Variant::Mandelbrot: field_variant_fixed<FRAC, Variant::Mandelbrot>(p, out); break;
+        case Variant::Tri:        field_variant_fixed<FRAC, Variant::Tri>       (p, out); break;
+        case Variant::Boat:       field_variant_fixed<FRAC, Variant::Boat>      (p, out); break;
+        case Variant::Duck:       field_variant_fixed<FRAC, Variant::Duck>      (p, out); break;
+        case Variant::Bell:       field_variant_fixed<FRAC, Variant::Bell>      (p, out); break;
+        case Variant::Fish:       field_variant_fixed<FRAC, Variant::Fish>      (p, out); break;
+        case Variant::Vase:       field_variant_fixed<FRAC, Variant::Vase>      (p, out); break;
+        case Variant::Bird:       field_variant_fixed<FRAC, Variant::Bird>      (p, out); break;
+        case Variant::Mask:       field_variant_fixed<FRAC, Variant::Mask>      (p, out); break;
+        case Variant::Ship:       field_variant_fixed<FRAC, Variant::Ship>      (p, out); break;
         case Variant::SinZ:
         case Variant::CosZ:
         case Variant::ExpZ:
@@ -787,17 +814,24 @@ MapStats render_map_field(const MapParams& p, FieldOutput& fo) {
     fo.height = p.height;
     fo.metric = p.metric;
 
-    const bool fx = use_fx64(p) && supports_fx64_int_path(p, true);
+    const FixedPrecision fixed_precision = requested_fixed_precision(p);
+    const bool fx = fixed_precision != FixedPrecision::None &&
+                    supports_fixed_int_path(p, true);
     const auto t0 = std::chrono::steady_clock::now();
 
-    if (fx) dispatch_field_fx64(p, fo);
-    else    dispatch_field_fp64(p, fo);
+    if (fx && fixed_precision == FixedPrecision::Q459) {
+        dispatch_field_fixed<59>(p, fo);
+    } else if (fx) {
+        dispatch_field_fixed<57>(p, fo);
+    } else {
+        dispatch_field_fp64(p, fo);
+    }
 
     const auto t1 = std::chrono::steady_clock::now();
     MapStats s;
     s.elapsed_ms  = std::chrono::duration<double, std::milli>(t1 - t0).count();
     s.pixel_count = p.width * p.height;
-    s.scalar_used = fx ? "fx64" : "fp64";
+    s.scalar_used = fx ? fixed_precision_name(fixed_precision) : "fp64";
     s.engine_used = "openmp";
     fo.scalar_used = s.scalar_used;
     return s;
@@ -815,7 +849,9 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
         return render_custom_openmp(p, out);
     }
 
-    const bool fx  = use_fx64(p) && supports_fx64_int_path(p, false);
+    const FixedPrecision fixed_precision = requested_fixed_precision(p);
+    const bool fx = fixed_precision != FixedPrecision::None &&
+                    supports_fixed_int_path(p, false);
     const std::string selected_engine = select_map_engine(p, fx);
 
     if (selected_engine == "hybrid") {
@@ -854,15 +890,15 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
         cp.iterations = p.iterations;
         cp.bailout    = p.bailout;
         cp.bailout_sq = p.bailout_sq;
-        cp.scalar_type  = fx ? "fx64" : "fp64";
+        cp.scalar_type  = fx ? fixed_precision_name(fixed_precision) : "fp64";
         cp.colormap_id  = static_cast<int>(p.colormap);
         cp.variant_id   = static_cast<int>(p.variant);
         cp.julia        = p.julia;
         cp.julia_re     = p.julia_re;
         cp.julia_im     = p.julia_im;
         cp.metric_id    = static_cast<int>(p.metric);
-        if (fx) {
-            const Fx64ViewportRaw vp = make_fx64_viewport_raw(
+        if (fx && fixed_precision == FixedPrecision::Q459) {
+            const FixedViewportRaw<59> vp = make_fixed_viewport_raw<59>(
                 p.center_re, p.center_im, p.scale, p.width, p.height,
                 p.julia_re, p.julia_im, p.bailout, p.bailout_sq);
             cp.fx64_viewport.first_re_raw = vp.first_re_raw;
@@ -872,7 +908,21 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
             cp.fx64_viewport.julia_re_raw = vp.julia_re_raw;
             cp.fx64_viewport.julia_im_raw = vp.julia_im_raw;
             cp.fx64_viewport.bailout_raw = vp.bailout_raw;
-            cp.fx64_viewport.bailout2_q57 = vp.bailout2_q57;
+            cp.fx64_viewport.bailout2_raw = vp.bailout2_raw;
+            cp.fx64_viewport.bailout2_q57 = vp.bailout2_raw;
+        } else if (fx) {
+            const FixedViewportRaw<57> vp = make_fixed_viewport_raw<57>(
+                p.center_re, p.center_im, p.scale, p.width, p.height,
+                p.julia_re, p.julia_im, p.bailout, p.bailout_sq);
+            cp.fx64_viewport.first_re_raw = vp.first_re_raw;
+            cp.fx64_viewport.first_im_raw = vp.first_im_raw;
+            cp.fx64_viewport.step_re_raw = vp.step_re_raw;
+            cp.fx64_viewport.step_im_raw = vp.step_im_raw;
+            cp.fx64_viewport.julia_re_raw = vp.julia_re_raw;
+            cp.fx64_viewport.julia_im_raw = vp.julia_im_raw;
+            cp.fx64_viewport.bailout_raw = vp.bailout_raw;
+            cp.fx64_viewport.bailout2_raw = vp.bailout2_raw;
+            cp.fx64_viewport.bailout2_q57 = vp.bailout2_raw;
         }
         try {
             auto cs = fsd_cuda::cuda_render_map(cp, out);
@@ -927,8 +977,10 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
 
     const auto t0 = std::chrono::steady_clock::now();
 
-    if (fx) {
-        dispatch_fx64(p, out);
+    if (fx && fixed_precision == FixedPrecision::Q459) {
+        dispatch_fixed<59>(p, out);
+    } else if (fx) {
+        dispatch_fixed<57>(p, out);
     } else {
         dispatch_fp64(p, out);
     }
@@ -937,7 +989,7 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
     MapStats s;
     s.elapsed_ms   = std::chrono::duration<double, std::milli>(t1 - t0).count();
     s.pixel_count  = p.width * p.height;
-    s.scalar_used  = fx ? "fx64" : "fp64";
+    s.scalar_used  = fx ? fixed_precision_name(fixed_precision) : "fp64";
     s.engine_used  = "openmp";
     return s;
 }

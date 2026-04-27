@@ -241,6 +241,61 @@ __device__ inline void step_fp64_variant(double& zre, double& zim, double cre, d
     else                               step_mandelbrot(zre, zim, cre, cim);
 }
 
+template <int VariantId>
+__device__ inline void step_fp64_cached(
+    double zre,
+    double zim,
+    double zre2,
+    double zim2,
+    double cre,
+    double cim,
+    double& new_re,
+    double& new_im
+) {
+    const double sq_re = zre2 - zim2;
+    if constexpr (VariantId == 1) {
+        const double sq_im = 2.0 * zre * zim;
+        new_re = sq_re + cre;
+        new_im = -sq_im + cim;
+    } else if constexpr (VariantId == 2) {
+        const double sq_im = 2.0 * fabs(zre) * fabs(zim);
+        new_re = sq_re + cre;
+        new_im = sq_im + cim;
+    } else if constexpr (VariantId == 3) {
+        const double sq_im = 2.0 * zre * fabs(zim);
+        new_re = sq_re + cre;
+        new_im = sq_im + cim;
+    } else if constexpr (VariantId == 4) {
+        const double sq_im = 2.0 * fabs(zre) * (-zim);
+        new_re = sq_re + cre;
+        new_im = sq_im + cim;
+    } else if constexpr (VariantId == 5) {
+        const double sq_im = 2.0 * zre * zim;
+        new_re = fabs(sq_re) + cre;
+        new_im = sq_im + cim;
+    } else if constexpr (VariantId == 6) {
+        const double sq_im = 2.0 * zre * zim;
+        new_re = fabs(sq_re) + cre;
+        new_im = -sq_im + cim;
+    } else if constexpr (VariantId == 7) {
+        const double sq_im = 2.0 * zre * zim;
+        new_re = fabs(sq_re) + cre;
+        new_im = fabs(sq_im) + cim;
+    } else if constexpr (VariantId == 8) {
+        const double sq_im = 2.0 * zre * fabs(zim);
+        new_re = fabs(sq_re) + cre;
+        new_im = sq_im + cim;
+    } else if constexpr (VariantId == 9) {
+        const double sq_im = 2.0 * fabs(zre) * zim;
+        new_re = fabs(sq_re) + cre;
+        new_im = -sq_im + cim;
+    } else {
+        const double sq_im = 2.0 * zre * zim;
+        new_re = sq_re + cre;
+        new_im = sq_im + cim;
+    }
+}
+
 // ---- fp64 kernel ----
 
 template <int VariantId, int MetricId>
@@ -274,19 +329,22 @@ __global__ void fractal_fp64(
     constexpr bool track_max = (MetricId == 2 || MetricId == 3);
     double mn = INFINITY;
     double mx = 0.0;
-    if constexpr (track_min || track_max) {
-        const double init_abs2 = zre * zre + zim * zim;
-        mn = init_abs2;
-        mx = init_abs2;
-    }
+    double zre2 = zre * zre;
+    double zim2 = zim * zim;
 
     // Apply step THEN check — matches escape_time.hpp CPU convention so that
     // r.iter is identical on both paths (both return i when z_{i+1} escapes).
     int i = 0;
     for (; i < max_iter; i++) {
-        step_fp64_variant<VariantId>(zre, zim, cre, cim);
-        const bool finite_z = isfinite(zre) && isfinite(zim);
-        const double abs2 = finite_z ? (zre * zre + zim * zim) : INFINITY;
+        double next_re = 0.0;
+        double next_im = 0.0;
+        step_fp64_cached<VariantId>(zre, zim, zre2, zim2, cre, cim, next_re, next_im);
+        const bool finite_z = isfinite(next_re) && isfinite(next_im);
+        double next_re2 = 0.0;
+        double next_im2 = 0.0;
+        const double abs2 = finite_z
+            ? ((next_re2 = next_re * next_re) + (next_im2 = next_im * next_im))
+            : INFINITY;
         if constexpr (track_min) {
             if (abs2 < mn) mn = abs2;
         }
@@ -294,6 +352,10 @@ __global__ void fractal_fp64(
             if (abs2 > mx) mx = abs2;
         }
         if (!finite_z || abs2 > bail2) break;
+        zre = next_re;
+        zim = next_im;
+        zre2 = next_re2;
+        zim2 = next_im2;
     }
 
     uint8_t* px = out + (static_cast<size_t>(px_y) * W + px_x) * 3;
@@ -422,17 +484,99 @@ __device__ inline void step_fx64_variant(Fx64& zre, Fx64& zim, const Fx64& cre, 
     else                               step_mandelbrot_fx(zre, zim, cre, cim);
 }
 
-// ---- fx64 integer kernel ----
+// ---- fixed-point integer kernel ----
 
-__device__ inline double fx64_mag2_q57_to_abs_double(uint64_t mag2_q57) {
-    return sqrt(static_cast<double>(mag2_q57) / Fx64::SCALE);
+template <int FRAC>
+__device__ inline Fixed64<FRAC> fixed_abs(Fixed64<FRAC> x) {
+    if (x.raw >= 0) return x;
+    return {x.raw == INT64_MIN ? INT64_MAX : -x.raw};
 }
 
-__device__ inline double fx64_raw_to_double_u(uint64_t raw) {
-    return static_cast<double>(raw) / Fx64::SCALE;
+__device__ inline uint64_t add_u64_sat_cuda(uint64_t a, uint64_t b) {
+    const uint64_t sum = a + b;
+    return sum < a ? UINT64_MAX : sum;
 }
 
-template <int VariantId, int MetricId, bool Julia>
+__device__ inline int64_t u64_to_i64_sat_cuda(uint64_t value) {
+    return value > static_cast<uint64_t>(INT64_MAX)
+        ? INT64_MAX
+        : static_cast<int64_t>(value);
+}
+
+template <int FRAC>
+__device__ inline double fixed_mag2_to_abs_double(uint64_t mag2_raw) {
+    return sqrt(static_cast<double>(mag2_raw) / Fixed64<FRAC>::SCALE);
+}
+
+template <int FRAC>
+__device__ inline double fixed_raw_to_double_u(uint64_t raw) {
+    return static_cast<double>(raw) / Fixed64<FRAC>::SCALE;
+}
+
+template <int FRAC, int VariantId>
+__device__ inline void step_fixed_cached(
+    Fixed64<FRAC> zre,
+    Fixed64<FRAC> zim,
+    Fixed64<FRAC> zre2,
+    Fixed64<FRAC> zim2,
+    const Fixed64<FRAC>& cre,
+    const Fixed64<FRAC>& cim,
+    Fixed64<FRAC>& new_re,
+    Fixed64<FRAC>& new_im
+) {
+    using S = Fixed64<FRAC>;
+    const S sq_re = zre2 - zim2;
+    if constexpr (VariantId == 1) {
+        const S sq_im = (zre * zim) + (zre * zim);
+        new_re = sq_re + cre;
+        new_im = cim - sq_im;
+    } else if constexpr (VariantId == 2) {
+        const S ax = fixed_abs<FRAC>(zre);
+        const S ay = fixed_abs<FRAC>(zim);
+        const S sq_im = (ax * ay) + (ax * ay);
+        new_re = sq_re + cre;
+        new_im = sq_im + cim;
+    } else if constexpr (VariantId == 3) {
+        const S ay = fixed_abs<FRAC>(zim);
+        const S sq_im = (zre * ay) + (zre * ay);
+        new_re = sq_re + cre;
+        new_im = sq_im + cim;
+    } else if constexpr (VariantId == 4) {
+        const S ax = fixed_abs<FRAC>(zre);
+        const S neg_y = -zim;
+        const S sq_im = (ax * neg_y) + (ax * neg_y);
+        new_re = sq_re + cre;
+        new_im = sq_im + cim;
+    } else if constexpr (VariantId == 5) {
+        const S sq_im = (zre * zim) + (zre * zim);
+        new_re = fixed_abs<FRAC>(sq_re) + cre;
+        new_im = sq_im + cim;
+    } else if constexpr (VariantId == 6) {
+        const S sq_im = (zre * zim) + (zre * zim);
+        new_re = fixed_abs<FRAC>(sq_re) + cre;
+        new_im = cim - sq_im;
+    } else if constexpr (VariantId == 7) {
+        const S sq_im = (zre * zim) + (zre * zim);
+        new_re = fixed_abs<FRAC>(sq_re) + cre;
+        new_im = fixed_abs<FRAC>(sq_im) + cim;
+    } else if constexpr (VariantId == 8) {
+        const S ay = fixed_abs<FRAC>(zim);
+        const S sq_im = (zre * ay) + (zre * ay);
+        new_re = fixed_abs<FRAC>(sq_re) + cre;
+        new_im = sq_im + cim;
+    } else if constexpr (VariantId == 9) {
+        const S ax = fixed_abs<FRAC>(zre);
+        const S sq_im = (ax * zim) + (ax * zim);
+        new_re = fixed_abs<FRAC>(sq_re) + cre;
+        new_im = cim - sq_im;
+    } else {
+        const S sq_im = (zre * zim) + (zre * zim);
+        new_re = sq_re + cre;
+        new_im = sq_im + cim;
+    }
+}
+
+template <int FRAC, int VariantId, int MetricId, bool Julia>
 __global__ void fractal_fx64_int_kernel(
     Fx64ViewportRaw vp,
     int W, int H, int max_iter, int colormap_id,
@@ -444,8 +588,11 @@ __global__ void fractal_fx64_int_kernel(
 
     const int64_t pixel_re_raw = vp.first_re_raw + static_cast<int64_t>(px_x) * vp.step_re_raw;
     const int64_t pixel_im_raw = vp.first_im_raw - static_cast<int64_t>(px_y) * vp.step_im_raw;
+    (void)pixel_re_raw;
+    (void)pixel_im_raw;
 
-    Fx64 zre, zim, cre, cim;
+    using S = Fixed64<FRAC>;
+    S zre, zim, cre, cim;
     if constexpr (Julia) {
         zre = {pixel_re_raw};
         zim = {pixel_im_raw};
@@ -460,40 +607,64 @@ __global__ void fractal_fx64_int_kernel(
 
     constexpr bool track_min = (MetricId == 1 || MetricId == 3);
     constexpr bool track_max = (MetricId == 2 || MetricId == 3);
+    constexpr bool component_gate = (FRAC == 59);
     uint64_t mn = UINT64_MAX;
     uint64_t mx = 0;
+    uint64_t zre2_raw = fixed_square_q_sat_raw_cuda<FRAC>(zre.raw);
+    uint64_t zim2_raw = fixed_square_q_sat_raw_cuda<FRAC>(zim.raw);
+    S zre2{u64_to_i64_sat_cuda(zre2_raw)};
+    S zim2{u64_to_i64_sat_cuda(zim2_raw)};
 
     // Apply step THEN check — matches escape_time.hpp CPU convention.
     int i = 0;
     for (; i < max_iter; i++) {
-        step_fx64_variant<VariantId>(zre, zim, cre, cim);
+        S next_re{};
+        S next_im{};
+        step_fixed_cached<FRAC, VariantId>(zre, zim, zre2, zim2, cre, cim, next_re, next_im);
 
-        bool escaped = fx64_component_escaped_q57(zre.raw, zim.raw, vp.bailout_raw);
+        bool escaped = false;
+        uint64_t mag2_raw = 0;
+        uint64_t next_re2_raw = 0;
+        uint64_t next_im2_raw = 0;
+        if constexpr (component_gate && !(track_min || track_max)) {
+            escaped = fixed_component_escaped_q_cuda<FRAC>(
+                next_re.raw, next_im.raw, vp.bailout_raw);
+        }
         if constexpr (track_min || track_max) {
-            const uint64_t mag2_q57 = fx64_mag2_q57_sat(zre.raw, zim.raw);
-            if constexpr (track_min) mn = mag2_q57 < mn ? mag2_q57 : mn;
-            if constexpr (track_max) mx = mag2_q57 > mx ? mag2_q57 : mx;
-            escaped = escaped || (mag2_q57 > vp.bailout2_q57);
+            next_re2_raw = fixed_square_q_sat_raw_cuda<FRAC>(next_re.raw);
+            next_im2_raw = fixed_square_q_sat_raw_cuda<FRAC>(next_im.raw);
+            mag2_raw = add_u64_sat_cuda(next_re2_raw, next_im2_raw);
+            if constexpr (track_min) mn = mag2_raw < mn ? mag2_raw : mn;
+            if constexpr (track_max) mx = mag2_raw > mx ? mag2_raw : mx;
+            escaped = mag2_raw > vp.bailout2_raw;
         } else if (!escaped) {
-            escaped = fx64_escaped_q57(zre.raw, zim.raw, vp.bailout2_q57);
+            next_re2_raw = fixed_square_q_sat_raw_cuda<FRAC>(next_re.raw);
+            next_im2_raw = fixed_square_q_sat_raw_cuda<FRAC>(next_im.raw);
+            mag2_raw = add_u64_sat_cuda(next_re2_raw, next_im2_raw);
+            escaped = mag2_raw > vp.bailout2_raw;
         }
         if (escaped) break;
+
+        zre = next_re;
+        zim = next_im;
+        zre2 = {u64_to_i64_sat_cuda(next_re2_raw)};
+        zim2 = {u64_to_i64_sat_cuda(next_im2_raw)};
     }
 
     uint8_t* px = out + (static_cast<size_t>(px_y) * W + px_x) * 3;
 
     if constexpr (MetricId == 1) {
-        const double bailout = fx64_raw_to_double_u(vp.bailout_raw);
-        const double v01 = bailout > 0.0 ? fmin(1.0, fx64_mag2_q57_to_abs_double(mn) / bailout) : 0.0;
+        const double bailout = fixed_raw_to_double_u<FRAC>(vp.bailout_raw);
+        const double v01 = bailout > 0.0 ? fmin(1.0, fixed_mag2_to_abs_double<FRAC>(mn) / bailout) : 0.0;
         colorize_field_bgr(v01, colormap_id, px);
     } else if constexpr (MetricId == 2) {
-        const double bailout = fx64_raw_to_double_u(vp.bailout_raw);
-        const double v01 = bailout > 0.0 ? fmin(1.0, fx64_mag2_q57_to_abs_double(mx) / bailout) : 0.0;
+        const double bailout = fixed_raw_to_double_u<FRAC>(vp.bailout_raw);
+        const double v01 = bailout > 0.0 ? fmin(1.0, fixed_mag2_to_abs_double<FRAC>(mx) / bailout) : 0.0;
         colorize_field_bgr(v01, colormap_id, px);
     } else if constexpr (MetricId == 3) {
-        const double bailout = fx64_raw_to_double_u(vp.bailout_raw);
+        const double bailout = fixed_raw_to_double_u<FRAC>(vp.bailout_raw);
         const double v01 = bailout > 0.0
-            ? fmin(1.0, 0.5 * (fx64_mag2_q57_to_abs_double(mn) + fx64_mag2_q57_to_abs_double(mx)) / bailout)
+            ? fmin(1.0, 0.5 * (fixed_mag2_to_abs_double<FRAC>(mn) + fixed_mag2_to_abs_double<FRAC>(mx)) / bailout)
             : 0.0;
         colorize_field_bgr(v01, colormap_id, px);
     } else {
@@ -583,22 +754,22 @@ static void launch_fp64(const CudaMapParams& p, dim3 grid, dim3 block, double ba
     }
 }
 
-template <int VariantId, int MetricId, bool Julia>
-static void launch_fx64_one(const CudaMapParams& p, dim3 grid, dim3 block, uint8_t* out) {
-    fractal_fx64_int_kernel<VariantId, MetricId, Julia><<<grid, block>>>(
+template <int FRAC, int VariantId, int MetricId, bool Julia>
+static void launch_fixed_one(const CudaMapParams& p, dim3 grid, dim3 block, uint8_t* out) {
+    fractal_fx64_int_kernel<FRAC, VariantId, MetricId, Julia><<<grid, block>>>(
         p.fx64_viewport, p.width, p.height, p.iterations, p.colormap_id, out);
 }
 
-template <int VariantId, int MetricId>
-static void launch_fx64_julia(const CudaMapParams& p, dim3 grid, dim3 block, uint8_t* out) {
-    if (p.julia) launch_fx64_one<VariantId, MetricId, true>(p, grid, block, out);
-    else         launch_fx64_one<VariantId, MetricId, false>(p, grid, block, out);
+template <int FRAC, int VariantId, int MetricId>
+static void launch_fixed_julia(const CudaMapParams& p, dim3 grid, dim3 block, uint8_t* out) {
+    if (p.julia) launch_fixed_one<FRAC, VariantId, MetricId, true>(p, grid, block, out);
+    else         launch_fixed_one<FRAC, VariantId, MetricId, false>(p, grid, block, out);
 }
 
-template <int MetricId>
-static void launch_fx64_metric(const CudaMapParams& p, dim3 grid, dim3 block, uint8_t* out) {
+template <int FRAC, int MetricId>
+static void launch_fixed_metric(const CudaMapParams& p, dim3 grid, dim3 block, uint8_t* out) {
 #define FSD_LAUNCH_FX64(VID) \
-    launch_fx64_julia<VID, MetricId>(p, grid, block, out)
+    launch_fixed_julia<FRAC, VID, MetricId>(p, grid, block, out)
 
     switch (p.variant_id) {
         case 1:  FSD_LAUNCH_FX64(1); break;
@@ -615,19 +786,24 @@ static void launch_fx64_metric(const CudaMapParams& p, dim3 grid, dim3 block, ui
 #undef FSD_LAUNCH_FX64
 }
 
-static void launch_fx64(const CudaMapParams& p, dim3 grid, dim3 block, uint8_t* out) {
+template <int FRAC>
+static void launch_fixed(const CudaMapParams& p, dim3 grid, dim3 block, uint8_t* out) {
     switch (p.metric_id) {
-        case 1:  launch_fx64_metric<1>(p, grid, block, out); break;
-        case 2:  launch_fx64_metric<2>(p, grid, block, out); break;
-        case 3:  launch_fx64_metric<3>(p, grid, block, out); break;
-        default: launch_fx64_metric<0>(p, grid, block, out); break;
+        case 1:  launch_fixed_metric<FRAC, 1>(p, grid, block, out); break;
+        case 2:  launch_fixed_metric<FRAC, 2>(p, grid, block, out); break;
+        case 3:  launch_fixed_metric<FRAC, 3>(p, grid, block, out); break;
+        default: launch_fixed_metric<FRAC, 0>(p, grid, block, out); break;
     }
 }
 
 CudaMapStats cuda_render_map(const CudaMapParams& p, cv::Mat& out) {
     if (!cuda_available()) throw std::runtime_error("CUDA not available");
 
-    const bool use_fx = (p.scalar_type == "fx64");
+    const bool use_q459 = (p.scalar_type == "q4.59" || p.scalar_type == "q459" ||
+                           p.scalar_type == "fx59" || p.scalar_type == "fixed59");
+    const bool use_fx = use_q459 || p.scalar_type == "fx64" ||
+                        p.scalar_type == "q6.57" || p.scalar_type == "q657" ||
+                        p.scalar_type == "fixed57";
 
     std::lock_guard<std::mutex> lock(g_cuda_mutex);
 
@@ -646,8 +822,10 @@ CudaMapStats cuda_render_map(const CudaMapParams& p, cv::Mat& out) {
     CUDA_CHECK(cudaEventCreate(&ev_stop));
     CUDA_CHECK(cudaEventRecord(ev_start));
 
-    if (use_fx) {
-        launch_fx64(p, grid, block, g_devbuf.d);
+    if (use_q459) {
+        launch_fixed<59>(p, grid, block, g_devbuf.d);
+    } else if (use_fx) {
+        launch_fixed<57>(p, grid, block, g_devbuf.d);
     } else {
         launch_fp64(p, grid, block, bail2, g_devbuf.d);
     }
@@ -668,7 +846,7 @@ CudaMapStats cuda_render_map(const CudaMapParams& p, cv::Mat& out) {
 
     CudaMapStats s;
     s.elapsed_ms  = static_cast<double>(ms);
-    s.scalar_used = use_fx ? "fx64" : "fp64";
+    s.scalar_used = use_q459 ? "q4.59" : (use_fx ? "fx64" : "fp64");
     s.engine_used = "cuda";
     return s;
 }

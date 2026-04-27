@@ -94,19 +94,8 @@ struct IterResult {
     IterResultMask valid_mask;
 };
 
-template <IterResultMask NeedMask, Variant V>
-inline IterResult iterate_fx64_int_masked(
-    Cx<Fx64> z,
-    const Cx<Fx64>& c,
-    int max_iter,
-    uint64_t bailout_raw,
-    uint64_t bailout2_q57
-) {
-    static_assert(!iter_result_wants(NeedMask, IterResultField::Extra),
-        "Use iterate_pairwise for MinPairwiseDist.");
-    static_assert(!variant_is_transcendental_v<V>(),
-        "Fx64 integer iteration only supports quadratic variants.");
-
+template <IterResultMask NeedMask>
+inline IterResult make_iter_result() {
     IterResult r{};
     r.iter    = 0;
     r.min_abs = std::numeric_limits<double>::infinity();
@@ -119,8 +108,39 @@ inline IterResult iterate_fx64_int_masked(
     if constexpr (iter_result_wants(NeedMask, IterResultField::Iter))    r.valid_mask |= IterResultField::Iter;
     if constexpr (iter_result_wants(NeedMask, IterResultField::MinAbs))  r.valid_mask |= IterResultField::MinAbs;
     if constexpr (iter_result_wants(NeedMask, IterResultField::MaxAbs))  r.valid_mask |= IterResultField::MaxAbs;
+    if constexpr (iter_result_wants(NeedMask, IterResultField::Extra))   r.valid_mask |= IterResultField::Extra;
     if constexpr (iter_result_wants(NeedMask, IterResultField::Norm))    r.valid_mask |= IterResultField::Norm;
     if constexpr (iter_result_wants(NeedMask, IterResultField::Escaped)) r.valid_mask |= IterResultField::Escaped;
+    return r;
+}
+
+inline uint64_t add_u64_sat(uint64_t a, uint64_t b) noexcept {
+    const uint64_t sum = a + b;
+    return sum < a ? std::numeric_limits<uint64_t>::max() : sum;
+}
+
+inline int64_t u64_to_i64_sat(uint64_t value) noexcept {
+    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+        return std::numeric_limits<int64_t>::max();
+    }
+    return static_cast<int64_t>(value);
+}
+
+template <int FRAC, bool ComponentGate, IterResultMask NeedMask, Variant V>
+inline IterResult iterate_fixed_int_masked(
+    Cx<Fixed64<FRAC>> z,
+    const Cx<Fixed64<FRAC>>& c,
+    int max_iter,
+    uint64_t bailout_raw,
+    uint64_t bailout2_raw
+) {
+    static_assert(!iter_result_wants(NeedMask, IterResultField::Extra),
+        "Use iterate_pairwise for MinPairwiseDist.");
+    static_assert(!variant_is_transcendental_v<V>(),
+        "Fixed-point integer iteration only supports quadratic variants.");
+
+    using S = Fixed64<FRAC>;
+    IterResult r = make_iter_result<NeedMask>();
 
     constexpr bool track_min = iter_result_wants(NeedMask, IterResultField::MinAbs);
     constexpr bool track_max = iter_result_wants(NeedMask, IterResultField::MaxAbs);
@@ -129,35 +149,143 @@ inline IterResult iterate_fx64_int_masked(
     uint64_t min_mag2_raw = std::numeric_limits<uint64_t>::max();
     uint64_t max_mag2_raw = 0;
 
-    for (int i = 0; i < max_iter; i++) {
-        z = variant_step<V, Fx64>(z, c);
+    S x = z.re;
+    S y = z.im;
+    uint64_t x2_raw = fixed_square_q_sat_raw_cpu<FRAC>(x.raw);
+    uint64_t y2_raw = fixed_square_q_sat_raw_cpu<FRAC>(y.raw);
+    S x2{u64_to_i64_sat(x2_raw)};
+    S y2{u64_to_i64_sat(y2_raw)};
 
-        uint64_t mag2_q57 = 0;
-        bool escaped_now = fx64_component_escaped_q57(z.re.raw, z.im.raw, bailout_raw);
-        if constexpr (track_min || track_max || wants_norm) {
-            mag2_q57 = fx64_mag2_q57_sat_cpu(z.re.raw, z.im.raw);
-            if constexpr (track_min) min_mag2_raw = std::min(min_mag2_raw, mag2_q57);
-            if constexpr (track_max) max_mag2_raw = std::max(max_mag2_raw, mag2_q57);
-            escaped_now = escaped_now || (mag2_q57 > bailout2_q57);
-        } else if (!escaped_now) {
-            mag2_q57 = fx64_mag2_q57_sat_cpu(z.re.raw, z.im.raw);
-            escaped_now = mag2_q57 > bailout2_q57;
+    for (int i = 0; i < max_iter; i++) {
+        S nx{};
+        S ny{};
+        step_cached<V, S>(x, y, x2, y2, c.re, c.im, nx, ny);
+
+        bool escaped_now = false;
+        uint64_t mag2_raw = 0;
+        uint64_t nx2_raw = 0;
+        uint64_t ny2_raw = 0;
+
+        if constexpr (ComponentGate && !(track_min || track_max || wants_norm)) {
+            escaped_now = fixed_component_escaped_q<FRAC>(nx.raw, ny.raw, bailout_raw);
+        }
+
+        if (!escaped_now) {
+            nx2_raw = fixed_square_q_sat_raw_cpu<FRAC>(nx.raw);
+            ny2_raw = fixed_square_q_sat_raw_cpu<FRAC>(ny.raw);
+            mag2_raw = add_u64_sat(nx2_raw, ny2_raw);
+
+            if constexpr (track_min) min_mag2_raw = std::min(min_mag2_raw, mag2_raw);
+            if constexpr (track_max) max_mag2_raw = std::max(max_mag2_raw, mag2_raw);
+            escaped_now = mag2_raw > bailout2_raw;
         }
 
         if (escaped_now) {
             if constexpr (iter_result_wants(NeedMask, IterResultField::Iter))    r.iter = i;
-            if constexpr (iter_result_wants(NeedMask, IterResultField::Norm))    r.norm = fx64_mag2_q57_to_double(mag2_q57);
+            if constexpr (iter_result_wants(NeedMask, IterResultField::Norm))    r.norm = fixed_mag2_q_to_double<FRAC>(mag2_raw);
             if constexpr (iter_result_wants(NeedMask, IterResultField::Escaped)) r.escaped = true;
-            if constexpr (track_min) r.min_abs = fx64_mag2_q57_to_abs(min_mag2_raw);
-            if constexpr (track_max) r.max_abs = fx64_mag2_q57_to_abs(max_mag2_raw);
+            if constexpr (track_min) r.min_abs = fixed_mag2_q_to_abs<FRAC>(min_mag2_raw);
+            if constexpr (track_max) r.max_abs = fixed_mag2_q_to_abs<FRAC>(max_mag2_raw);
             return r;
         }
+
+        x = nx;
+        y = ny;
+        x2 = S{u64_to_i64_sat(nx2_raw)};
+        y2 = S{u64_to_i64_sat(ny2_raw)};
     }
 
     if constexpr (iter_result_wants(NeedMask, IterResultField::Iter))    r.iter = max_iter;
     if constexpr (iter_result_wants(NeedMask, IterResultField::Escaped)) r.escaped = false;
-    if constexpr (track_min) r.min_abs = fx64_mag2_q57_to_abs(min_mag2_raw);
-    if constexpr (track_max) r.max_abs = fx64_mag2_q57_to_abs(max_mag2_raw);
+    if constexpr (track_min) r.min_abs = fixed_mag2_q_to_abs<FRAC>(min_mag2_raw);
+    if constexpr (track_max) r.max_abs = fixed_mag2_q_to_abs<FRAC>(max_mag2_raw);
+    return r;
+}
+
+template <IterResultMask NeedMask, Variant V>
+inline IterResult iterate_fx64_int_masked(
+    Cx<Fx64> z,
+    const Cx<Fx64>& c,
+    int max_iter,
+    uint64_t bailout_raw,
+    uint64_t bailout2_q57
+) {
+    return iterate_fixed_int_masked<57, false, NeedMask, V>(
+        z, c, max_iter, bailout_raw, bailout2_q57);
+}
+
+template <IterResultMask NeedMask, Variant V, typename S>
+inline IterResult iterate_quadratic_cached_masked(
+    Cx<S> z,
+    const Cx<S>& c,
+    int max_iter,
+    double bailout_sq
+) {
+    static_assert(!iter_result_wants(NeedMask, IterResultField::Extra),
+        "Use iterate_pairwise for MinPairwiseDist.");
+    static_assert(!is_fixed64_v<S>,
+        "Use iterate_fixed_int_masked for fixed-point render paths.");
+    static_assert(!variant_is_transcendental_v<V>(),
+        "iterate_quadratic_cached_masked only supports quadratic variants.");
+
+    IterResult r = make_iter_result<NeedMask>();
+
+    S x = z.re;
+    S y = z.im;
+    S x2 = x * x;
+    S y2 = y * y;
+
+    for (int i = 0; i < max_iter; i++) {
+        S nx{};
+        S ny{};
+        step_cached<V, S>(x, y, x2, y2, c.re, c.im, nx, ny);
+
+        const bool finite_z =
+            std::isfinite(scalar_to_double(nx)) && std::isfinite(scalar_to_double(ny));
+        S nx2{};
+        S ny2{};
+        double n2 = std::numeric_limits<double>::infinity();
+        if (finite_z) {
+            nx2 = nx * nx;
+            ny2 = ny * ny;
+            n2 = scalar_to_double(nx2 + ny2);
+        }
+
+        if constexpr (iter_result_wants(NeedMask, IterResultField::MinAbs)) {
+            if (n2 < r.min_abs) r.min_abs = n2;
+        }
+        if constexpr (iter_result_wants(NeedMask, IterResultField::MaxAbs)) {
+            if (n2 > r.max_abs) r.max_abs = n2;
+        }
+
+        const bool escaped_now = !finite_z || n2 > bailout_sq;
+        if (escaped_now) {
+            if constexpr (iter_result_wants(NeedMask, IterResultField::Iter))    r.iter = i;
+            if constexpr (iter_result_wants(NeedMask, IterResultField::Norm))    r.norm = n2;
+            if constexpr (iter_result_wants(NeedMask, IterResultField::Escaped)) r.escaped = true;
+            if constexpr (iter_result_wants(NeedMask, IterResultField::MinAbs)) {
+                if (r.min_abs != std::numeric_limits<double>::infinity()) r.min_abs = scalar_sqrt(r.min_abs);
+            }
+            if constexpr (iter_result_wants(NeedMask, IterResultField::MaxAbs)) {
+                if (r.max_abs != 0.0) r.max_abs = scalar_sqrt(r.max_abs);
+            }
+            return r;
+        }
+
+        x = nx;
+        y = ny;
+        x2 = nx2;
+        y2 = ny2;
+    }
+
+    if constexpr (iter_result_wants(NeedMask, IterResultField::Iter))    r.iter = max_iter;
+    if constexpr (iter_result_wants(NeedMask, IterResultField::Escaped)) r.escaped = false;
+    if constexpr (iter_result_wants(NeedMask, IterResultField::MinAbs)) {
+        if (r.min_abs != std::numeric_limits<double>::infinity()) r.min_abs = scalar_sqrt(r.min_abs);
+    }
+    if constexpr (iter_result_wants(NeedMask, IterResultField::MaxAbs)) {
+        if (r.max_abs != 0.0) r.max_abs = scalar_sqrt(r.max_abs);
+    }
     return r;
 }
 
@@ -173,23 +301,15 @@ inline IterResult iterate_masked(
 ) {
     static_assert(!iter_result_wants(NeedMask, IterResultField::Extra),
         "Use iterate_pairwise for MinPairwiseDist.");
-    static_assert(!std::is_same_v<S, Fx64>,
-        "Use iterate_fx64_int_masked for Fx64 render paths.");
+    static_assert(!is_fixed64_v<S>,
+        "Use iterate_fixed_int_masked for fixed-point render paths.");
 
-    IterResult r{};
-    r.iter    = 0;
-    r.min_abs = std::numeric_limits<double>::infinity();
-    r.max_abs = 0.0;
-    r.extra   = std::numeric_limits<double>::infinity();
-    r.norm    = 0.0;
-    r.escaped = false;
-    r.valid_mask = 0;
+    if constexpr (!variant_is_transcendental_v<V>()) {
+        return iterate_quadratic_cached_masked<NeedMask, V, S>(
+            z, c, max_iter, bailout_sq);
+    } else {
 
-    if constexpr (iter_result_wants(NeedMask, IterResultField::Iter))    r.valid_mask |= IterResultField::Iter;
-    if constexpr (iter_result_wants(NeedMask, IterResultField::MinAbs))  r.valid_mask |= IterResultField::MinAbs;
-    if constexpr (iter_result_wants(NeedMask, IterResultField::MaxAbs))  r.valid_mask |= IterResultField::MaxAbs;
-    if constexpr (iter_result_wants(NeedMask, IterResultField::Norm))    r.valid_mask |= IterResultField::Norm;
-    if constexpr (iter_result_wants(NeedMask, IterResultField::Escaped)) r.valid_mask |= IterResultField::Escaped;
+    IterResult r = make_iter_result<NeedMask>();
 
     for (int i = 0; i < max_iter; i++) {
         z = variant_step<V, S>(z, c);
@@ -238,6 +358,7 @@ inline IterResult iterate_masked(
         if (r.max_abs != 0.0) r.max_abs = scalar_sqrt(r.max_abs);
     }
     return r;
+    }
 }
 
 template <Variant V, typename S>
@@ -250,8 +371,8 @@ inline IterResult iterate_pairwise(
     int pairwise_cap,
     std::vector<Cx<S>>& orbit_scratch
 ) {
-    static_assert(!std::is_same_v<S, Fx64>,
-        "Fx64 MinPairwiseDist currently falls back to the fp64 CPU path.");
+    static_assert(!is_fixed64_v<S>,
+        "Fixed-point MinPairwiseDist currently falls back to the fp64 CPU path.");
     IterResult r{};
     r.iter    = 0;
     r.min_abs = std::numeric_limits<double>::infinity();

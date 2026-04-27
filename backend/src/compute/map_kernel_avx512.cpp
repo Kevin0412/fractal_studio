@@ -138,14 +138,10 @@ static void avx512_fp64_row(
         __m512i viter  = _mm512_setzero_si512();
         __mmask8 active = 0xFF;
 
+        __m512d vzre2 = _mm512_mul_pd(vzre, vzre);
+        __m512d vzim2 = _mm512_mul_pd(vzim, vzim);
         __m512d vmn = _mm512_set1_pd(std::numeric_limits<double>::infinity());
         __m512d vmx = vzero;
-        if (track_min || track_max) {
-            const __m512d vn2_init = _mm512_add_pd(
-                _mm512_mul_pd(vzre, vzre), _mm512_mul_pd(vzim, vzim));
-            vmn = vn2_init;
-            vmx = vn2_init;
-        }
 
         // Select which variant inner loop to run. The switch is *outside* the
         // pixel loop (hoisted per-row) so the branch predictor and the
@@ -156,17 +152,20 @@ static void avx512_fp64_row(
         for (int i = 0; i < max_iter && active; i++) {
 
 #define AVX_WRITEBACK_AND_ESCAPE \
-            vzre = _mm512_mask_mov_pd(vzre, active, new_re); \
-            vzim = _mm512_mask_mov_pd(vzim, active, new_im); \
-            const __m512d vn2 = _mm512_add_pd( \
-                _mm512_mul_pd(vzre, vzre), _mm512_mul_pd(vzim, vzim)); \
-            if (track_min) vmn = _mm512_min_pd(vmn, vn2); \
-            if (track_max) vmx = _mm512_max_pd(vmx, vn2); \
+            const __m512d new_re2 = _mm512_mul_pd(new_re, new_re); \
+            const __m512d new_im2 = _mm512_mul_pd(new_im, new_im); \
+            const __m512d vn2 = _mm512_add_pd(new_re2, new_im2); \
+            if (track_min) vmn = _mm512_mask_min_pd(vmn, active, vmn, vn2); \
+            if (track_max) vmx = _mm512_mask_max_pd(vmx, active, vmx, vn2); \
             const __mmask8 escaped_radius = _mm512_mask_cmp_pd_mask( \
                 active, vn2, vbail2, _CMP_GT_OQ); \
             const __mmask8 escaped_nan = _mm512_mask_cmp_pd_mask( \
                 active, vn2, vn2, _CMP_UNORD_Q); \
             const __mmask8 escaped = escaped_radius | escaped_nan; \
+            vzre = _mm512_mask_mov_pd(vzre, active, new_re); \
+            vzim = _mm512_mask_mov_pd(vzim, active, new_im); \
+            vzre2 = _mm512_mask_mov_pd(vzre2, active, new_re2); \
+            vzim2 = _mm512_mask_mov_pd(vzim2, active, new_im2); \
             if (escaped) { \
                 const __m512i vi = _mm512_set1_epi64(i); \
                 viter = _mm512_mask_mov_epi64(viter, escaped, vi); \
@@ -180,8 +179,6 @@ static void avx512_fp64_row(
         case 0: default:
         AVX_INNER_LOOP_BEGIN
         {
-            const __m512d vzre2  = _mm512_mul_pd(vzre, vzre);
-            const __m512d vzim2  = _mm512_mul_pd(vzim, vzim);
             const __m512d new_re = _mm512_add_pd(_mm512_sub_pd(vzre2, vzim2), vcre);
             const __m512d new_im = _mm512_add_pd(
                 _mm512_mul_pd(_mm512_mul_pd(vtwo, vzre), vzim), vcim);
@@ -195,8 +192,6 @@ static void avx512_fp64_row(
         case 1:
         AVX_INNER_LOOP_BEGIN
         {
-            const __m512d vzre2  = _mm512_mul_pd(vzre, vzre);
-            const __m512d vzim2  = _mm512_mul_pd(vzim, vzim);
             const __m512d new_re = _mm512_add_pd(_mm512_sub_pd(vzre2, vzim2), vcre);
             // fnmadd: -(2*re*im) + cim
             const __m512d new_im = _mm512_fnmadd_pd(
@@ -211,9 +206,7 @@ static void avx512_fp64_row(
         {
             const __m512d wre    = _mm512_abs_pd(vzre);
             const __m512d wim    = _mm512_abs_pd(vzim);
-            const __m512d wre2   = _mm512_mul_pd(wre, wre);
-            const __m512d wim2   = _mm512_mul_pd(wim, wim);
-            const __m512d new_re = _mm512_add_pd(_mm512_sub_pd(wre2, wim2), vcre);
+            const __m512d new_re = _mm512_add_pd(_mm512_sub_pd(vzre2, vzim2), vcre);
             const __m512d new_im = _mm512_add_pd(
                 _mm512_mul_pd(_mm512_mul_pd(vtwo, wre), wim), vcim);
             AVX_WRITEBACK_AND_ESCAPE
@@ -225,9 +218,7 @@ static void avx512_fp64_row(
         AVX_INNER_LOOP_BEGIN
         {
             const __m512d wim    = _mm512_abs_pd(vzim);
-            const __m512d wzre2  = _mm512_mul_pd(vzre, vzre);
-            const __m512d wim2   = _mm512_mul_pd(wim, wim);
-            const __m512d new_re = _mm512_add_pd(_mm512_sub_pd(wzre2, wim2), vcre);
+            const __m512d new_re = _mm512_add_pd(_mm512_sub_pd(vzre2, vzim2), vcre);
             const __m512d new_im = _mm512_add_pd(
                 _mm512_mul_pd(_mm512_mul_pd(vtwo, vzre), wim), vcim);
             AVX_WRITEBACK_AND_ESCAPE
@@ -240,9 +231,7 @@ static void avx512_fp64_row(
         {
             const __m512d wre    = _mm512_abs_pd(vzre);
             const __m512d wim    = _mm512_sub_pd(vzero, vzim);  // -vzim
-            const __m512d wre2   = _mm512_mul_pd(wre, wre);
-            const __m512d wim2   = _mm512_mul_pd(wim, wim);
-            const __m512d new_re = _mm512_add_pd(_mm512_sub_pd(wre2, wim2), vcre);
+            const __m512d new_re = _mm512_add_pd(_mm512_sub_pd(vzre2, vzim2), vcre);
             const __m512d new_im = _mm512_add_pd(
                 _mm512_mul_pd(_mm512_mul_pd(vtwo, wre), wim), vcim);
             AVX_WRITEBACK_AND_ESCAPE
@@ -253,8 +242,6 @@ static void avx512_fp64_row(
         case 5:
         AVX_INNER_LOOP_BEGIN
         {
-            const __m512d vzre2  = _mm512_mul_pd(vzre, vzre);
-            const __m512d vzim2  = _mm512_mul_pd(vzim, vzim);
             const __m512d sq_re  = _mm512_sub_pd(vzre2, vzim2);
             const __m512d sq_im  = _mm512_mul_pd(_mm512_mul_pd(vtwo, vzre), vzim);
             const __m512d new_re = _mm512_add_pd(_mm512_abs_pd(sq_re), vcre);
@@ -267,8 +254,6 @@ static void avx512_fp64_row(
         case 6:
         AVX_INNER_LOOP_BEGIN
         {
-            const __m512d vzre2  = _mm512_mul_pd(vzre, vzre);
-            const __m512d vzim2  = _mm512_mul_pd(vzim, vzim);
             const __m512d sq_re  = _mm512_sub_pd(vzre2, vzim2);
             const __m512d sq_im  = _mm512_mul_pd(_mm512_mul_pd(vtwo, vzre), vzim);
             const __m512d new_re = _mm512_add_pd(_mm512_abs_pd(sq_re), vcre);
@@ -283,8 +268,6 @@ static void avx512_fp64_row(
         case 7:
         AVX_INNER_LOOP_BEGIN
         {
-            const __m512d vzre2  = _mm512_mul_pd(vzre, vzre);
-            const __m512d vzim2  = _mm512_mul_pd(vzim, vzim);
             const __m512d sq_re  = _mm512_sub_pd(vzre2, vzim2);
             const __m512d sq_im  = _mm512_mul_pd(_mm512_mul_pd(vtwo, vzre), vzim);
             const __m512d new_re = _mm512_add_pd(_mm512_abs_pd(sq_re), vcre);
@@ -298,9 +281,7 @@ static void avx512_fp64_row(
         AVX_INNER_LOOP_BEGIN
         {
             const __m512d wim    = _mm512_abs_pd(vzim);
-            const __m512d wre2   = _mm512_mul_pd(vzre, vzre);
-            const __m512d wim2   = _mm512_mul_pd(wim, wim);
-            const __m512d sq_re  = _mm512_sub_pd(wre2, wim2);
+            const __m512d sq_re  = _mm512_sub_pd(vzre2, vzim2);
             const __m512d sq_im  = _mm512_mul_pd(_mm512_mul_pd(vtwo, vzre), wim);
             const __m512d new_re = _mm512_add_pd(_mm512_abs_pd(sq_re), vcre);
             const __m512d new_im = _mm512_add_pd(sq_im, vcim);
@@ -313,9 +294,7 @@ static void avx512_fp64_row(
         AVX_INNER_LOOP_BEGIN
         {
             const __m512d wre    = _mm512_abs_pd(vzre);
-            const __m512d wre2   = _mm512_mul_pd(wre, wre);
-            const __m512d vzim2  = _mm512_mul_pd(vzim, vzim);
-            const __m512d sq_re  = _mm512_sub_pd(wre2, vzim2);
+            const __m512d sq_re  = _mm512_sub_pd(vzre2, vzim2);
             const __m512d sq_im  = _mm512_mul_pd(_mm512_mul_pd(vtwo, wre), vzim);
             const __m512d new_re = _mm512_add_pd(_mm512_abs_pd(sq_re), vcre);
             // fnmadd: -(sq_im) + vcim

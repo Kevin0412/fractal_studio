@@ -1,18 +1,7 @@
 // compute/cuda/fx64.cuh
 //
-// Fixed-point Fx64 for CUDA device code.
-// Same 1s·6i·57f layout as compute/scalar/fx64.hpp but uses __mul64hi /
-// __umul64hi instead of __int128 (CUDA doesn't support __int128 portably).
-//
-// mul via schoolbook:
-//   a * b = (a_hi * b_hi) << 64 + (a_hi * b_lo + a_lo * b_hi) << 32 + a_lo * b_lo
-// We only need the middle 64 bits after >> 57, so:
-//   full high 64 bits  = __mul64hi(a, b)
-//   full low  64 bits  = a * b  (truncated C mul)
-//   result = (high << (64-57)) | (low >> 57)
-//          = (high << 7)       | (low >> 57)
-// For signed inputs: sign = sign_a ^ sign_b; use |a|, |b| for the mul,
-// then negate result if sign is negative.
+// Fixed-point 64-bit helpers for CUDA device code.  The default Fx64 alias is
+// Q6.57, with Q4.59 available for component-gated precision mode.
 
 #pragma once
 
@@ -25,15 +14,21 @@ __host__ __device__ inline uint64_t abs_i64_to_u64(int64_t x) {
     return x < 0 ? (~ux + 1ULL) : ux;
 }
 
-struct Fx64 {
+template <int FRAC>
+__device__ inline uint64_t fixed_square_q_sat_raw_cuda(int64_t raw);
+
+template <int FRAC>
+struct Fixed64 {
     int64_t raw;
 
-    static constexpr int   FRAC  = 57;
-    static constexpr double SCALE = 144115188075855872.0;  // 2^57
+    static constexpr int FRAC_BITS = FRAC;
+    static constexpr double SCALE = static_cast<double>(1ULL << FRAC);
 
-    __host__ __device__ static Fx64 from_double(double x) {
-        if (x >=  64.0) return {INT64_MAX};
-        if (x <= -64.0) return {INT64_MIN};
+    __host__ __device__ static Fixed64 from_double(double x) {
+        const double hi = static_cast<double>(INT64_MAX) / SCALE;
+        const double lo = static_cast<double>(INT64_MIN) / SCALE;
+        if (x >= hi) return {INT64_MAX};
+        if (x <= lo) return {INT64_MIN};
         return {static_cast<int64_t>(x * SCALE)};
     }
 
@@ -41,58 +36,86 @@ struct Fx64 {
         return static_cast<double>(raw) / SCALE;
     }
 
-    __device__ Fx64 operator+(Fx64 b) const { return {raw + b.raw}; }
-    __device__ Fx64 operator-(Fx64 b) const { return {raw - b.raw}; }
-    __device__ Fx64 operator-()        const {
+    __device__ Fixed64 operator+(Fixed64 b) const { return {raw + b.raw}; }
+    __device__ Fixed64 operator-(Fixed64 b) const { return {raw - b.raw}; }
+    __device__ Fixed64 operator-() const {
         return {raw == INT64_MIN ? INT64_MAX : -raw};
     }
 
-    __device__ Fx64 operator*(Fx64 b) const {
-        // Signed schoolbook multiplication.
-        int64_t a = raw, bv = b.raw;
-        uint64_t sa = abs_i64_to_u64(a);
-        uint64_t sb = abs_i64_to_u64(bv);
-        bool neg = (a ^ bv) < 0;
+    __device__ Fixed64 operator*(Fixed64 b) const {
+        const uint64_t a_abs = abs_i64_to_u64(raw);
+        const uint64_t b_abs = abs_i64_to_u64(b.raw);
+        const bool neg = (raw ^ b.raw) < 0;
 
-        uint64_t lo = sa * sb;
-        uint64_t hi = __umul64hi(sa, sb);
-
-        // result = full128 >> 57  (high << 7) | (low >> 57)
-        if (hi >= (1ULL << 56)) {
+        const uint64_t lo = a_abs * b_abs;
+        const uint64_t hi = __umul64hi(a_abs, b_abs);
+        constexpr int SHIFT = 64 - FRAC;
+        if (hi >= (1ULL << (FRAC - 1))) {
             return {neg ? INT64_MIN : INT64_MAX};
         }
-        uint64_t res = (hi << 7) | (lo >> 57);
-        int64_t signed_res = static_cast<int64_t>(res);
-        return {neg ? -signed_res : signed_res};
+        const uint64_t mag = (hi << SHIFT) | (lo >> FRAC);
+        const int64_t signed_mag = static_cast<int64_t>(mag);
+        return {neg ? -signed_mag : signed_mag};
     }
 
-    __device__ Fx64 sqr() const {
-        uint64_t a = abs_i64_to_u64(raw);
-        uint64_t lo = a * a;
-        uint64_t hi = __umul64hi(a, a);
-        if (hi >= (1ULL << 56)) return {INT64_MAX};
-        uint64_t res = (hi << 7) | (lo >> 57);
-        return {static_cast<int64_t>(res)};
+    __device__ Fixed64 sqr() const {
+        const uint64_t q = fixed_square_q_sat_raw_cuda<FRAC>(raw);
+        return {q > static_cast<uint64_t>(INT64_MAX) ? INT64_MAX : static_cast<int64_t>(q)};
     }
 
-    __device__ bool operator>=(Fx64 b) const { return raw >= b.raw; }
-    __device__ bool operator>(Fx64 b)  const { return raw >  b.raw; }
+    __device__ bool operator>=(Fixed64 b) const { return raw >= b.raw; }
+    __device__ bool operator>(Fixed64 b)  const { return raw >  b.raw; }
 };
 
-__device__ inline uint64_t fx64_square_q57_sat_raw(int64_t raw) {
+using FxQ657 = Fixed64<57>;
+using FxQ459 = Fixed64<59>;
+using Fx64 = FxQ657;
+
+template <int FRAC>
+__device__ inline uint64_t fixed_square_q_sat_raw_cuda(int64_t raw) {
     const uint64_t a = abs_i64_to_u64(raw);
     const uint64_t lo = a * a;
     const uint64_t hi = __umul64hi(a, a);
-    if (hi >= (1ULL << 57)) return UINT64_MAX;
-    return (hi << 7) | (lo >> 57);
+    constexpr int SHIFT = 64 - FRAC;
+    if (hi >= (1ULL << FRAC)) return UINT64_MAX;
+    return (hi << SHIFT) | (lo >> FRAC);
 }
 
-__device__ inline uint64_t fx64_mag2_q57_sat(int64_t re_raw, int64_t im_raw) {
-    const uint64_t re2 = fx64_square_q57_sat_raw(re_raw);
-    const uint64_t im2 = fx64_square_q57_sat_raw(im_raw);
+template <int FRAC>
+__device__ inline uint64_t fixed_mag2_q_sat_cuda(int64_t re_raw, int64_t im_raw) {
+    const uint64_t re2 = fixed_square_q_sat_raw_cuda<FRAC>(re_raw);
+    const uint64_t im2 = fixed_square_q_sat_raw_cuda<FRAC>(im_raw);
     const uint64_t sum = re2 + im2;
     if (sum < re2) return UINT64_MAX;
     return sum;
+}
+
+template <int FRAC>
+__device__ inline bool fixed_component_escaped_q_cuda(
+    int64_t re_raw,
+    int64_t im_raw,
+    uint64_t bailout_raw
+) {
+    (void)FRAC;
+    return abs_i64_to_u64(re_raw) > bailout_raw ||
+           abs_i64_to_u64(im_raw) > bailout_raw;
+}
+
+template <int FRAC>
+__device__ inline bool fixed_escaped_q_cuda(
+    int64_t re_raw,
+    int64_t im_raw,
+    uint64_t bailout2_raw
+) {
+    return fixed_mag2_q_sat_cuda<FRAC>(re_raw, im_raw) > bailout2_raw;
+}
+
+__device__ inline uint64_t fx64_square_q57_sat_raw(int64_t raw) {
+    return fixed_square_q_sat_raw_cuda<57>(raw);
+}
+
+__device__ inline uint64_t fx64_mag2_q57_sat(int64_t re_raw, int64_t im_raw) {
+    return fixed_mag2_q_sat_cuda<57>(re_raw, im_raw);
 }
 
 __device__ inline bool fx64_component_escaped_q57(
@@ -100,8 +123,7 @@ __device__ inline bool fx64_component_escaped_q57(
     int64_t im_raw,
     uint64_t bailout_raw
 ) {
-    return abs_i64_to_u64(re_raw) > bailout_raw ||
-           abs_i64_to_u64(im_raw) > bailout_raw;
+    return fixed_component_escaped_q_cuda<57>(re_raw, im_raw, bailout_raw);
 }
 
 __device__ inline bool fx64_escaped_q57(
@@ -109,7 +131,7 @@ __device__ inline bool fx64_escaped_q57(
     int64_t im_raw,
     uint64_t bailout2_q57
 ) {
-    return fx64_mag2_q57_sat(re_raw, im_raw) > bailout2_q57;
+    return fixed_escaped_q_cuda<57>(re_raw, im_raw, bailout2_q57);
 }
 
 } // namespace fsd_cuda

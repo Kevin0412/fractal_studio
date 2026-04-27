@@ -322,4 +322,69 @@ inline Cx<S> variant_step(Cx<S> z, const Cx<S>& c) {
     }
 }
 
+// Cached quadratic step for z^2-family variants.  x2/y2 must be the current
+// x*x and y*y in the same scalar format as x/y.  Folded variants still
+// recompute xy with their own abs/sign rule, while reusing x2/y2 because
+// abs(x)^2 == x^2 and (-y)^2 == y^2.
+template <Variant V, typename S>
+inline void step_cached(
+    S x,
+    S y,
+    S x2,
+    S y2,
+    S cx,
+    S cy,
+    S& nx,
+    S& ny
+) {
+    static_assert(!variant_is_transcendental_v<V>(),
+        "step_cached only supports quadratic variants.");
+
+    const S two = S(2);
+    S sq_re = x2 - y2;
+    S sq_im{};
+
+    if constexpr (V == Variant::Mandelbrot) {
+        sq_im = two * x * y;
+        nx = sq_re + cx;
+        ny = sq_im + cy;
+    } else if constexpr (V == Variant::Tri) {
+        sq_im = two * x * y;
+        nx = sq_re + cx;
+        ny = -sq_im + cy;
+    } else if constexpr (V == Variant::Boat) {
+        sq_im = two * scalar_abs(x) * scalar_abs(y);
+        nx = sq_re + cx;
+        ny = sq_im + cy;
+    } else if constexpr (V == Variant::Duck) {
+        sq_im = two * x * scalar_abs(y);
+        nx = sq_re + cx;
+        ny = sq_im + cy;
+    } else if constexpr (V == Variant::Bell) {
+        sq_im = two * scalar_abs(x) * (-y);
+        nx = sq_re + cx;
+        ny = sq_im + cy;
+    } else if constexpr (V == Variant::Fish) {
+        sq_im = two * x * y;
+        nx = scalar_abs(sq_re) + cx;
+        ny = sq_im + cy;
+    } else if constexpr (V == Variant::Vase) {
+        sq_im = two * x * y;
+        nx = scalar_abs(sq_re) + cx;
+        ny = -sq_im + cy;
+    } else if constexpr (V == Variant::Bird) {
+        sq_im = two * x * y;
+        nx = scalar_abs(sq_re) + cx;
+        ny = scalar_abs(sq_im) + cy;
+    } else if constexpr (V == Variant::Mask) {
+        sq_im = two * x * scalar_abs(y);
+        nx = scalar_abs(sq_re) + cx;
+        ny = sq_im + cy;
+    } else if constexpr (V == Variant::Ship) {
+        sq_im = two * scalar_abs(x) * y;
+        nx = scalar_abs(sq_re) + cx;
+        ny = -sq_im + cy;
+    }
+}
+
 } // namespace fsd::compute

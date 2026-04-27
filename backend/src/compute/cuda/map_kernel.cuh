@@ -23,6 +23,7 @@ struct Fx64ViewportRaw {
     int64_t julia_re_raw = 0;
     int64_t julia_im_raw = 0;
     uint64_t bailout_raw = 0;
+    uint64_t bailout2_raw = 0;
     uint64_t bailout2_q57 = 0;
 };
 
@@ -37,7 +38,7 @@ struct CudaMapParams {
     double bailout  = 2.0;  // radius, kept for metric normalization
     double bailout_sq = 4.0; // squared threshold used by escape tests
 
-    // "fp64" or "fx64"
+    // "fp64", "fx64"/"q6.57", or "q4.59"
     std::string scalar_type = "fp64";
 
     // Colormap ID — must match fsd::compute::Colormap enum values:
@@ -60,7 +61,7 @@ struct CudaMapParams {
     //   (MinPairwiseDist=4 is NOT supported on CUDA — use CPU path)
     int metric_id = 0;
 
-    // Host-precomputed Q6.57 viewport for the fx64 integer kernel.
+    // Host-precomputed fixed-point viewport for the integer kernel.
     Fx64ViewportRaw fx64_viewport;
 };
 
