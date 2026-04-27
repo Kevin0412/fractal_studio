@@ -50,9 +50,6 @@ struct Fixed64 {
         const uint64_t lo = a_abs * b_abs;
         const uint64_t hi = __umul64hi(a_abs, b_abs);
         constexpr int SHIFT = 64 - FRAC;
-        if (hi >= (1ULL << (FRAC - 1))) {
-            return {neg ? INT64_MIN : INT64_MAX};
-        }
         const uint64_t mag = (hi << SHIFT) | (lo >> FRAC);
         const int64_t signed_mag = static_cast<int64_t>(mag);
         return {neg ? -signed_mag : signed_mag};
