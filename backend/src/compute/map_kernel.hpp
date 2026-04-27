@@ -53,8 +53,8 @@ struct MapParams {
     // callers with outer parallelism can force 1 to avoid nested oversubscribe.
     int render_threads = 0;
 
-    // Scalar type: "fp64" (default), "fx64", or "auto" (auto-selects fx64
-    // when scale < 1e-13 for precision at extreme zoom depth).
+    // Scalar type: "fp64" (default), "fx64"/"q6.57", "q4.59", experimental
+    // "q3.60", or "auto" (auto-selects fx64 when scale < 1e-13).
     std::string scalar_type = "auto";
 
     // Compute engine: "openmp" (default), "avx2", "avx512",

@@ -67,8 +67,13 @@ static bool requested_q459(const MapParams& p) {
            p.scalar_type == "fx59" || p.scalar_type == "fixed59";
 }
 
+static bool requested_q360(const MapParams& p) {
+    return p.scalar_type == "q3.60" || p.scalar_type == "q360" ||
+           p.scalar_type == "fx60" || p.scalar_type == "fixed60";
+}
+
 static bool requested_fixed(const MapParams& p) {
-    return requested_q459(p) || p.scalar_type == "fx64" ||
+    return requested_q360(p) || requested_q459(p) || p.scalar_type == "fx64" ||
            p.scalar_type == "q6.57" || p.scalar_type == "q657" ||
            p.scalar_type == "fixed57" ||
            (p.scalar_type == "auto" && p.scale < 1e-13);
@@ -140,6 +145,24 @@ static double render_tile_cpu(
 }
 
 #if USE_CUDA
+template <int FRAC>
+static void assign_cuda_fixed_viewport(
+    fsd_cuda::CudaMapParams& cp,
+    const FixedViewportRaw<FRAC>& vp
+) {
+    cp.fx64_viewport.first_re_raw = vp.first_re_raw;
+    cp.fx64_viewport.first_im_raw = vp.first_im_raw;
+    cp.fx64_viewport.step_re_raw = vp.step_re_raw;
+    cp.fx64_viewport.step_im_raw = vp.step_im_raw;
+    cp.fx64_viewport.julia_re_raw = vp.julia_re_raw;
+    cp.fx64_viewport.julia_im_raw = vp.julia_im_raw;
+    cp.fx64_viewport.bailout_raw = vp.bailout_raw;
+    cp.fx64_viewport.bailout2_raw = vp.bailout2_raw;
+    cp.fx64_viewport.two_raw = vp.two_raw;
+    cp.fx64_viewport.conservative_two_sqrt2_raw = vp.conservative_two_sqrt2_raw;
+    cp.fx64_viewport.bailout2_q57 = vp.bailout2_raw;
+}
+
 static double render_tile_gpu(
     const MapParams& base, const Tile& t,
     cv::Mat& out, bool use_fx,
@@ -170,32 +193,21 @@ static double render_tile_gpu(
     cp.julia_re     = base.julia_re;
     cp.julia_im     = base.julia_im;
     cp.metric_id    = static_cast<int>(base.metric);
-    if (use_fx && fixed_scalar_type == "q4.59") {
+    if (use_fx && fixed_scalar_type == "q3.60") {
+        const FixedViewportRaw<60> vp = make_fixed_viewport_raw<60>(
+            cp.center_re, cp.center_im, cp.scale, cp.width, cp.height,
+            cp.julia_re, cp.julia_im, cp.bailout, cp.bailout_sq);
+        assign_cuda_fixed_viewport(cp, vp);
+    } else if (use_fx && fixed_scalar_type == "q4.59") {
         const FixedViewportRaw<59> vp = make_fixed_viewport_raw<59>(
             cp.center_re, cp.center_im, cp.scale, cp.width, cp.height,
             cp.julia_re, cp.julia_im, cp.bailout, cp.bailout_sq);
-        cp.fx64_viewport.first_re_raw = vp.first_re_raw;
-        cp.fx64_viewport.first_im_raw = vp.first_im_raw;
-        cp.fx64_viewport.step_re_raw = vp.step_re_raw;
-        cp.fx64_viewport.step_im_raw = vp.step_im_raw;
-        cp.fx64_viewport.julia_re_raw = vp.julia_re_raw;
-        cp.fx64_viewport.julia_im_raw = vp.julia_im_raw;
-        cp.fx64_viewport.bailout_raw = vp.bailout_raw;
-        cp.fx64_viewport.bailout2_raw = vp.bailout2_raw;
-        cp.fx64_viewport.bailout2_q57 = vp.bailout2_raw;
+        assign_cuda_fixed_viewport(cp, vp);
     } else if (use_fx) {
         const FixedViewportRaw<57> vp = make_fixed_viewport_raw<57>(
             cp.center_re, cp.center_im, cp.scale, cp.width, cp.height,
             cp.julia_re, cp.julia_im, cp.bailout, cp.bailout_sq);
-        cp.fx64_viewport.first_re_raw = vp.first_re_raw;
-        cp.fx64_viewport.first_im_raw = vp.first_im_raw;
-        cp.fx64_viewport.step_re_raw = vp.step_re_raw;
-        cp.fx64_viewport.step_im_raw = vp.step_im_raw;
-        cp.fx64_viewport.julia_re_raw = vp.julia_re_raw;
-        cp.fx64_viewport.julia_im_raw = vp.julia_im_raw;
-        cp.fx64_viewport.bailout_raw = vp.bailout_raw;
-        cp.fx64_viewport.bailout2_raw = vp.bailout2_raw;
-        cp.fx64_viewport.bailout2_q57 = vp.bailout2_raw;
+        assign_cuda_fixed_viewport(cp, vp);
     }
 
     // cuda_render_map does cudaMemcpy into a contiguous buffer; passing a submat
@@ -225,7 +237,8 @@ TileSchedulerStats render_map_hybrid(
 
     const bool requested_fx = requested_fixed(p);
     const bool fx       = requested_fx && supports_fx64_int_path(p);
-    const std::string fixed_scalar_type = requested_q459(p) ? "q4.59" : "fx64";
+    const std::string fixed_scalar_type =
+        requested_q360(p) ? "q3.60" : (requested_q459(p) ? "q4.59" : "fx64");
     const bool use_avx2 = map_engine_supported(p, "avx2", fx);
     const bool use_avx512 = !use_avx2 && map_engine_supported(p, "avx512", fx);
     const bool use_gpu  = false
@@ -322,7 +335,7 @@ TileSchedulerStats render_map_hybrid(
     result.gpu_ms     = total_gpu_ms;
     result.cpu_tiles  = cpu_tiles;
     result.gpu_tiles  = gpu_tiles;
-    result.scalar_used = fx ? "fx64" : "fp64";
+    result.scalar_used = fx ? fixed_scalar_type : "fp64";
 
     if (use_gpu && gpu_tiles > 0 && cpu_tiles > 0)
         result.engine_used = "hybrid";

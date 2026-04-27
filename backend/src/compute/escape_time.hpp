@@ -126,13 +126,20 @@ inline int64_t u64_to_i64_sat(uint64_t value) noexcept {
     return static_cast<int64_t>(value);
 }
 
-template <int FRAC, bool ComponentGate, IterResultMask NeedMask, Variant V>
+enum class FixedEscapeGate {
+    Direct,
+    Component,
+    L1,
+};
+
+template <int FRAC, FixedEscapeGate Gate, IterResultMask NeedMask, Variant V>
 inline IterResult iterate_fixed_int_masked(
     Cx<Fixed64<FRAC>> z,
     const Cx<Fixed64<FRAC>>& c,
     int max_iter,
     uint64_t bailout_raw,
-    uint64_t bailout2_raw
+    uint64_t bailout2_raw,
+    uint64_t conservative_l1_escape_raw = 0
 ) {
     static_assert(!iter_result_wants(NeedMask, IterResultField::Extra),
         "Use iterate_pairwise for MinPairwiseDist.");
@@ -145,6 +152,7 @@ inline IterResult iterate_fixed_int_masked(
     constexpr bool track_min = iter_result_wants(NeedMask, IterResultField::MinAbs);
     constexpr bool track_max = iter_result_wants(NeedMask, IterResultField::MaxAbs);
     constexpr bool wants_norm = iter_result_wants(NeedMask, IterResultField::Norm);
+    constexpr bool can_gate_without_mag2 = !(track_min || track_max || wants_norm);
 
     uint64_t min_mag2_raw = std::numeric_limits<uint64_t>::max();
     uint64_t max_mag2_raw = 0;
@@ -165,9 +173,18 @@ inline IterResult iterate_fixed_int_masked(
         uint64_t mag2_raw = 0;
         uint64_t nx2_raw = 0;
         uint64_t ny2_raw = 0;
+        uint64_t l1_raw = 0;
 
-        if constexpr (ComponentGate && !(track_min || track_max || wants_norm)) {
-            escaped_now = fixed_component_escaped_q<FRAC>(nx.raw, ny.raw, bailout_raw);
+        if constexpr (can_gate_without_mag2 && Gate != FixedEscapeGate::Direct) {
+            const uint64_t ax = abs_i64_to_u64(nx.raw);
+            const uint64_t ay = abs_i64_to_u64(ny.raw);
+            escaped_now = ax > bailout_raw || ay > bailout_raw;
+            if constexpr (Gate == FixedEscapeGate::L1) {
+                if (!escaped_now) {
+                    l1_raw = add_u64_sat(ax, ay);
+                    escaped_now = l1_raw > conservative_l1_escape_raw;
+                }
+            }
         }
 
         if (!escaped_now) {
@@ -177,7 +194,11 @@ inline IterResult iterate_fixed_int_masked(
 
             if constexpr (track_min) min_mag2_raw = std::min(min_mag2_raw, mag2_raw);
             if constexpr (track_max) max_mag2_raw = std::max(max_mag2_raw, mag2_raw);
-            escaped_now = mag2_raw > bailout2_raw;
+            if constexpr (can_gate_without_mag2 && Gate == FixedEscapeGate::L1) {
+                escaped_now = l1_raw > bailout_raw && mag2_raw > bailout2_raw;
+            } else {
+                escaped_now = mag2_raw > bailout2_raw;
+            }
         }
 
         if (escaped_now) {
@@ -210,7 +231,7 @@ inline IterResult iterate_fx64_int_masked(
     uint64_t bailout_raw,
     uint64_t bailout2_q57
 ) {
-    return iterate_fixed_int_masked<57, false, NeedMask, V>(
+    return iterate_fixed_int_masked<57, FixedEscapeGate::Direct, NeedMask, V>(
         z, c, max_iter, bailout_raw, bailout2_q57);
 }
 

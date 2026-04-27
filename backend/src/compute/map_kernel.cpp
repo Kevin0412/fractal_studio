@@ -223,9 +223,12 @@ void render_variant_metric_fixed_impl(const MapParams& p, cv::Mat& out) {
                     c  = Cx<S>{re, im};
                 }
 
-                constexpr bool component_gate = (FRAC == 59);
-                const IterResult r = iterate_fixed_int_masked<FRAC, component_gate, NeedMask, V>(
-                    z0, c, p.iterations, vp.bailout_raw, vp.bailout2_raw);
+                constexpr FixedEscapeGate gate = FRAC == 60
+                    ? FixedEscapeGate::L1
+                    : (FRAC == 59 ? FixedEscapeGate::Component : FixedEscapeGate::Direct);
+                const IterResult r = iterate_fixed_int_masked<FRAC, gate, NeedMask, V>(
+                    z0, c, p.iterations, vp.bailout_raw, vp.bailout2_raw,
+                    vp.conservative_two_sqrt2_raw);
 
                 uint8_t* px = row + 3 * x;
                 if constexpr (M == Metric::Escape) {
@@ -292,9 +295,14 @@ enum class FixedPrecision {
     None,
     Q657,
     Q459,
+    Q360,
 };
 
 static FixedPrecision requested_fixed_precision(const MapParams& p) {
+    if (p.scalar_type == "q3.60" || p.scalar_type == "q360" ||
+        p.scalar_type == "fx60" || p.scalar_type == "fixed60") {
+        return FixedPrecision::Q360;
+    }
     if (p.scalar_type == "q4.59" || p.scalar_type == "q459" ||
         p.scalar_type == "fx59" || p.scalar_type == "fixed59") {
         return FixedPrecision::Q459;
@@ -310,6 +318,7 @@ static FixedPrecision requested_fixed_precision(const MapParams& p) {
 
 static const char* fixed_precision_name(FixedPrecision precision) {
     switch (precision) {
+        case FixedPrecision::Q360: return "q3.60";
         case FixedPrecision::Q459: return "q4.59";
         case FixedPrecision::Q657: return "fx64";
         case FixedPrecision::None: return "fp64";
@@ -323,6 +332,68 @@ static bool supports_fixed_int_path(const MapParams& p, bool field_output = fals
     if (p.metric == Metric::MinPairwiseDist) return false;
     if (!field_output && p.smooth) return false;
     return true;
+}
+
+static bool has_classic_fixed_bailout(const MapParams& p) {
+    return std::isfinite(p.bailout) && std::isfinite(p.bailout_sq) &&
+           std::fabs(p.bailout - 2.0) <= 1e-12 &&
+           std::fabs(p.bailout_sq - 4.0) <= 1e-12;
+}
+
+static double viewport_abs_bound(const MapParams& p) {
+    if (p.width <= 0 || p.height <= 0 || !std::isfinite(p.scale)) {
+        return std::numeric_limits<double>::infinity();
+    }
+    const double aspect = static_cast<double>(p.width) / static_cast<double>(p.height);
+    const double span_im = p.scale;
+    const double span_re = p.scale * aspect;
+    const double re0 = p.center_re - 0.5 * span_re;
+    const double re1 = p.center_re + 0.5 * span_re;
+    const double im0 = p.center_im - 0.5 * span_im;
+    const double im1 = p.center_im + 0.5 * span_im;
+    return std::max({std::fabs(re0), std::fabs(re1), std::fabs(im0), std::fabs(im1)});
+}
+
+static double julia_const_abs_bound(const MapParams& p) {
+    return std::max(std::fabs(p.julia_re), std::fabs(p.julia_im));
+}
+
+static bool fixed_precision_safe(const MapParams& p, FixedPrecision precision) {
+    if (precision == FixedPrecision::None || !has_classic_fixed_bailout(p)) return false;
+
+    const double pixel_bound = viewport_abs_bound(p);
+    const double z0_bound = p.julia ? pixel_bound : 0.0;
+    const double c_bound = p.julia ? julia_const_abs_bound(p) : pixel_bound;
+    if (!std::isfinite(z0_bound) || !std::isfinite(c_bound)) return false;
+
+    switch (precision) {
+        case FixedPrecision::Q360:
+            return z0_bound <= (2.0 * std::sqrt(2.0)) && c_bound <= 3.5;
+        case FixedPrecision::Q459:
+            return z0_bound <= 4.0 && c_bound <= 8.0;
+        case FixedPrecision::Q657:
+            return z0_bound <= 8.0 && c_bound <= 32.0;
+        case FixedPrecision::None:
+            return false;
+    }
+    return false;
+}
+
+static FixedPrecision select_fixed_precision(const MapParams& p) {
+    const FixedPrecision requested = requested_fixed_precision(p);
+    if (requested == FixedPrecision::None) return FixedPrecision::None;
+    if (fixed_precision_safe(p, requested)) return requested;
+    if (requested == FixedPrecision::Q360 && fixed_precision_safe(p, FixedPrecision::Q459)) {
+        return FixedPrecision::Q459;
+    }
+    if ((requested == FixedPrecision::Q360 || requested == FixedPrecision::Q459) &&
+        fixed_precision_safe(p, FixedPrecision::Q657)) {
+        return FixedPrecision::Q657;
+    }
+    if (requested == FixedPrecision::Q657 && fixed_precision_safe(p, FixedPrecision::Q657)) {
+        return FixedPrecision::Q657;
+    }
+    return FixedPrecision::None;
 }
 
 // Dispatch fp64 variants
@@ -690,9 +761,12 @@ void field_variant_fixed_impl(const MapParams& p, FieldOutput& out) {
                     c  = Cx<S>{re, im};
                 }
 
-                constexpr bool component_gate = (FRAC == 59);
-                const IterResult r = iterate_fixed_int_masked<FRAC, component_gate, NeedMask, V>(
-                    z0, c, p.iterations, vp.bailout_raw, vp.bailout2_raw);
+                constexpr FixedEscapeGate gate = FRAC == 60
+                    ? FixedEscapeGate::L1
+                    : (FRAC == 59 ? FixedEscapeGate::Component : FixedEscapeGate::Direct);
+                const IterResult r = iterate_fixed_int_masked<FRAC, gate, NeedMask, V>(
+                    z0, c, p.iterations, vp.bailout_raw, vp.bailout2_raw,
+                    vp.conservative_two_sqrt2_raw);
 
                 const size_t idx = static_cast<size_t>(y) * W + x;
                 if constexpr (is_escape) {
@@ -814,12 +888,14 @@ MapStats render_map_field(const MapParams& p, FieldOutput& fo) {
     fo.height = p.height;
     fo.metric = p.metric;
 
-    const FixedPrecision fixed_precision = requested_fixed_precision(p);
+    const FixedPrecision fixed_precision = select_fixed_precision(p);
     const bool fx = fixed_precision != FixedPrecision::None &&
                     supports_fixed_int_path(p, true);
     const auto t0 = std::chrono::steady_clock::now();
 
-    if (fx && fixed_precision == FixedPrecision::Q459) {
+    if (fx && fixed_precision == FixedPrecision::Q360) {
+        dispatch_field_fixed<60>(p, fo);
+    } else if (fx && fixed_precision == FixedPrecision::Q459) {
         dispatch_field_fixed<59>(p, fo);
     } else if (fx) {
         dispatch_field_fixed<57>(p, fo);
@@ -849,13 +925,15 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
         return render_custom_openmp(p, out);
     }
 
-    const FixedPrecision fixed_precision = requested_fixed_precision(p);
+    const FixedPrecision fixed_precision = select_fixed_precision(p);
     const bool fx = fixed_precision != FixedPrecision::None &&
                     supports_fixed_int_path(p, false);
     const std::string selected_engine = select_map_engine(p, fx);
 
     if (selected_engine == "hybrid") {
-        auto ts = render_map_hybrid(p, out);
+        MapParams hybrid_params = p;
+        hybrid_params.scalar_type = fx ? fixed_precision_name(fixed_precision) : "fp64";
+        auto ts = render_map_hybrid(hybrid_params, out);
         MapStats s;
         s.elapsed_ms = ts.total_ms;
         s.pixel_count = p.width * p.height;
@@ -897,7 +975,22 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
         cp.julia_re     = p.julia_re;
         cp.julia_im     = p.julia_im;
         cp.metric_id    = static_cast<int>(p.metric);
-        if (fx && fixed_precision == FixedPrecision::Q459) {
+        if (fx && fixed_precision == FixedPrecision::Q360) {
+            const FixedViewportRaw<60> vp = make_fixed_viewport_raw<60>(
+                p.center_re, p.center_im, p.scale, p.width, p.height,
+                p.julia_re, p.julia_im, p.bailout, p.bailout_sq);
+            cp.fx64_viewport.first_re_raw = vp.first_re_raw;
+            cp.fx64_viewport.first_im_raw = vp.first_im_raw;
+            cp.fx64_viewport.step_re_raw = vp.step_re_raw;
+            cp.fx64_viewport.step_im_raw = vp.step_im_raw;
+            cp.fx64_viewport.julia_re_raw = vp.julia_re_raw;
+            cp.fx64_viewport.julia_im_raw = vp.julia_im_raw;
+            cp.fx64_viewport.bailout_raw = vp.bailout_raw;
+            cp.fx64_viewport.bailout2_raw = vp.bailout2_raw;
+            cp.fx64_viewport.two_raw = vp.two_raw;
+            cp.fx64_viewport.conservative_two_sqrt2_raw = vp.conservative_two_sqrt2_raw;
+            cp.fx64_viewport.bailout2_q57 = vp.bailout2_raw;
+        } else if (fx && fixed_precision == FixedPrecision::Q459) {
             const FixedViewportRaw<59> vp = make_fixed_viewport_raw<59>(
                 p.center_re, p.center_im, p.scale, p.width, p.height,
                 p.julia_re, p.julia_im, p.bailout, p.bailout_sq);
@@ -909,6 +1002,8 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
             cp.fx64_viewport.julia_im_raw = vp.julia_im_raw;
             cp.fx64_viewport.bailout_raw = vp.bailout_raw;
             cp.fx64_viewport.bailout2_raw = vp.bailout2_raw;
+            cp.fx64_viewport.two_raw = vp.two_raw;
+            cp.fx64_viewport.conservative_two_sqrt2_raw = vp.conservative_two_sqrt2_raw;
             cp.fx64_viewport.bailout2_q57 = vp.bailout2_raw;
         } else if (fx) {
             const FixedViewportRaw<57> vp = make_fixed_viewport_raw<57>(
@@ -922,6 +1017,8 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
             cp.fx64_viewport.julia_im_raw = vp.julia_im_raw;
             cp.fx64_viewport.bailout_raw = vp.bailout_raw;
             cp.fx64_viewport.bailout2_raw = vp.bailout2_raw;
+            cp.fx64_viewport.two_raw = vp.two_raw;
+            cp.fx64_viewport.conservative_two_sqrt2_raw = vp.conservative_two_sqrt2_raw;
             cp.fx64_viewport.bailout2_q57 = vp.bailout2_raw;
         }
         try {
@@ -977,7 +1074,9 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
 
     const auto t0 = std::chrono::steady_clock::now();
 
-    if (fx && fixed_precision == FixedPrecision::Q459) {
+    if (fx && fixed_precision == FixedPrecision::Q360) {
+        dispatch_fixed<60>(p, out);
+    } else if (fx && fixed_precision == FixedPrecision::Q459) {
         dispatch_fixed<59>(p, out);
     } else if (fx) {
         dispatch_fixed<57>(p, out);

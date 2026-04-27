@@ -24,6 +24,8 @@ struct Fx64ViewportRaw {
     int64_t julia_im_raw = 0;
     uint64_t bailout_raw = 0;
     uint64_t bailout2_raw = 0;
+    uint64_t two_raw = 0;
+    uint64_t conservative_two_sqrt2_raw = 0;
     uint64_t bailout2_q57 = 0;
 };
 
@@ -38,7 +40,7 @@ struct CudaMapParams {
     double bailout  = 2.0;  // radius, kept for metric normalization
     double bailout_sq = 4.0; // squared threshold used by escape tests
 
-    // "fp64", "fx64"/"q6.57", or "q4.59"
+    // "fp64", "fx64"/"q6.57", "q4.59", or experimental "q3.60"
     std::string scalar_type = "fp64";
 
     // Colormap ID — must match fsd::compute::Colormap enum values:

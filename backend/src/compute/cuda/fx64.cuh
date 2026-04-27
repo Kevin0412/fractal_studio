@@ -69,6 +69,7 @@ struct Fixed64 {
 
 using FxQ657 = Fixed64<57>;
 using FxQ459 = Fixed64<59>;
+using FxQ360 = Fixed64<60>;
 using Fx64 = FxQ657;
 
 template <int FRAC>
