@@ -159,7 +159,7 @@ static void assign_cuda_fixed_viewport(
     cp.fx64_viewport.bailout_raw = vp.bailout_raw;
     cp.fx64_viewport.bailout2_raw = vp.bailout2_raw;
     cp.fx64_viewport.two_raw = vp.two_raw;
-    cp.fx64_viewport.conservative_two_sqrt2_raw = vp.conservative_two_sqrt2_raw;
+    cp.fx64_viewport.two_sqrt2_floor_raw = vp.two_sqrt2_floor_raw;
     cp.fx64_viewport.bailout2_q57 = vp.bailout2_raw;
 }
 

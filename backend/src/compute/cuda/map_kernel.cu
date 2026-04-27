@@ -405,14 +405,64 @@ __global__ void fractal_fx64_int_kernel(
     constexpr bool can_gate_without_mag2 = !(track_min || track_max);
     uint64_t mn = UINT64_MAX;
     uint64_t mx = 0;
-    uint64_t zre2_raw = fixed_square_q_sat_raw_cuda<FRAC>(zre.raw);
-    uint64_t zim2_raw = fixed_square_q_sat_raw_cuda<FRAC>(zim.raw);
+    bool escaped_initial = false;
+    uint64_t zre2_raw = 0;
+    uint64_t zim2_raw = 0;
+    if constexpr (Julia) {
+        uint64_t mag2_raw = 0;
+        uint64_t l1_raw = 0;
+        bool have_mag2 = false;
+
+        if constexpr (component_gate || l1_gate) {
+            const uint64_t ax = abs_i64_to_u64(zre.raw);
+            const uint64_t ay = abs_i64_to_u64(zim.raw);
+            escaped_initial = ax > vp.bailout_raw || ay > vp.bailout_raw;
+            if constexpr (l1_gate) {
+                if (!escaped_initial) {
+                    l1_raw = add_u64_sat_cuda(ax, ay);
+                    escaped_initial = l1_raw > vp.two_sqrt2_floor_raw;
+                }
+            }
+        }
+
+        if constexpr (FRAC == 57 || track_min || track_max) {
+            zre2_raw = fixed_square_q_sat_raw_cuda<FRAC>(zre.raw);
+            zim2_raw = fixed_square_q_sat_raw_cuda<FRAC>(zim.raw);
+            mag2_raw = add_u64_sat_cuda(zre2_raw, zim2_raw);
+            have_mag2 = true;
+            if constexpr (track_min) mn = mag2_raw < mn ? mag2_raw : mn;
+            if constexpr (track_max) mx = mag2_raw > mx ? mag2_raw : mx;
+        }
+
+        if (!escaped_initial) {
+            if (!have_mag2) {
+                zre2_raw = fixed_square_q_sat_raw_cuda<FRAC>(zre.raw);
+                zim2_raw = fixed_square_q_sat_raw_cuda<FRAC>(zim.raw);
+                mag2_raw = add_u64_sat_cuda(zre2_raw, zim2_raw);
+            }
+            if constexpr (l1_gate) {
+                escaped_initial = l1_raw > vp.two_raw && mag2_raw > vp.bailout2_raw;
+            } else {
+                escaped_initial = mag2_raw > vp.bailout2_raw;
+            }
+        } else if (!have_mag2 && (track_min || track_max)) {
+            zre2_raw = fixed_square_q_sat_raw_cuda<FRAC>(zre.raw);
+            zim2_raw = fixed_square_q_sat_raw_cuda<FRAC>(zim.raw);
+            mag2_raw = add_u64_sat_cuda(zre2_raw, zim2_raw);
+            if constexpr (track_min) mn = mag2_raw < mn ? mag2_raw : mn;
+            if constexpr (track_max) mx = mag2_raw > mx ? mag2_raw : mx;
+        }
+    } else {
+        zre2_raw = 0;
+        zim2_raw = 0;
+    }
+
     S zre2{u64_to_i64_sat_cuda(zre2_raw)};
     S zim2{u64_to_i64_sat_cuda(zim2_raw)};
 
     // Apply step THEN check — matches escape_time.hpp CPU convention.
     int i = 0;
-    for (; i < max_iter; i++) {
+    for (; !escaped_initial && i < max_iter; i++) {
         S next_re{};
         S next_im{};
         step_fixed_cached<FRAC, VariantId>(zre, zim, zre2, zim2, cre, cim, next_re, next_im);
@@ -429,7 +479,7 @@ __global__ void fractal_fx64_int_kernel(
             if constexpr (l1_gate) {
                 if (!escaped) {
                     l1_raw = add_u64_sat_cuda(ax, ay);
-                    escaped = l1_raw > vp.conservative_two_sqrt2_raw;
+                    escaped = l1_raw > vp.two_sqrt2_floor_raw;
                 }
             }
         }
@@ -445,7 +495,7 @@ __global__ void fractal_fx64_int_kernel(
             next_im2_raw = fixed_square_q_sat_raw_cuda<FRAC>(next_im.raw);
             mag2_raw = add_u64_sat_cuda(next_re2_raw, next_im2_raw);
             if constexpr (l1_gate) {
-                escaped = l1_raw > vp.bailout_raw && mag2_raw > vp.bailout2_raw;
+                escaped = l1_raw > vp.two_raw && mag2_raw > vp.bailout2_raw;
             } else {
                 escaped = mag2_raw > vp.bailout2_raw;
             }

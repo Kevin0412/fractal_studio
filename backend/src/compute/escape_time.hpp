@@ -126,6 +126,21 @@ inline int64_t u64_to_i64_sat(uint64_t value) noexcept {
     return static_cast<int64_t>(value);
 }
 
+template <IterResultMask NeedMask, int FRAC>
+inline void finish_fixed_escape(
+    IterResult& r,
+    int iter,
+    uint64_t mag2_raw,
+    uint64_t min_mag2_raw,
+    uint64_t max_mag2_raw
+) {
+    if constexpr (iter_result_wants(NeedMask, IterResultField::Iter))    r.iter = iter;
+    if constexpr (iter_result_wants(NeedMask, IterResultField::Norm))    r.norm = fixed_mag2_q_to_double<FRAC>(mag2_raw);
+    if constexpr (iter_result_wants(NeedMask, IterResultField::Escaped)) r.escaped = true;
+    if constexpr (iter_result_wants(NeedMask, IterResultField::MinAbs))  r.min_abs = fixed_mag2_q_to_abs<FRAC>(min_mag2_raw);
+    if constexpr (iter_result_wants(NeedMask, IterResultField::MaxAbs))  r.max_abs = fixed_mag2_q_to_abs<FRAC>(max_mag2_raw);
+}
+
 enum class FixedEscapeGate {
     Direct,
     Component,
@@ -139,7 +154,9 @@ inline IterResult iterate_fixed_int_masked(
     int max_iter,
     uint64_t bailout_raw,
     uint64_t bailout2_raw,
-    uint64_t conservative_l1_escape_raw = 0
+    uint64_t two_raw = 0,
+    uint64_t two_sqrt2_floor_raw = 0,
+    bool precheck_initial_z0 = false
 ) {
     static_assert(!iter_result_wants(NeedMask, IterResultField::Extra),
         "Use iterate_pairwise for MinPairwiseDist.");
@@ -159,8 +176,66 @@ inline IterResult iterate_fixed_int_masked(
 
     S x = z.re;
     S y = z.im;
-    uint64_t x2_raw = fixed_square_q_sat_raw_cpu<FRAC>(x.raw);
-    uint64_t y2_raw = fixed_square_q_sat_raw_cpu<FRAC>(y.raw);
+    uint64_t x2_raw = 0;
+    uint64_t y2_raw = 0;
+
+    if (precheck_initial_z0) {
+        bool escaped_initial = false;
+        uint64_t mag2_raw = 0;
+        uint64_t l1_raw = 0;
+        bool have_mag2 = false;
+
+        if constexpr (Gate != FixedEscapeGate::Direct) {
+            const uint64_t ax = abs_i64_to_u64(x.raw);
+            const uint64_t ay = abs_i64_to_u64(y.raw);
+            escaped_initial = ax > bailout_raw || ay > bailout_raw;
+            if constexpr (Gate == FixedEscapeGate::L1) {
+                if (!escaped_initial) {
+                    l1_raw = add_u64_sat(ax, ay);
+                    escaped_initial = l1_raw > two_sqrt2_floor_raw;
+                }
+            }
+        }
+
+        if constexpr (Gate == FixedEscapeGate::Direct || track_min || track_max || wants_norm) {
+            x2_raw = fixed_square_q_sat_raw_cpu<FRAC>(x.raw);
+            y2_raw = fixed_square_q_sat_raw_cpu<FRAC>(y.raw);
+            mag2_raw = add_u64_sat(x2_raw, y2_raw);
+            have_mag2 = true;
+            if constexpr (track_min) min_mag2_raw = std::min(min_mag2_raw, mag2_raw);
+            if constexpr (track_max) max_mag2_raw = std::max(max_mag2_raw, mag2_raw);
+        }
+
+        if (!escaped_initial) {
+            if (!have_mag2) {
+                x2_raw = fixed_square_q_sat_raw_cpu<FRAC>(x.raw);
+                y2_raw = fixed_square_q_sat_raw_cpu<FRAC>(y.raw);
+                mag2_raw = add_u64_sat(x2_raw, y2_raw);
+                have_mag2 = true;
+            }
+            if constexpr (Gate == FixedEscapeGate::L1) {
+                escaped_initial = l1_raw > two_raw && mag2_raw > bailout2_raw;
+            } else {
+                escaped_initial = mag2_raw > bailout2_raw;
+            }
+        } else if (!have_mag2 && (track_min || track_max || wants_norm)) {
+            x2_raw = fixed_square_q_sat_raw_cpu<FRAC>(x.raw);
+            y2_raw = fixed_square_q_sat_raw_cpu<FRAC>(y.raw);
+            mag2_raw = add_u64_sat(x2_raw, y2_raw);
+            if constexpr (track_min) min_mag2_raw = std::min(min_mag2_raw, mag2_raw);
+            if constexpr (track_max) max_mag2_raw = std::max(max_mag2_raw, mag2_raw);
+        }
+
+        if (escaped_initial) {
+            finish_fixed_escape<NeedMask, FRAC>(r, 0, mag2_raw, min_mag2_raw, max_mag2_raw);
+            return r;
+        }
+    }
+
+    if (x2_raw == 0 && y2_raw == 0 && (x.raw != 0 || y.raw != 0)) {
+        x2_raw = fixed_square_q_sat_raw_cpu<FRAC>(x.raw);
+        y2_raw = fixed_square_q_sat_raw_cpu<FRAC>(y.raw);
+    }
     S x2{u64_to_i64_sat(x2_raw)};
     S y2{u64_to_i64_sat(y2_raw)};
 
@@ -182,7 +257,7 @@ inline IterResult iterate_fixed_int_masked(
             if constexpr (Gate == FixedEscapeGate::L1) {
                 if (!escaped_now) {
                     l1_raw = add_u64_sat(ax, ay);
-                    escaped_now = l1_raw > conservative_l1_escape_raw;
+                    escaped_now = l1_raw > two_sqrt2_floor_raw;
                 }
             }
         }
@@ -195,18 +270,14 @@ inline IterResult iterate_fixed_int_masked(
             if constexpr (track_min) min_mag2_raw = std::min(min_mag2_raw, mag2_raw);
             if constexpr (track_max) max_mag2_raw = std::max(max_mag2_raw, mag2_raw);
             if constexpr (can_gate_without_mag2 && Gate == FixedEscapeGate::L1) {
-                escaped_now = l1_raw > bailout_raw && mag2_raw > bailout2_raw;
+                escaped_now = l1_raw > two_raw && mag2_raw > bailout2_raw;
             } else {
                 escaped_now = mag2_raw > bailout2_raw;
             }
         }
 
         if (escaped_now) {
-            if constexpr (iter_result_wants(NeedMask, IterResultField::Iter))    r.iter = i;
-            if constexpr (iter_result_wants(NeedMask, IterResultField::Norm))    r.norm = fixed_mag2_q_to_double<FRAC>(mag2_raw);
-            if constexpr (iter_result_wants(NeedMask, IterResultField::Escaped)) r.escaped = true;
-            if constexpr (track_min) r.min_abs = fixed_mag2_q_to_abs<FRAC>(min_mag2_raw);
-            if constexpr (track_max) r.max_abs = fixed_mag2_q_to_abs<FRAC>(max_mag2_raw);
+            finish_fixed_escape<NeedMask, FRAC>(r, i, mag2_raw, min_mag2_raw, max_mag2_raw);
             return r;
         }
 

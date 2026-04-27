@@ -25,7 +25,7 @@ struct Fx64ViewportRaw {
     uint64_t bailout_raw = 0;
     uint64_t bailout2_raw = 0;
     uint64_t two_raw = 0;
-    uint64_t conservative_two_sqrt2_raw = 0;
+    uint64_t two_sqrt2_floor_raw = 0;
     uint64_t bailout2_q57 = 0;
 };
 

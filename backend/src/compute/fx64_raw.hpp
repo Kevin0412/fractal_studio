@@ -14,6 +14,9 @@
 
 namespace fsd::compute {
 
+inline constexpr uint64_t TWO_Q60 = 0x2000000000000000ULL;
+inline constexpr uint64_t TWO_SQRT2_Q60_FLOOR = 0x2D413CCCFE779921ULL;
+
 template <int FRAC>
 struct FixedViewportRaw {
     int64_t first_re_raw = 0;
@@ -25,7 +28,7 @@ struct FixedViewportRaw {
     uint64_t bailout_raw = 0;
     uint64_t bailout2_raw = 0;
     uint64_t two_raw = 0;
-    uint64_t conservative_two_sqrt2_raw = 0;
+    uint64_t two_sqrt2_floor_raw = 0;
 
     // Compatibility name for existing Q6.57 callers.
     uint64_t bailout2_q57 = 0;
@@ -135,16 +138,6 @@ inline uint64_t fixed_round_to_uraw_sat(double x) noexcept {
     return static_cast<uint64_t>(std::floor(scaled + 0.5L));
 }
 
-template <int FRAC>
-inline uint64_t fixed_ceil_to_uraw_sat(double x, uint64_t safety_margin = 0) noexcept {
-    if (!std::isfinite(x) || x <= 0.0) return safety_margin;
-    const long double scaled = static_cast<long double>(x) * std::ldexp(1.0L, FRAC);
-    if (scaled >= static_cast<long double>(std::numeric_limits<uint64_t>::max() - safety_margin)) {
-        return std::numeric_limits<uint64_t>::max();
-    }
-    return static_cast<uint64_t>(std::ceil(scaled)) + safety_margin;
-}
-
 inline int64_t fixed_saturate_i128(__int128 value) noexcept {
     if (value > static_cast<__int128>(std::numeric_limits<int64_t>::max())) {
         return std::numeric_limits<int64_t>::max();
@@ -153,6 +146,21 @@ inline int64_t fixed_saturate_i128(__int128 value) noexcept {
         return std::numeric_limits<int64_t>::min();
     }
     return static_cast<int64_t>(value);
+}
+
+template <int FRAC>
+inline constexpr uint64_t fixed_two_raw_const() noexcept {
+    static_assert(FRAC < 63, "Fixed64 requires FRAC < 63.");
+    return 1ULL << (FRAC + 1);
+}
+
+template <int FRAC>
+inline constexpr uint64_t fixed_two_sqrt2_floor_raw_const() noexcept {
+    if constexpr (FRAC == 60) {
+        return TWO_SQRT2_Q60_FLOOR;
+    } else {
+        return 0;
+    }
 }
 
 template <int FRAC>
@@ -190,9 +198,8 @@ inline FixedViewportRaw<FRAC> make_fixed_viewport_raw(
     v.julia_im_raw = fixed_round_to_raw_sat<FRAC>(julia_im);
     v.bailout_raw = fixed_round_to_uraw_sat<FRAC>(bailout);
     v.bailout2_raw = fixed_round_to_uraw_sat<FRAC>(bailout_sq);
-    v.two_raw = fixed_round_to_uraw_sat<FRAC>(2.0);
-    v.conservative_two_sqrt2_raw =
-        fixed_ceil_to_uraw_sat<FRAC>(2.0 * std::sqrt(2.0), 2);
+    v.two_raw = fixed_two_raw_const<FRAC>();
+    v.two_sqrt2_floor_raw = fixed_two_sqrt2_floor_raw_const<FRAC>();
     v.bailout2_q57 = v.bailout2_raw;
     return v;
 }

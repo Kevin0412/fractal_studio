@@ -228,7 +228,7 @@ void render_variant_metric_fixed_impl(const MapParams& p, cv::Mat& out) {
                     : (FRAC == 59 ? FixedEscapeGate::Component : FixedEscapeGate::Direct);
                 const IterResult r = iterate_fixed_int_masked<FRAC, gate, NeedMask, V>(
                     z0, c, p.iterations, vp.bailout_raw, vp.bailout2_raw,
-                    vp.conservative_two_sqrt2_raw);
+                    vp.two_raw, vp.two_sqrt2_floor_raw, p.julia);
 
                 uint8_t* px = row + 3 * x;
                 if constexpr (M == Metric::Escape) {
@@ -334,45 +334,69 @@ static bool supports_fixed_int_path(const MapParams& p, bool field_output = fals
     return true;
 }
 
-static bool has_classic_fixed_bailout(const MapParams& p) {
-    return std::isfinite(p.bailout) && std::isfinite(p.bailout_sq) &&
-           std::fabs(p.bailout - 2.0) <= 1e-12 &&
-           std::fabs(p.bailout_sq - 4.0) <= 1e-12;
+template <int FRAC>
+static bool fixed_double_fits_raw(double value) {
+    if (!std::isfinite(value)) return false;
+    const long double scaled = static_cast<long double>(value) * std::ldexp(1.0L, FRAC);
+    return scaled < static_cast<long double>(std::numeric_limits<int64_t>::max()) &&
+           scaled > static_cast<long double>(std::numeric_limits<int64_t>::min());
 }
 
-static double viewport_abs_bound(const MapParams& p) {
-    if (p.width <= 0 || p.height <= 0 || !std::isfinite(p.scale)) {
-        return std::numeric_limits<double>::infinity();
+template <int FRAC>
+static bool fixed_double_fits_uraw(double value) {
+    if (!std::isfinite(value) || value < 0.0) return false;
+    const long double scaled = static_cast<long double>(value) * std::ldexp(1.0L, FRAC);
+    return scaled < static_cast<long double>(std::numeric_limits<uint64_t>::max());
+}
+
+static bool i128_fits_i64(__int128 value) {
+    return value <= static_cast<__int128>(std::numeric_limits<int64_t>::max()) &&
+           value >= static_cast<__int128>(std::numeric_limits<int64_t>::min());
+}
+
+template <int FRAC>
+static bool fixed_viewport_representable(const MapParams& p) {
+    if (p.width <= 0 || p.height <= 0 || p.scale <= 0.0) return false;
+    if (!fixed_double_fits_raw<FRAC>(p.center_re) ||
+        !fixed_double_fits_raw<FRAC>(p.center_im) ||
+        !fixed_double_fits_raw<FRAC>(p.scale) ||
+        !fixed_double_fits_raw<FRAC>(p.julia_re) ||
+        !fixed_double_fits_raw<FRAC>(p.julia_im) ||
+        !fixed_double_fits_uraw<FRAC>(p.bailout) ||
+        !fixed_double_fits_uraw<FRAC>(p.bailout_sq)) {
+        return false;
     }
-    const double aspect = static_cast<double>(p.width) / static_cast<double>(p.height);
-    const double span_im = p.scale;
-    const double span_re = p.scale * aspect;
-    const double re0 = p.center_re - 0.5 * span_re;
-    const double re1 = p.center_re + 0.5 * span_re;
-    const double im0 = p.center_im - 0.5 * span_im;
-    const double im1 = p.center_im + 0.5 * span_im;
-    return std::max({std::fabs(re0), std::fabs(re1), std::fabs(im0), std::fabs(im1)});
-}
 
-static double julia_const_abs_bound(const MapParams& p) {
-    return std::max(std::fabs(p.julia_re), std::fabs(p.julia_im));
+    const int64_t center_re_raw = fixed_round_to_raw_sat<FRAC>(p.center_re);
+    const int64_t center_im_raw = fixed_round_to_raw_sat<FRAC>(p.center_im);
+    const int64_t scale_raw = fixed_round_to_raw_sat<FRAC>(p.scale);
+    const __int128 span_im_raw = static_cast<__int128>(scale_raw);
+    const __int128 span_re_raw =
+        (static_cast<__int128>(scale_raw) * p.width) / p.height;
+    const __int128 step_re_raw = span_re_raw / p.width;
+    const __int128 step_im_raw = span_im_raw / p.height;
+    const __int128 first_re_raw =
+        static_cast<__int128>(center_re_raw) - span_re_raw / 2 + step_re_raw / 2;
+    const __int128 first_im_raw =
+        static_cast<__int128>(center_im_raw) + span_im_raw / 2 - step_im_raw / 2;
+    const __int128 last_re_raw =
+        first_re_raw + static_cast<__int128>(p.width - 1) * step_re_raw;
+    const __int128 last_im_raw =
+        first_im_raw - static_cast<__int128>(p.height - 1) * step_im_raw;
+
+    return i128_fits_i64(step_re_raw) &&
+           i128_fits_i64(step_im_raw) &&
+           i128_fits_i64(first_re_raw) &&
+           i128_fits_i64(first_im_raw) &&
+           i128_fits_i64(last_re_raw) &&
+           i128_fits_i64(last_im_raw);
 }
 
 static bool fixed_precision_safe(const MapParams& p, FixedPrecision precision) {
-    if (precision == FixedPrecision::None || !has_classic_fixed_bailout(p)) return false;
-
-    const double pixel_bound = viewport_abs_bound(p);
-    const double z0_bound = p.julia ? pixel_bound : 0.0;
-    const double c_bound = p.julia ? julia_const_abs_bound(p) : pixel_bound;
-    if (!std::isfinite(z0_bound) || !std::isfinite(c_bound)) return false;
-
     switch (precision) {
-        case FixedPrecision::Q360:
-            return z0_bound <= (2.0 * std::sqrt(2.0)) && c_bound <= 3.5;
-        case FixedPrecision::Q459:
-            return z0_bound <= 4.0 && c_bound <= 8.0;
-        case FixedPrecision::Q657:
-            return z0_bound <= 8.0 && c_bound <= 32.0;
+        case FixedPrecision::Q360: return fixed_viewport_representable<60>(p);
+        case FixedPrecision::Q459: return fixed_viewport_representable<59>(p);
+        case FixedPrecision::Q657: return fixed_viewport_representable<57>(p);
         case FixedPrecision::None:
             return false;
     }
@@ -383,16 +407,6 @@ static FixedPrecision select_fixed_precision(const MapParams& p) {
     const FixedPrecision requested = requested_fixed_precision(p);
     if (requested == FixedPrecision::None) return FixedPrecision::None;
     if (fixed_precision_safe(p, requested)) return requested;
-    if (requested == FixedPrecision::Q360 && fixed_precision_safe(p, FixedPrecision::Q459)) {
-        return FixedPrecision::Q459;
-    }
-    if ((requested == FixedPrecision::Q360 || requested == FixedPrecision::Q459) &&
-        fixed_precision_safe(p, FixedPrecision::Q657)) {
-        return FixedPrecision::Q657;
-    }
-    if (requested == FixedPrecision::Q657 && fixed_precision_safe(p, FixedPrecision::Q657)) {
-        return FixedPrecision::Q657;
-    }
     return FixedPrecision::None;
 }
 
@@ -766,7 +780,7 @@ void field_variant_fixed_impl(const MapParams& p, FieldOutput& out) {
                     : (FRAC == 59 ? FixedEscapeGate::Component : FixedEscapeGate::Direct);
                 const IterResult r = iterate_fixed_int_masked<FRAC, gate, NeedMask, V>(
                     z0, c, p.iterations, vp.bailout_raw, vp.bailout2_raw,
-                    vp.conservative_two_sqrt2_raw);
+                    vp.two_raw, vp.two_sqrt2_floor_raw, p.julia);
 
                 const size_t idx = static_cast<size_t>(y) * W + x;
                 if constexpr (is_escape) {
@@ -988,7 +1002,7 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
             cp.fx64_viewport.bailout_raw = vp.bailout_raw;
             cp.fx64_viewport.bailout2_raw = vp.bailout2_raw;
             cp.fx64_viewport.two_raw = vp.two_raw;
-            cp.fx64_viewport.conservative_two_sqrt2_raw = vp.conservative_two_sqrt2_raw;
+            cp.fx64_viewport.two_sqrt2_floor_raw = vp.two_sqrt2_floor_raw;
             cp.fx64_viewport.bailout2_q57 = vp.bailout2_raw;
         } else if (fx && fixed_precision == FixedPrecision::Q459) {
             const FixedViewportRaw<59> vp = make_fixed_viewport_raw<59>(
@@ -1003,7 +1017,7 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
             cp.fx64_viewport.bailout_raw = vp.bailout_raw;
             cp.fx64_viewport.bailout2_raw = vp.bailout2_raw;
             cp.fx64_viewport.two_raw = vp.two_raw;
-            cp.fx64_viewport.conservative_two_sqrt2_raw = vp.conservative_two_sqrt2_raw;
+            cp.fx64_viewport.two_sqrt2_floor_raw = vp.two_sqrt2_floor_raw;
             cp.fx64_viewport.bailout2_q57 = vp.bailout2_raw;
         } else if (fx) {
             const FixedViewportRaw<57> vp = make_fixed_viewport_raw<57>(
@@ -1018,7 +1032,7 @@ MapStats render_map(const MapParams& p, cv::Mat& out) {
             cp.fx64_viewport.bailout_raw = vp.bailout_raw;
             cp.fx64_viewport.bailout2_raw = vp.bailout2_raw;
             cp.fx64_viewport.two_raw = vp.two_raw;
-            cp.fx64_viewport.conservative_two_sqrt2_raw = vp.conservative_two_sqrt2_raw;
+            cp.fx64_viewport.two_sqrt2_floor_raw = vp.two_sqrt2_floor_raw;
             cp.fx64_viewport.bailout2_q57 = vp.bailout2_raw;
         }
         try {
