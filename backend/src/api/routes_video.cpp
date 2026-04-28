@@ -54,6 +54,7 @@
 #include <filesystem>
 #include <functional>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -76,6 +77,7 @@ constexpr int64_t MAX_VIDEO_PIXELS = 7680LL * 4320LL;
 constexpr double DEFAULT_SECONDS_PER_OCTAVE = 0.4;
 constexpr double MAX_SECONDS_PER_OCTAVE = 60.0;
 constexpr double MAX_VIDEO_DURATION_SEC = 3600.0;
+constexpr int OPENCV_REMAP_DIM_LIMIT = std::numeric_limits<short>::max();
 
 int roundUpToMultiple(int value, int multiple) {
     if (multiple <= 1) return value;
@@ -122,6 +124,56 @@ uint64_t estimateVideoPeakMemoryBytes(int W, int H, int s, int t) {
 
 bool commandSucceeds(const std::string& command) {
     return std::system(command.c_str()) == 0;
+}
+
+struct VideoWarpStats {
+    double warpTotalMs = 0.0;
+    double copyTotalMs = 0.0;
+    double writeTotalMs = 0.0;
+    double encodeCloseMs = 0.0;
+    uint64_t rawVideoBytes = 0;
+    int frameCount = 0;
+    int stripWidth = 0;
+    int stripHeight = 0;
+    bool opencvRemapSafe = false;
+    std::string warpMethod;
+    std::string encoder;
+};
+
+Json videoWarpStatsJson(const VideoWarpStats& stats) {
+    const double frames = static_cast<double>(std::max(1, stats.frameCount));
+    return Json{
+        {"warpTotalMs", stats.warpTotalMs},
+        {"copyTotalMs", stats.copyTotalMs},
+        {"writeTotalMs", stats.writeTotalMs},
+        {"encodeCloseMs", stats.encodeCloseMs},
+        {"avgWarpMs", stats.warpTotalMs / frames},
+        {"avgCopyMs", stats.copyTotalMs / frames},
+        {"avgWriteMs", stats.writeTotalMs / frames},
+        {"rawVideoBytes", stats.rawVideoBytes},
+        {"frameCount", stats.frameCount},
+        {"stripWidth", stats.stripWidth},
+        {"stripHeight", stats.stripHeight},
+        {"opencvRemapSafe", stats.opencvRemapSafe},
+        {"warpMethod", stats.warpMethod},
+        {"encoder", stats.encoder},
+    };
+}
+
+void mergeVideoWarpStats(Json& dst, const VideoWarpStats& stats) {
+    const Json src = videoWarpStatsJson(stats);
+    for (auto it = src.begin(); it != src.end(); ++it) {
+        dst[it.key()] = it.value();
+    }
+}
+
+bool opencv_remap_size_safe(const cv::Mat& src, int dstW, int dstH) {
+    return !src.empty()
+        && src.cols > 0 && src.rows > 0 && dstW > 0 && dstH > 0
+        && src.cols < OPENCV_REMAP_DIM_LIMIT
+        && src.rows < OPENCV_REMAP_DIM_LIMIT
+        && dstW < OPENCV_REMAP_DIM_LIMIT
+        && dstH < OPENCV_REMAP_DIM_LIMIT;
 }
 
 StripPlan resolveStripPlan(const Json& j, int W, int H, double depthOctaves) {
@@ -310,27 +362,139 @@ void renderWarpFrameShared(
     }
 }
 
-cv::Mat renderZoomPreviewFrame(
-    const cv::Mat& strip,
+uint8_t clampByte(double v) {
+    if (v <= 0.0) return 0;
+    if (v >= 255.0) return 255;
+    return static_cast<uint8_t>(v + 0.5);
+}
+
+void sampleBgrBilinearBorder(const cv::Mat& img, double x, double y, uint8_t* dst) {
+    double b = 0.0;
+    double g = 0.0;
+    double r = 0.0;
+    const int x0 = static_cast<int>(std::floor(x));
+    const int y0 = static_cast<int>(std::floor(y));
+    const double fx = x - static_cast<double>(x0);
+    const double fy = y - static_cast<double>(y0);
+
+    for (int oy = 0; oy <= 1; ++oy) {
+        const int sy = y0 + oy;
+        if (sy < 0 || sy >= img.rows) continue;
+        const double wy = oy == 0 ? (1.0 - fy) : fy;
+        const uint8_t* row = img.ptr<uint8_t>(sy);
+        for (int ox = 0; ox <= 1; ++ox) {
+            const int sx = x0 + ox;
+            if (sx < 0 || sx >= img.cols) continue;
+            const double wx = ox == 0 ? (1.0 - fx) : fx;
+            const double w = wx * wy;
+            const uint8_t* px = row + 3 * sx;
+            b += w * static_cast<double>(px[0]);
+            g += w * static_cast<double>(px[1]);
+            r += w * static_cast<double>(px[2]);
+        }
+    }
+
+    dst[0] = clampByte(b);
+    dst[1] = clampByte(g);
+    dst[2] = clampByte(r);
+}
+
+void renderWarpFrameManualCpu(
+    const cv::Mat& stripWrap,
     const cv::Mat& finalImg,
     int W, int H,
     double kTop,
-    double kTop_end
+    double kTop_end,
+    cv::Mat& frame
+) {
+    if (frame.empty() || frame.rows != H || frame.cols != W || frame.type() != CV_8UC3) {
+        frame.create(H, W, CV_8UC3);
+    }
+
+    const double aspect = static_cast<double>(W) / static_cast<double>(H);
+    const int stripH = stripWrap.rows;
+    const int s = stripWrap.cols - 1;
+    const double stripScale = static_cast<double>(s) / TAU;
+    const double kTopStripScale = kTop * stripScale;
+    const double S = std::exp(kTop - kTop_end);
+
+    for (int y = 0; y < H; ++y) {
+        const double vy = -(2.0 * (static_cast<double>(y) + 0.5) / static_cast<double>(H) - 1.0);
+        uint8_t* dp = frame.ptr<uint8_t>(y);
+        for (int x = 0; x < W; ++x) {
+            const double ux = (2.0 * (static_cast<double>(x) + 0.5) / static_cast<double>(W) - 1.0) * aspect;
+            const double r2 = ux * ux + vy * vy;
+            double th = std::atan2(vy, ux);
+            if (th < 0.0) th += TAU;
+
+            bool useStrip = false;
+            double row = -1.0;
+            if (r2 > 1e-30) {
+                const double lnR = 0.5 * std::log(r2);
+                row = (LN_FOUR - lnR) * stripScale - kTopStripScale;
+                useStrip = row >= 0.0 && row < static_cast<double>(stripH) - 1.0;
+            }
+
+            uint8_t* out = dp + 3 * x;
+            if (useStrip) {
+                const double col = th * stripScale;
+                sampleBgrBilinearBorder(stripWrap, col, row, out);
+            } else {
+                const double fu = ux * S;
+                const double fv = vy * S;
+                const double finalX = (fu / aspect * 0.5 + 0.5) * static_cast<double>(W);
+                const double finalY = (-fv * 0.5 + 0.5) * static_cast<double>(H);
+                sampleBgrBilinearBorder(finalImg, finalX, finalY, out);
+            }
+        }
+    }
+}
+
+cv::Mat renderZoomPreviewFrameSmart(
+    const cv::Mat& strip,
+    const cv::Mat& finalImg,
+    int W,
+    int H,
+    double kTop,
+    double kTop_end,
+    bool preferCudaWarp
 ) {
     cv::Mat stripWrap;
     cv::copyMakeBorder(strip, stripWrap, 0, 0, 0, 1, cv::BORDER_WRAP);
 
     cv::Mat frame(H, W, CV_8UC3);
-    cv::Mat stripFrame(H, W, CV_8UC3);
-    cv::Mat finalFrame(H, W, CV_8UC3);
-    cv::Mat mapX(H, W, CV_32FC1);
-    cv::Mat mapY(H, W, CV_32FC1);
-    cv::Mat fmapX(H, W, CV_32FC1);
-    cv::Mat fmapY(H, W, CV_32FC1);
-    std::vector<float> useStrip(static_cast<size_t>(W) * H, 0.0f);
+    const bool remapSafe = opencv_remap_size_safe(stripWrap, W, H)
+        && opencv_remap_size_safe(finalImg, W, H);
 
-    renderWarpFrameShared(stripWrap, finalImg, W, H, kTop, kTop_end,
-                          frame, stripFrame, finalFrame, mapX, mapY, fmapX, fmapY, useStrip);
+#if USE_CUDA_VIDEO_WARP
+    if (preferCudaWarp && fsd_cuda::cuda_video_warp_available()) {
+        fsd_cuda::CudaVideoWarpContext cudaWarp;
+        try {
+            fsd_cuda::cuda_video_warp_init(stripWrap, finalImg, cudaWarp);
+            fsd_cuda::cuda_video_warp_frame(cudaWarp, kTop, kTop_end, frame);
+            fsd_cuda::cuda_video_warp_release(cudaWarp);
+            return frame;
+        } catch (...) {
+            fsd_cuda::cuda_video_warp_release(cudaWarp);
+        }
+    }
+#else
+    (void)preferCudaWarp;
+#endif
+
+    if (remapSafe) {
+        cv::Mat stripFrame(H, W, CV_8UC3);
+        cv::Mat finalFrame(H, W, CV_8UC3);
+        cv::Mat mapX(H, W, CV_32FC1);
+        cv::Mat mapY(H, W, CV_32FC1);
+        cv::Mat fmapX(H, W, CV_32FC1);
+        cv::Mat fmapY(H, W, CV_32FC1);
+        std::vector<float> useStrip(static_cast<size_t>(W) * H, 0.0f);
+        renderWarpFrameShared(stripWrap, finalImg, W, H, kTop, kTop_end,
+                              frame, stripFrame, finalFrame, mapX, mapY, fmapX, fmapY, useStrip);
+    } else {
+        renderWarpFrameManualCpu(stripWrap, finalImg, W, H, kTop, kTop_end, frame);
+    }
     return frame;
 }
 
@@ -346,13 +510,22 @@ static std::string generateZoomVideo(
     std::string* encoder_out = nullptr,
     bool prefer_cuda_warp = true,
     std::string* warp_method_out = nullptr,
+    VideoWarpStats* stats_out = nullptr,
     const std::function<bool()>& should_cancel = nullptr
 ) {
     if (encoder_out) *encoder_out = "";
-    if (warp_method_out) *warp_method_out = "opencv_cpu_remap";
 
     cv::Mat stripWrap;
     cv::copyMakeBorder(strip, stripWrap, 0, 0, 0, 1, cv::BORDER_WRAP);
+
+    const bool remapSafe = opencv_remap_size_safe(stripWrap, W, H)
+        && opencv_remap_size_safe(finalImg, W, H);
+    VideoWarpStats baseStats;
+    baseStats.frameCount = frameCount;
+    baseStats.stripWidth = strip.cols;
+    baseStats.stripHeight = strip.rows;
+    baseStats.opencvRemapSafe = remapSafe;
+    std::string selectedWarpMethod;
 
 #if USE_CUDA_VIDEO_WARP
     fsd_cuda::CudaVideoWarpContext cudaWarp;
@@ -365,7 +538,7 @@ static std::string generateZoomVideo(
         try {
             fsd_cuda::cuda_video_warp_init(stripWrap, finalImg, cudaWarp);
             useCudaWarp = true;
-            if (warp_method_out) *warp_method_out = "cuda_kernel";
+            selectedWarpMethod = "cuda_texture";
         } catch (...) {
             fsd_cuda::cuda_video_warp_release(cudaWarp);
             useCudaWarp = false;
@@ -374,6 +547,11 @@ static std::string generateZoomVideo(
 #else
     (void)prefer_cuda_warp;
 #endif
+    if (selectedWarpMethod.empty()) {
+        selectedWarpMethod = remapSafe ? "opencv_cpu_remap" : "manual_cpu_bilinear";
+    }
+    baseStats.warpMethod = selectedWarpMethod;
+    if (warp_method_out) *warp_method_out = selectedWarpMethod;
 
     const std::filesystem::path mp4 = outDir / (baseName + ".mp4");
     const std::filesystem::path avi = outDir / (baseName + ".avi");
@@ -389,18 +567,35 @@ static std::string generateZoomVideo(
     cv::Mat fmapY(H, W, CV_32FC1);
     std::vector<float> useStrip(static_cast<size_t>(W) * H, 0.0f);
 
-    auto renderFrames = [&](auto&& writeFrame) {
+    auto renderFrames = [&](auto&& writeFrame, VideoWarpStats& stats) {
         for (int f = 0; f < frameCount; f++) {
             if (should_cancel && should_cancel()) throw std::runtime_error("cancelled");
             const double tNorm = static_cast<double>(f) / std::max(1, frameCount - 1);
             const double kTop  = kTop_start - tNorm * depthOctaves * LN_TWO;
 #if USE_CUDA_VIDEO_WARP
             if (useCudaWarp) {
-                fsd_cuda::cuda_video_warp_frame(cudaWarp, kTop, kTop_end, frame);
+                fsd_cuda::CudaVideoWarpTiming timing;
+                fsd_cuda::cuda_video_warp_frame_timed(cudaWarp, kTop, kTop_end, frame, &timing);
+                stats.warpTotalMs += timing.kernel_ms;
+                stats.copyTotalMs += timing.copy_ms;
             } else
 #endif
-            renderWarpFrameShared(stripWrap, finalImg, W, H, kTop, kTop_end, frame, stripFrame, finalFrame, mapX, mapY, fmapX, fmapY, useStrip);
+            {
+                const auto warpStart = std::chrono::steady_clock::now();
+                if (selectedWarpMethod == "opencv_cpu_remap") {
+                    renderWarpFrameShared(stripWrap, finalImg, W, H, kTop, kTop_end, frame, stripFrame, finalFrame, mapX, mapY, fmapX, fmapY, useStrip);
+                } else {
+                    renderWarpFrameManualCpu(stripWrap, finalImg, W, H, kTop, kTop_end, frame);
+                }
+                const auto warpEnd = std::chrono::steady_clock::now();
+                stats.warpTotalMs += std::chrono::duration<double, std::milli>(warpEnd - warpStart).count();
+            }
+            const size_t bytes = static_cast<size_t>(frame.rows) * frame.step;
+            const auto writeStart = std::chrono::steady_clock::now();
             writeFrame(frame);
+            const auto writeEnd = std::chrono::steady_clock::now();
+            stats.writeTotalMs += std::chrono::duration<double, std::milli>(writeEnd - writeStart).count();
+            stats.rawVideoBytes += static_cast<uint64_t>(bytes);
             if (should_cancel && should_cancel()) throw std::runtime_error("cancelled");
             if (on_frame_done && (f + 1 == frameCount || ((f + 1) % 8) == 0)) on_frame_done(f + 1);
         }
@@ -429,6 +624,8 @@ static std::string generateZoomVideo(
     for (const auto& [encoderName, ffmpegCmd] : ffmpegCmds) {
         if (FILE* pipe = popen(ffmpegCmd.c_str(), "w")) {
             bool ok = true;
+            VideoWarpStats attemptStats = baseStats;
+            attemptStats.encoder = encoderName;
             try {
                 renderFrames([&](const cv::Mat& rendered) {
                     const size_t bytes = static_cast<size_t>(rendered.rows) * rendered.step;
@@ -436,7 +633,7 @@ static std::string generateZoomVideo(
                         ok = false;
                         throw std::runtime_error("ffmpeg pipe write failed");
                     }
-                });
+                }, attemptStats);
             } catch (...) {
                 pclose(pipe);
                 std::error_code ec;
@@ -445,7 +642,10 @@ static std::string generateZoomVideo(
                 std::filesystem::remove(ffmpegErrTmp, ec);
                 throw;
             }
+            const auto closeStart = std::chrono::steady_clock::now();
             const int rc = pclose(pipe);
+            const auto closeEnd = std::chrono::steady_clock::now();
+            attemptStats.encodeCloseMs = std::chrono::duration<double, std::milli>(closeEnd - closeStart).count();
             if (ffmpeg_stderr_out) {
                 std::ifstream errIn(ffmpegErrTmp);
                 std::ostringstream ss; ss << errIn.rdbuf();
@@ -469,6 +669,7 @@ static std::string generateZoomVideo(
                     std::filesystem::rename(tmpMp4, mp4, ec);
                 }
                 if (encoder_out) *encoder_out = encoderName;
+                if (stats_out) *stats_out = attemptStats;
                 return mp4.string();
             }
         }
@@ -491,11 +692,16 @@ static std::string generateZoomVideo(
         }
     }
 
+    VideoWarpStats writerStats = baseStats;
+    writerStats.encoder = encoderName;
     try {
         renderFrames([&](const cv::Mat& rendered) {
             writer.write(rendered);
-        });
+        }, writerStats);
+        const auto closeStart = std::chrono::steady_clock::now();
         writer.release();
+        const auto closeEnd = std::chrono::steady_clock::now();
+        writerStats.encodeCloseMs = std::chrono::duration<double, std::milli>(closeEnd - closeStart).count();
     } catch (...) {
         writer.release();
         std::error_code ec;
@@ -513,6 +719,7 @@ static std::string generateZoomVideo(
             std::filesystem::rename(tmpMp4, mp4, ec);
         }
         if (encoder_out) *encoder_out = encoderName;
+        if (stats_out) *stats_out = writerStats;
         return mp4.string();
     }
     if (std::filesystem::exists(tmpAvi)) {
@@ -524,6 +731,7 @@ static std::string generateZoomVideo(
             std::filesystem::rename(tmpAvi, avi, ec);
         }
         if (encoder_out) *encoder_out = encoderName;
+        if (stats_out) *stats_out = writerStats;
         return avi.string();
     }
     return mp4.string();
@@ -581,7 +789,7 @@ void setVideoProgress(
         {"errorMessage", errorMessage},
         {"details", details},
     };
-    for (const char* key : {"engine", "scalar", "finalFrameEngine", "finalFrameScalar", "lnMapEngine", "lnMapScalar", "warpMethod", "encoder", "currentFrame", "totalFrames", "currentLnMapRow", "totalLnMapRows"}) {
+    for (const char* key : {"engine", "scalar", "finalFrameEngine", "finalFrameScalar", "lnMapEngine", "lnMapScalar", "warpMethod", "encoder", "currentFrame", "totalFrames", "currentLnMapRow", "totalLnMapRows", "warpTotalMs", "copyTotalMs", "writeTotalMs", "encodeCloseMs", "avgWarpMs", "avgCopyMs", "avgWriteMs", "rawVideoBytes", "stripWidth", "stripHeight", "opencvRemapSafe"}) {
         if (details.contains(key)) j[key] = details[key];
     }
     runner.setProgress(runId, j.dump());
@@ -691,6 +899,7 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
     std::string ffmpegStderr;
     std::string encoderUsed;
     std::string warpMethod;
+    VideoWarpStats warpStats;
     double elapsed = 0.0;
 
     try {
@@ -712,12 +921,15 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
             &encoderUsed,
             j.value("cudaWarp", true),
             &warpMethod,
+            &warpStats,
             [&]() { return runner.isCancelRequested(run.id); }
         );
         const auto t1 = std::chrono::steady_clock::now();
         elapsed = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        Json doneDetails = {{"currentFrame", frameCount}, {"totalFrames", frameCount}, {"warpMethod", warpMethod}, {"encoder", encoderUsed}};
+        mergeVideoWarpStats(doneDetails, warpStats);
         setVideoProgress(runner, run.id, "video_warp_encode", frameCount, frameCount, depthOctaves, depthOctaves,
-                         "", "", Json{{"currentFrame", frameCount}, {"totalFrames", frameCount}, {"warpMethod", warpMethod}, {"encoder", encoderUsed}});
+                         "", "", doneDetails);
 
         runner.addArtifact(run.id, Artifact{"zoom-video", mp4Path, "video"});
         runner.setStatus(run.id, "completed");
@@ -753,6 +965,7 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
         {"ffmpegStderr",ffmpegStderr},
         {"generatedMs", elapsed},
     };
+    mergeVideoWarpStats(resp, warpStats);
     return resp.dump();
 }
 
@@ -1052,8 +1265,9 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
 
         // ── 3. Render first/last preview frames ───────────────────────────────
         throwIfCancelled(runner, run.id);
-        const cv::Mat startPreview = renderZoomPreviewFrame(strip, finalImg, W, H, kTop_start, kTop_end);
-        const cv::Mat endPreview   = renderZoomPreviewFrame(strip, finalImg, W, H, kTop_end,   kTop_end);
+        const bool preferCudaWarp = j.value("cudaWarp", true);
+        const cv::Mat startPreview = renderZoomPreviewFrameSmart(strip, finalImg, W, H, kTop_start, kTop_end, preferCudaWarp);
+        const cv::Mat endPreview   = renderZoomPreviewFrameSmart(strip, finalImg, W, H, kTop_end,   kTop_end, preferCudaWarp);
         const std::filesystem::path startPreviewPath = std::filesystem::path(run.outputDir) / "start_frame.png";
         const std::filesystem::path endPreviewPath   = std::filesystem::path(run.outputDir) / "end_frame.png";
         compute::write_png(startPreviewPath.string(), startPreview);
@@ -1067,6 +1281,7 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
         std::string ffmpegStderr;
         std::string encoderUsed;
         std::string warpMethod;
+        VideoWarpStats warpStats;
         const std::string videoPath = generateZoomVideo(
             strip, finalImg, W, H, fps, frameCount,
             kTop_start, kTop_end, depth,
@@ -1077,13 +1292,16 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
             },
             &ffmpegStderr,
             &encoderUsed,
-            j.value("cudaWarp", true),
+            preferCudaWarp,
             &warpMethod,
+            &warpStats,
             [&]() { return runner.isCancelRequested(run.id); }
         );
         throwIfCancelled(runner, run.id);
+        Json doneDetails = {{"currentFrame", frameCount}, {"totalFrames", frameCount}, {"lnMapEngine", lnStats.engine_used}, {"lnMapScalar", lnStats.scalar_used}, {"finalFrameEngine", finalStats.engine_used}, {"finalFrameScalar", finalStats.scalar_used}, {"warpMethod", warpMethod}, {"encoder", encoderUsed}};
+        mergeVideoWarpStats(doneDetails, warpStats);
         setVideoProgress(runner, run.id, "video_warp_encode", frameCount, frameCount, depth, depth,
-                         "", "", Json{{"currentFrame", frameCount}, {"totalFrames", frameCount}, {"lnMapEngine", lnStats.engine_used}, {"lnMapScalar", lnStats.scalar_used}, {"finalFrameEngine", finalStats.engine_used}, {"finalFrameScalar", finalStats.scalar_used}, {"warpMethod", warpMethod}, {"encoder", encoderUsed}});
+                         "", "", doneDetails);
         const std::string videoFile = std::filesystem::path(videoPath).filename().string();
         runner.addArtifact(run.id, Artifact{"zoom-video", videoPath, "video"});
 
@@ -1101,6 +1319,7 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
             {"qualityScale", stripPlan.qualityScale},
             {"estimatedPeakMemory", stripPlan.estimatedPeakMemory},
         };
+        mergeVideoWarpStats(renderLog, warpStats);
         const std::filesystem::path reportPath = std::filesystem::path(run.outputDir) / "video_export.json";
         atomicWriteText(reportPath, renderLog.dump(2));
         runner.addArtifact(run.id, Artifact{"video-export", reportPath.string(), "report"});
@@ -1158,6 +1377,7 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
             {"encoder",            encoderUsed},
             {"ffmpegStderr",       ffmpegStderr},
         };
+        mergeVideoWarpStats(resp, warpStats);
         return resp;
 
     } catch (const std::exception& e) {
@@ -1181,6 +1401,17 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
             } catch (...) {}
         }).detach();
 
+        const bool queuedRemapSafe = (s + 1) < OPENCV_REMAP_DIM_LIMIT
+            && stripPlan.heightT < OPENCV_REMAP_DIM_LIMIT
+            && W < OPENCV_REMAP_DIM_LIMIT
+            && H < OPENCV_REMAP_DIM_LIMIT;
+        std::string queuedWarpMethod = queuedRemapSafe ? "opencv_cpu_remap" : "manual_cpu_bilinear";
+#if USE_CUDA_VIDEO_WARP
+        if (j.value("cudaWarp", true) && fsd_cuda::cuda_video_warp_available()) {
+            queuedWarpMethod = "cuda_texture";
+        }
+#endif
+
         Json resp = {
             {"runId", run.id},
             {"status", "queued"},
@@ -1199,7 +1430,7 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
             {"height", H},
             {"lnMapEngine", "openmp"},
             {"lnMapScalar", "fp64"},
-            {"warpMethod", "opencv_cpu_remap"},
+            {"warpMethod", queuedWarpMethod},
         };
         return resp.dump();
     }
