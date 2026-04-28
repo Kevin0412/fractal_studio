@@ -28,11 +28,17 @@
 #include "routes_common.hpp"
 
 #include "../compute/image_io.hpp"
+#include "../compute/ln_map.hpp"
 #include "../compute/map_kernel.hpp"
 #include "../compute/variants.hpp"
 #include "../compute/colormap.hpp"
-#include "../compute/escape_time.hpp"
-#include "../compute/parallel.hpp"
+
+#if defined(HAS_CUDA_KERNEL)
+#  include "../compute/cuda/video_warp.cuh"
+#  define USE_CUDA_VIDEO_WARP 1
+#else
+#  define USE_CUDA_VIDEO_WARP 0
+#endif
 
 #include <opencv2/imgproc.hpp>
 #include <opencv2/videoio.hpp>
@@ -228,87 +234,6 @@ double bailoutSqFromJson(const Json& j, double radius, double defaultSq) {
     return defaultSq;
 }
 
-// ─── Julia-aware ln-strip renderer ───────────────────────────────────────────
-// When julia=true, z₀ = center + e^k·e^(iθ) and c = fixed (juliaRe+juliaIm·i).
-// When julia=false, c = center + e^k·e^(iθ) and z₀ = 0 (standard ln-map).
-
-template <compute::Variant V>
-void render_ln_strip_dispatch(
-    bool julia,
-    double cr, double ci,
-    double jre, double jim,
-    int s, int t,
-    int iters, double bailout, double bailoutSq,
-    compute::Colormap colormap,
-    cv::Mat& out,
-    const std::function<void(int)>& on_row_done = nullptr
-) {
-    const compute::Cx<double> c_julia{jre, jim};
-    const int thread_count = compute::default_render_threads();
-    std::atomic<int> rows_done{0};
-    std::vector<double> cos_col(static_cast<size_t>(s));
-    std::vector<double> sin_col(static_cast<size_t>(s));
-    for (int x = 0; x < s; x++) {
-        const double th = TAU * static_cast<double>(x) / static_cast<double>(s);
-        cos_col[static_cast<size_t>(x)] = std::cos(th);
-        sin_col[static_cast<size_t>(x)] = std::sin(th);
-    }
-
-    #pragma omp parallel num_threads(thread_count)
-    {
-        #pragma omp for schedule(dynamic, 8)
-        for (int row = 0; row < t; row++) {
-            uint8_t* rowp = out.ptr<uint8_t>(row);
-            const double k     = LN_FOUR - static_cast<double>(row) * TAU / static_cast<double>(s);
-            const double r_mag = std::exp(k);
-            for (int x = 0; x < s; x++) {
-                const double pre = cr + r_mag * cos_col[static_cast<size_t>(x)];
-                const double pim = ci + r_mag * sin_col[static_cast<size_t>(x)];
-                compute::Cx<double> z0, c;
-                if (julia) {
-                    z0 = {pre, pim};
-                    c  = c_julia;
-                } else {
-                    z0 = {0.0, 0.0};
-                    c  = {pre, pim};
-                }
-                const compute::IterResult ir = compute::iterate_masked<
-                    compute::IterResultField::Iter | compute::IterResultField::Escaped,
-                    V, double>(z0, c, iters, bailout, bailoutSq);
-                uint8_t* px = rowp + 3 * x;
-                const int    it   = ir.escaped ? ir.iter : iters;
-                compute::colorize_escape_bgr(it, iters, colormap, 0.0, false, px[0], px[1], px[2]);
-            }
-            if (on_row_done) {
-                const int done = rows_done.fetch_add(1, std::memory_order_relaxed) + 1;
-                if (done == t || (done % 16) == 0) on_row_done(done);
-            }
-        }
-    }
-}
-
-void dispatch_ln_strip_full(
-    compute::Variant v,
-    bool julia,
-    double cr, double ci,
-    double jre, double jim,
-    int s, int t,
-    int iters, double bailout, double bailoutSq,
-    compute::Colormap colormap,
-    cv::Mat& out,
-    const std::function<void(int)>& on_row_done = nullptr
-) {
-    using V = compute::Variant;
-#define CASE(X) case V::X: render_ln_strip_dispatch<V::X>(julia,cr,ci,jre,jim,s,t,iters,bailout,bailoutSq,colormap,out,on_row_done); break
-    switch (v) {
-        CASE(Mandelbrot); CASE(Tri); CASE(Boat); CASE(Duck); CASE(Bell);
-        CASE(Fish);       CASE(Vase); CASE(Bird); CASE(Mask); CASE(Ship);
-        CASE(SinZ);       CASE(CosZ); CASE(ExpZ); CASE(SinhZ); CASE(CoshZ); CASE(TanZ);
-        case V::Custom: break;
-    }
-#undef CASE
-}
-
 void renderWarpFrameShared(
     const cv::Mat& stripWrap,
     const cv::Mat& finalImg,
@@ -416,12 +341,36 @@ static std::string generateZoomVideo(
     const std::filesystem::path& outDir, const std::string& baseName,
     const std::function<void(int)>& on_frame_done = nullptr,
     std::string* ffmpeg_stderr_out = nullptr,
-    std::string* encoder_out = nullptr
+    std::string* encoder_out = nullptr,
+    bool prefer_cuda_warp = true,
+    std::string* warp_method_out = nullptr
 ) {
     if (encoder_out) *encoder_out = "";
+    if (warp_method_out) *warp_method_out = "opencv_cpu_remap";
 
     cv::Mat stripWrap;
     cv::copyMakeBorder(strip, stripWrap, 0, 0, 0, 1, cv::BORDER_WRAP);
+
+#if USE_CUDA_VIDEO_WARP
+    fsd_cuda::CudaVideoWarpContext cudaWarp;
+    struct CudaWarpGuard {
+        fsd_cuda::CudaVideoWarpContext* ctx = nullptr;
+        ~CudaWarpGuard() { if (ctx) fsd_cuda::cuda_video_warp_release(*ctx); }
+    } cudaWarpGuard{&cudaWarp};
+    bool useCudaWarp = false;
+    if (prefer_cuda_warp && fsd_cuda::cuda_video_warp_available()) {
+        try {
+            fsd_cuda::cuda_video_warp_init(stripWrap, finalImg, cudaWarp);
+            useCudaWarp = true;
+            if (warp_method_out) *warp_method_out = "cuda_kernel";
+        } catch (...) {
+            fsd_cuda::cuda_video_warp_release(cudaWarp);
+            useCudaWarp = false;
+        }
+    }
+#else
+    (void)prefer_cuda_warp;
+#endif
 
     const std::filesystem::path mp4 = outDir / (baseName + ".mp4");
     const std::filesystem::path avi = outDir / (baseName + ".avi");
@@ -439,6 +388,11 @@ static std::string generateZoomVideo(
         for (int f = 0; f < frameCount; f++) {
             const double tNorm = static_cast<double>(f) / std::max(1, frameCount - 1);
             const double kTop  = kTop_start - tNorm * depthOctaves * LN_TWO;
+#if USE_CUDA_VIDEO_WARP
+            if (useCudaWarp) {
+                fsd_cuda::cuda_video_warp_frame(cudaWarp, kTop, kTop_end, frame);
+            } else
+#endif
             renderWarpFrameShared(stripWrap, finalImg, W, H, kTop, kTop_end, frame, stripFrame, finalFrame, mapX, mapY, fmapX, fmapY, useStrip);
             writeFrame(frame);
             if (on_frame_done && (f + 1 == frameCount || ((f + 1) % 8) == 0)) on_frame_done(f + 1);
@@ -657,46 +611,26 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
     runner.setStatus(run.id, "running");
 
     std::string mp4Path;
+    std::string ffmpegStderr;
+    std::string encoderUsed;
+    std::string warpMethod;
     double elapsed = 0.0;
 
     try {
         const auto t0 = std::chrono::steady_clock::now();
-
-        const std::filesystem::path outPath =
-            std::filesystem::path(run.outputDir) / "zoom.mp4";
-        const int fourcc = cv::VideoWriter::fourcc('m', 'p', '4', 'v');
-        cv::VideoWriter writer(outPath.string(), fourcc, static_cast<double>(fps),
-                               cv::Size(W, H), true);
-        if (!writer.isOpened()) {
-            const std::filesystem::path aviPath =
-                std::filesystem::path(run.outputDir) / "zoom.avi";
-            writer.open(aviPath.string(),
-                        cv::VideoWriter::fourcc('M','J','P','G'),
-                        static_cast<double>(fps), cv::Size(W, H), true);
-            if (!writer.isOpened()) throw std::runtime_error("VideoWriter failed");
-            mp4Path = aviPath.string();
-        } else {
-            mp4Path = outPath.string();
-        }
-
-        cv::Mat stripWrap;
-        cv::copyMakeBorder(strip, stripWrap, 0, 0, 0, 1, cv::BORDER_WRAP);
-        cv::Mat frame(H, W, CV_8UC3);
-        cv::Mat stripFrame(H, W, CV_8UC3);
-        cv::Mat finalFrame(H, W, CV_8UC3);
-        cv::Mat mapX(H, W, CV_32FC1);
-        cv::Mat mapY(H, W, CV_32FC1);
-        cv::Mat fmapX(H, W, CV_32FC1);
-        cv::Mat fmapY(H, W, CV_32FC1);
-        std::vector<float> useStrip(static_cast<size_t>(W) * H, 0.0f);
-        for (int f = 0; f < frameCount; f++) {
-            const double t = static_cast<double>(f) / std::max(1, frameCount - 1);
-            const double kTop = kTop_start - t * depthOctaves * LN_TWO;
-            renderWarpFrameShared(stripWrap, finalImg, W, H, kTop, kTop_end, frame, stripFrame, finalFrame, mapX, mapY, fmapX, fmapY, useStrip);
-            writer.write(frame);
-        }
-
-        writer.release();
+        setVideoProgress(runner, run.id, "video_warp_encode", 0, frameCount, depthOctaves, depthOctaves);
+        mp4Path = generateZoomVideo(
+            strip, finalImg, W, H, fps, frameCount,
+            kTop_start, kTop_end, depthOctaves,
+            std::filesystem::path(run.outputDir), "zoom",
+            [&](int frameDone) {
+                setVideoProgress(runner, run.id, "video_warp_encode", frameDone, frameCount, depthOctaves, depthOctaves);
+            },
+            &ffmpegStderr,
+            &encoderUsed,
+            j.value("cudaWarp", true),
+            &warpMethod
+        );
         const auto t1 = std::chrono::steady_clock::now();
         elapsed = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
@@ -724,6 +658,9 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
         {"kTopStart",   kTop_start},
         {"kTopEnd",     kTop_end},
         {"depthOctaves",depthOctaves},
+        {"warpMethod",  warpMethod},
+        {"encoder",     encoderUsed},
+        {"ffmpegStderr",ffmpegStderr},
         {"generatedMs", elapsed},
     };
     return resp.dump();
@@ -952,12 +889,24 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
 
         // ── 2. Render ln-map strip ─────────────────────────────────────────────
         const int t = stripPlan.heightT;
-        const std::string lnMapEngine = "openmp";
-        const std::string lnMapScalar = "fp64";
         cv::Mat strip(t, s, CV_8UC3);
+        compute::LnMapParams lp;
+        lp.julia = julia;
+        lp.center_re = cr;
+        lp.center_im = ci;
+        lp.julia_re = jre;
+        lp.julia_im = jim;
+        lp.width_s = s;
+        lp.height_t = t;
+        lp.iterations = iters;
+        lp.bailout = bailout;
+        lp.bailout_sq = bailoutSq;
+        lp.variant = v;
+        lp.colormap = cm;
+        lp.engine = j.value("lnMapEngine", std::string("auto"));
         setVideoProgress(runner, run.id, "ln_map", 0, t, 0.0, depth);
-        dispatch_ln_strip_full(
-            v, julia, cr, ci, jre, jim, s, t, iters, bailout, bailoutSq, cm, strip,
+        const compute::LnMapStats lnStats = compute::render_ln_map(
+            lp, strip,
             [&](int rowsDone) {
                 const double octave = depth * static_cast<double>(rowsDone) / std::max(1, t);
                 setVideoProgress(runner, run.id, "ln_map", rowsDone, t, octave, depth);
@@ -981,6 +930,8 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
                 {"colorMap", colormapStr}, {"iterations", iters},
                 {"bailout", bailout},
                 {"bailoutSq", bailoutSq},
+                {"engine", lnStats.engine_used},
+                {"scalar", lnStats.scalar_used},
             };
             const std::filesystem::path scPath = std::filesystem::path(run.outputDir) / "ln_map.json";
             std::ofstream os(scPath);
@@ -1001,7 +952,7 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
         setVideoProgress(runner, run.id, "video_warp_encode", 0, frameCount, depth, depth);
         std::string ffmpegStderr;
         std::string encoderUsed;
-        const std::string warpMethod = "opencv_cpu_remap";
+        std::string warpMethod;
         const std::string videoPath = generateZoomVideo(
             strip, finalImg, W, H, fps, frameCount,
             kTop_start, kTop_end, depth,
@@ -1010,7 +961,9 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
                 setVideoProgress(runner, run.id, "video_warp_encode", frameDone, frameCount, depth, depth);
             },
             &ffmpegStderr,
-            &encoderUsed
+            &encoderUsed,
+            j.value("cudaWarp", true),
+            &warpMethod
         );
         const std::string videoFile = std::filesystem::path(videoPath).filename().string();
         runner.addArtifact(run.id, Artifact{"zoom-video", videoPath, "video"});
@@ -1018,8 +971,8 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
         Json renderLog = {
             {"finalFrameEngine", finalStats.engine_used},
             {"finalFrameScalar", finalStats.scalar_used},
-            {"lnMapEngine", lnMapEngine},
-            {"lnMapScalar", lnMapScalar},
+            {"lnMapEngine", lnStats.engine_used},
+            {"lnMapScalar", lnStats.scalar_used},
             {"warpMethod", warpMethod},
             {"encoder", encoderUsed},
         };
@@ -1077,8 +1030,8 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
             {"generatedMs",        elapsed},
             {"finalFrameEngine",   finalStats.engine_used},
             {"finalFrameScalar",   finalStats.scalar_used},
-            {"lnMapEngine",        lnMapEngine},
-            {"lnMapScalar",        lnMapScalar},
+            {"lnMapEngine",        lnStats.engine_used},
+            {"lnMapScalar",        lnStats.scalar_used},
             {"warpMethod",         warpMethod},
             {"encoder",            encoderUsed},
             {"ffmpegStderr",       ffmpegStderr},

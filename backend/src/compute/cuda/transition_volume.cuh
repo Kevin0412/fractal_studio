@@ -21,5 +21,6 @@ struct CudaTransitionVolumeParams {
 
 bool cuda_transition_available() noexcept;
 void cuda_build_transition_volume(const CudaTransitionVolumeParams& p, std::vector<float>& out);
+void cuda_build_transition_volume_slabs(const CudaTransitionVolumeParams& p, int z_start, int z_count, std::vector<float>& out);
 
 } // namespace fsd_cuda

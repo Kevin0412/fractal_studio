@@ -17,9 +17,12 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <thread>
+#include <vector>
 
 namespace fsd::compute {
 
@@ -56,7 +59,7 @@ std::string select_transition_engine(const TransitionVolumeParams& p) {
     if (p.engine == "cuda") return caps.cuda_runtime ? "cuda" : "openmp";
     if (p.engine == "avx2") return (caps.avx2_compiled && caps.avx2_runtime && caps.fma_runtime) ? "avx2" : "openmp";
     if (p.engine == "avx512") return "openmp";
-    if (p.engine == "hybrid") return (large && caps.cuda_runtime) ? "hybrid" : "openmp";
+    if (p.engine == "hybrid") return caps.cuda_runtime ? "hybrid" : "openmp";
     if (p.engine == "openmp") return "openmp";
 
     if (large && caps.cuda_runtime && !caps.cuda_low_end) return "hybrid";
@@ -64,66 +67,16 @@ std::string select_transition_engine(const TransitionVolumeParams& p) {
     return "openmp";
 }
 
-} // namespace
-
-McField buildTransitionVolume(const TransitionVolumeParams& p) {
-    if (!variant_supports_axis_transition(p.from_variant) ||
-        !variant_supports_axis_transition(p.to_variant)) {
-        throw std::runtime_error("transition variants must be quadratic Mandelbrot-family variants");
-    }
-
-    const int N = std::max(4, std::min(1024, p.resolution));
-    McField field;
-    field.Nx = field.Ny = field.Nz = N;
-    field.data.assign(static_cast<size_t>(N) * N * N, 1.0f);
-    field.scalar_used = "fp32";
-    const std::string selected_engine = select_transition_engine(p);
-    field.engine_used = selected_engine == "openmp" ? "openmp_fp32" : selected_engine + "_fp32_openmp_fallback";
-
-#if USE_CUDA_TRANSITION
-    if (selected_engine == "cuda" || selected_engine == "hybrid") {
-        try {
-            fsd_cuda::CudaTransitionVolumeParams cp;
-            cp.center_x = static_cast<float>(p.centerX);
-            cp.center_y = static_cast<float>(p.centerY);
-            cp.center_z = static_cast<float>(p.centerZ);
-            cp.extent = static_cast<float>(p.extent);
-            cp.resolution = N;
-            cp.iterations = p.iterations;
-            cp.bailout = static_cast<float>(p.bailout);
-            cp.bailout_sq = static_cast<float>(p.bailout_sq);
-            cp.from_variant = static_cast<int>(p.from_variant);
-            cp.to_variant = static_cast<int>(p.to_variant);
-            fsd_cuda::cuda_build_transition_volume(cp, field.data);
-            field.engine_used = selected_engine == "hybrid" ? "hybrid_cuda_fp32" : "cuda_fp32";
-            return field;
-        } catch (...) {
-            field.data.assign(static_cast<size_t>(N) * N * N, 1.0f);
-            field.engine_used = selected_engine + "_fp32_openmp_fallback";
-        }
-    }
-#endif
-
-    if (selected_engine == "avx2") {
-        if (buildTransitionVolumeAvx2(p, field)) {
-            return field;
-        }
-        field.data.assign(static_cast<size_t>(N) * N * N, 1.0f);
-        field.engine_used = "avx2_fp32_openmp_fallback";
-    }
-
+void build_transition_range_openmp(const TransitionVolumeParams& p, int N, int z_begin, int z_end, McField& field) {
     const float span = static_cast<float>(p.extent * 2.0);
     const float xmin = static_cast<float>(p.centerX - p.extent);
     const float ymin = static_cast<float>(p.centerY - p.extent);
     const float zmin = static_cast<float>(p.centerZ - p.extent);
     const float bail2 = static_cast<float>(p.bailout_sq);
     const float bailout = static_cast<float>(p.bailout);
-
     const int maxIter = p.iterations;
-    const int thread_count = default_render_threads();
 
-    #pragma omp parallel for num_threads(thread_count) schedule(dynamic, 1)
-    for (int zi = 0; zi < N; zi++) {
+    for (int zi = z_begin; zi < z_end; zi++) {
         const float z0 = zmin + (static_cast<float>(zi) + 0.5f) / static_cast<float>(N) * span;
         for (int yi = 0; yi < N; yi++) {
             const float y0 = ymin + (static_cast<float>(yi) + 0.5f) / static_cast<float>(N) * span;
@@ -152,19 +105,12 @@ McField buildTransitionVolume(const TransitionVolumeParams& p) {
                     }
                 }
 
-                // Scalar field: iso = 0.5, inside < 0.5, outside >= 0.5.
-                //
-                // Outside: v in [0.5, 1.0] — faster escape → closer to 1.
-                // Inside:  v in [0.0, 0.48] — final orbit magnitude gives a depth
-                //          gradient so the voxel renderer can shade surface vs.
-                //          interior voxels differently (boundary = bright, deep = dark).
                 float v = 0.0f;
                 if (escaped) {
                     v = 0.5f + 0.5f * (static_cast<float>(iter) / static_cast<float>(maxIter));
                 } else {
                     const bool finite_xyz = std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
                     const float finalMag = finite_xyz ? std::sqrt(x*x + y*y + z*z) : bailout;
-                    // Normalize to [0, 0.48) — near-boundary orbits reach higher mag.
                     v = (finalMag / bailout) * 0.48f;
                 }
 
@@ -174,6 +120,154 @@ McField buildTransitionVolume(const TransitionVolumeParams& p) {
                 field.data[idx] = v;
             }
         }
+    }
+}
+
+#if USE_CUDA_TRANSITION
+bool build_transition_hybrid_cuda_cpu(const TransitionVolumeParams& p, int N, McField& field) {
+    fsd_cuda::CudaTransitionVolumeParams cp;
+    cp.center_x = static_cast<float>(p.centerX);
+    cp.center_y = static_cast<float>(p.centerY);
+    cp.center_z = static_cast<float>(p.centerZ);
+    cp.extent = static_cast<float>(p.extent);
+    cp.resolution = N;
+    cp.iterations = p.iterations;
+    cp.bailout = static_cast<float>(p.bailout);
+    cp.bailout_sq = static_cast<float>(p.bailout_sq);
+    cp.from_variant = static_cast<int>(p.from_variant);
+    cp.to_variant = static_cast<int>(p.to_variant);
+
+    std::atomic<int> next_z{0};
+    std::atomic<int> gpu_slabs{0};
+    std::atomic<int> cpu_slabs{0};
+    std::atomic<bool> gpu_available{true};
+    const int gpu_batch = runtime_capabilities().cuda_low_end ? 4 : 12;
+
+    auto copy_slabs = [&](int z0, int zCount, const std::vector<float>& tmp) {
+        const size_t slab = static_cast<size_t>(N) * N;
+        for (int local = 0; local < zCount; ++local) {
+            const size_t dst = slab * static_cast<size_t>(z0 + local);
+            const size_t src = slab * static_cast<size_t>(local);
+            std::copy(tmp.begin() + static_cast<std::ptrdiff_t>(src),
+                      tmp.begin() + static_cast<std::ptrdiff_t>(src + slab),
+                      field.data.begin() + static_cast<std::ptrdiff_t>(dst));
+        }
+    };
+
+    std::thread gpu_thread([&]() {
+        while (true) {
+            const int z0 = next_z.fetch_add(gpu_batch);
+            if (z0 >= N) break;
+            const int zCount = std::min(gpu_batch, N - z0);
+            if (!gpu_available.load(std::memory_order_relaxed)) {
+                build_transition_range_openmp(p, N, z0, z0 + zCount, field);
+                cpu_slabs += zCount;
+                continue;
+            }
+            try {
+                std::vector<float> tmp;
+                fsd_cuda::cuda_build_transition_volume_slabs(cp, z0, zCount, tmp);
+                copy_slabs(z0, zCount, tmp);
+                gpu_slabs += zCount;
+            } catch (...) {
+                gpu_available.store(false, std::memory_order_relaxed);
+                build_transition_range_openmp(p, N, z0, z0 + zCount, field);
+                cpu_slabs += zCount;
+            }
+        }
+    });
+
+    const int cpu_threads = default_render_threads();
+    std::vector<std::thread> workers;
+    workers.reserve(static_cast<size_t>(cpu_threads));
+    for (int i = 0; i < cpu_threads; ++i) {
+        workers.emplace_back([&]() {
+            while (true) {
+                const int z0 = next_z.fetch_add(1);
+                if (z0 >= N) break;
+                build_transition_range_openmp(p, N, z0, z0 + 1, field);
+                cpu_slabs++;
+            }
+        });
+    }
+
+    for (auto& worker : workers) worker.join();
+    if (gpu_thread.joinable()) gpu_thread.join();
+
+    if (gpu_slabs.load() > 0 && cpu_slabs.load() > 0) {
+        field.engine_used = "hybrid_cuda_openmp_fp32";
+        return true;
+    }
+    if (gpu_slabs.load() > 0) {
+        field.engine_used = "cuda_fp32";
+        return true;
+    }
+    field.engine_used = "openmp_fp32";
+    return cpu_slabs.load() > 0;
+}
+#endif
+
+} // namespace
+
+McField buildTransitionVolume(const TransitionVolumeParams& p) {
+    if (!variant_supports_axis_transition(p.from_variant) ||
+        !variant_supports_axis_transition(p.to_variant)) {
+        throw std::runtime_error("transition variants must be quadratic Mandelbrot-family variants");
+    }
+
+    const int N = std::max(4, std::min(1024, p.resolution));
+    McField field;
+    field.Nx = field.Ny = field.Nz = N;
+    field.data.assign(static_cast<size_t>(N) * N * N, 1.0f);
+    field.scalar_used = "fp32";
+    const std::string selected_engine = select_transition_engine(p);
+    field.engine_used = selected_engine == "openmp" ? "openmp_fp32" : selected_engine + "_fp32_openmp_fallback";
+
+#if USE_CUDA_TRANSITION
+    if (selected_engine == "hybrid") {
+        if (build_transition_hybrid_cuda_cpu(p, N, field)) {
+            return field;
+        }
+        field.data.assign(static_cast<size_t>(N) * N * N, 1.0f);
+        field.engine_used = "hybrid_fp32_openmp_fallback";
+    }
+
+    if (selected_engine == "cuda") {
+        try {
+            fsd_cuda::CudaTransitionVolumeParams cp;
+            cp.center_x = static_cast<float>(p.centerX);
+            cp.center_y = static_cast<float>(p.centerY);
+            cp.center_z = static_cast<float>(p.centerZ);
+            cp.extent = static_cast<float>(p.extent);
+            cp.resolution = N;
+            cp.iterations = p.iterations;
+            cp.bailout = static_cast<float>(p.bailout);
+            cp.bailout_sq = static_cast<float>(p.bailout_sq);
+            cp.from_variant = static_cast<int>(p.from_variant);
+            cp.to_variant = static_cast<int>(p.to_variant);
+            fsd_cuda::cuda_build_transition_volume(cp, field.data);
+            field.engine_used = "cuda_fp32";
+            return field;
+        } catch (...) {
+            field.data.assign(static_cast<size_t>(N) * N * N, 1.0f);
+            field.engine_used = selected_engine + "_fp32_openmp_fallback";
+        }
+    }
+#endif
+
+    if (selected_engine == "avx2") {
+        if (buildTransitionVolumeAvx2(p, field)) {
+            return field;
+        }
+        field.data.assign(static_cast<size_t>(N) * N * N, 1.0f);
+        field.engine_used = "avx2_fp32_openmp_fallback";
+    }
+
+    const int thread_count = default_render_threads();
+
+    #pragma omp parallel for num_threads(thread_count) schedule(dynamic, 1)
+    for (int zi = 0; zi < N; zi++) {
+        build_transition_range_openmp(p, N, zi, zi + 1, field);
     }
 
     return field;

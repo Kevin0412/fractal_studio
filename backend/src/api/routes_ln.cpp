@@ -17,25 +17,19 @@
 #include "routes.hpp"
 #include "routes_common.hpp"
 
+#include "../compute/ln_map.hpp"
 #include "../compute/variants.hpp"
-#include "../compute/escape_time.hpp"
 #include "../compute/colormap.hpp"
 #include "../compute/image_io.hpp"
-#include "../compute/parallel.hpp"
 
-#ifdef _OPENMP
-#  include <omp.h>
-#endif
 #include <opencv2/core.hpp>
 
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
 #include <string>
-#include <vector>
 
 namespace fsd {
 
@@ -75,76 +69,6 @@ uint64_t estimateLnMapBytes(int s, int t) {
     return static_cast<uint64_t>(s) * static_cast<uint64_t>(t) * 3u;
 }
 
-template <compute::Variant V>
-void render_ln_strip(
-    double cr, double ci,
-    int s, int t,
-    int iters, double bailout, double bailoutSq,
-    compute::Colormap colormap,
-    cv::Mat& out
-) {
-    const int thread_count = compute::default_render_threads();
-    std::vector<double> cos_col(static_cast<size_t>(s));
-    std::vector<double> sin_col(static_cast<size_t>(s));
-    for (int x = 0; x < s; x++) {
-        const double th = TAU * static_cast<double>(x) / static_cast<double>(s);
-        cos_col[static_cast<size_t>(x)] = std::cos(th);
-        sin_col[static_cast<size_t>(x)] = std::sin(th);
-    }
-
-    #pragma omp parallel num_threads(thread_count)
-    {
-        #pragma omp for schedule(dynamic, 8)
-        for (int row = 0; row < t; row++) {
-            uint8_t* rowp = out.ptr<uint8_t>(row);
-            const double k = LN_FOUR - static_cast<double>(row) * TAU / static_cast<double>(s);
-            const double r_mag = std::exp(k);
-            for (int x = 0; x < s; x++) {
-                const double ore = cr + r_mag * cos_col[static_cast<size_t>(x)];
-                const double oim = ci + r_mag * sin_col[static_cast<size_t>(x)];
-                const compute::Cx<double> c{ore, oim};
-                const compute::Cx<double> z0{0.0, 0.0};
-                const compute::IterResult ir = compute::iterate_masked<
-                    compute::IterResultField::Iter | compute::IterResultField::Escaped,
-                    V, double>(z0, c, iters, bailout, bailoutSq);
-                uint8_t* px = rowp + 3 * x;
-                const int    it   = ir.escaped ? ir.iter : iters;
-                compute::colorize_escape_bgr(it, iters, colormap, 0.0, false, px[0], px[1], px[2]);
-            }
-        }
-    }
-}
-
-void dispatch_ln_strip(
-    compute::Variant v,
-    double cr, double ci,
-    int s, int t,
-    int iters, double bailout, double bailoutSq,
-    compute::Colormap colormap,
-    cv::Mat& out
-) {
-    using V = compute::Variant;
-    switch (v) {
-        case V::Mandelbrot: render_ln_strip<V::Mandelbrot>(cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
-        case V::Tri:        render_ln_strip<V::Tri>       (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
-        case V::Boat:       render_ln_strip<V::Boat>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
-        case V::Duck:       render_ln_strip<V::Duck>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
-        case V::Bell:       render_ln_strip<V::Bell>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
-        case V::Fish:       render_ln_strip<V::Fish>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
-        case V::Vase:       render_ln_strip<V::Vase>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
-        case V::Bird:       render_ln_strip<V::Bird>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
-        case V::Mask:       render_ln_strip<V::Mask>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
-        case V::Ship:       render_ln_strip<V::Ship>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
-        case V::SinZ:       render_ln_strip<V::SinZ>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
-        case V::CosZ:       render_ln_strip<V::CosZ>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
-        case V::ExpZ:       render_ln_strip<V::ExpZ>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
-        case V::SinhZ:      render_ln_strip<V::SinhZ>     (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
-        case V::CoshZ:      render_ln_strip<V::CoshZ>     (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
-        case V::TanZ:       render_ln_strip<V::TanZ>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
-        case V::Custom:     break;
-    }
-}
-
 } // namespace
 
 std::string lnMapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body) {
@@ -153,6 +77,9 @@ std::string lnMapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& r
 
     const double cr            = j.value("centerRe", 0.0);
     const double ci            = j.value("centerIm", 0.0);
+    const bool   julia         = j.value("julia", false);
+    const double jre           = j.value("juliaRe", 0.0);
+    const double jim           = j.value("juliaIm", 0.0);
     const int    outW          = j.value("width", 0);
     const int    outH          = j.value("height", 0);
     const double depthOctaves  = j.value("depthOctaves", 40.0);
@@ -173,6 +100,7 @@ std::string lnMapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& r
     s = roundUpToMultiple(std::max(128, s), 8);
     const std::string variantStr  = j.value("variant",  std::string("mandelbrot"));
     const std::string colormapStr = j.value("colorMap", std::string("classic_cos"));
+    const std::string engine      = j.value("engine",   std::string("auto"));
     const int iters            = j.value("iterations", 4096);
 
     if (s < 128 || s > 65536)              throw std::runtime_error("invalid widthS (128..65536)");
@@ -207,14 +135,25 @@ std::string lnMapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& r
     runner.setStatus(run.id, "running");
 
     std::string pngPath;
-    double elapsed = 0.0;
+    compute::LnMapStats stats;
 
     try {
         cv::Mat strip(t, s, CV_8UC3);
-        const auto t0 = std::chrono::steady_clock::now();
-        dispatch_ln_strip(v, cr, ci, s, t, iters, bailout, bailoutSq, cm, strip);
-        const auto t1 = std::chrono::steady_clock::now();
-        elapsed = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        compute::LnMapParams lp;
+        lp.julia = julia;
+        lp.center_re = cr;
+        lp.center_im = ci;
+        lp.julia_re = jre;
+        lp.julia_im = jim;
+        lp.width_s = s;
+        lp.height_t = t;
+        lp.iterations = iters;
+        lp.bailout = bailout;
+        lp.bailout_sq = bailoutSq;
+        lp.variant = v;
+        lp.colormap = cm;
+        lp.engine = engine;
+        stats = compute::render_ln_map(lp, strip);
 
         const std::filesystem::path stripPath =
             std::filesystem::path(run.outputDir) / "ln_map.png";
@@ -226,6 +165,9 @@ std::string lnMapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& r
         Json sidecar = {
             {"centerRe",     cr},
             {"centerIm",     ci},
+            {"julia",        julia},
+            {"juliaRe",      jre},
+            {"juliaIm",      jim},
             {"widthS",       s},
             {"actualWidthS", s},
             {"fullWidthS",   fullWidthS},
@@ -240,6 +182,8 @@ std::string lnMapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& r
             {"iterations",   iters},
             {"bailout",      bailout},
             {"bailoutSq",    bailoutSq},
+            {"engine",       stats.engine_used},
+            {"scalar",       stats.scalar_used},
         };
         const std::filesystem::path sidecarPath =
             std::filesystem::path(run.outputDir) / "ln_map.json";
@@ -269,7 +213,9 @@ std::string lnMapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& r
         {"qualityPreset", qualityPreset},
         {"qualityScale", qualityScale},
         {"estimatedPeakMemory", estimatedPeakMemory},
-        {"generatedMs", elapsed},
+        {"engineUsed",  stats.engine_used},
+        {"scalarUsed",  stats.scalar_used},
+        {"generatedMs", stats.elapsed_ms},
     };
     return resp.dump();
 }

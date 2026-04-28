@@ -32,15 +32,16 @@ __device__ inline float imag_projection(int v, float x, float axis) {
     return neg ? -q : q;
 }
 
-__global__ void transition_volume_kernel(CudaTransitionVolumeParams p, float* out) {
+__global__ void transition_volume_kernel(CudaTransitionVolumeParams p, int z_start, int z_count, float* out) {
     const int N = p.resolution;
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    const int total = N * N * N;
+    const int total = N * N * z_count;
     if (idx >= total) return;
 
     const int xi = idx % N;
     const int yi = (idx / N) % N;
-    const int zi = idx / (N * N);
+    const int zi_local = idx / (N * N);
+    const int zi = z_start + zi_local;
 
     const float span = p.extent * 2.0f;
     const float x0 = (p.center_x - p.extent) + (static_cast<float>(xi) + 0.5f) / static_cast<float>(N) * span;
@@ -87,7 +88,26 @@ void cuda_build_transition_volume(const CudaTransitionVolumeParams& p, std::vect
     CUDA_CHECK(cudaMalloc(&d_out, count * sizeof(float)));
     const int block = 256;
     const int grid = static_cast<int>((count + block - 1) / block);
-    transition_volume_kernel<<<grid, block>>>(p, d_out);
+    transition_volume_kernel<<<grid, block>>>(p, 0, p.resolution, d_out);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaMemcpy(out.data(), d_out, count * sizeof(float), cudaMemcpyDeviceToHost));
+    cudaFree(d_out);
+}
+
+void cuda_build_transition_volume_slabs(const CudaTransitionVolumeParams& p, int z_start, int z_count, std::vector<float>& out) {
+    if (!cuda_transition_available()) throw std::runtime_error("CUDA transition not available");
+    if (z_start < 0 || z_count <= 0 || z_start + z_count > p.resolution) {
+        throw std::runtime_error("invalid CUDA transition slab range");
+    }
+    const size_t count = static_cast<size_t>(p.resolution) * p.resolution * z_count;
+    out.assign(count, 1.0f);
+
+    float* d_out = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_out, count * sizeof(float)));
+    const int block = 256;
+    const int grid = static_cast<int>((count + block - 1) / block);
+    transition_volume_kernel<<<grid, block>>>(p, z_start, z_count, d_out);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
     CUDA_CHECK(cudaMemcpy(out.data(), d_out, count * sizeof(float), cudaMemcpyDeviceToHost));

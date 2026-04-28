@@ -146,6 +146,9 @@ export interface MapFieldResponse {
 export interface LnMapRequest {
   centerRe: number
   centerIm: number
+  julia?: boolean
+  juliaRe?: number
+  juliaIm?: number
   widthS?: number
   width?: number
   height?: number
@@ -153,6 +156,7 @@ export interface LnMapRequest {
   variant?: Variant
   colorMap?: ColorMap
   iterations?: number
+  engine?: string
 }
 
 export interface LnMapResponse {
@@ -163,6 +167,8 @@ export interface LnMapResponse {
   widthS: number
   heightT: number
   depthOctaves: number
+  engineUsed?: string
+  scalarUsed?: string
   generatedMs: number
 }
 
@@ -231,6 +237,7 @@ export interface TransitionMeshRequest {
   bailoutSq?: number
   transitionFrom?: Variant | string
   transitionTo?: Variant | string
+  engine?: string
 }
 
 export interface TransitionVoxelRequest {
@@ -245,6 +252,7 @@ export interface TransitionVoxelRequest {
   bailoutSq?: number
   transitionFrom?: Variant | string
   transitionTo?: Variant | string
+  engine?: string
 }
 
 export interface TransitionVoxelResponse {
@@ -282,6 +290,8 @@ export interface VideoExportRequest {
   targetScale?: number
   qualityPreset?: 'draft' | 'balanced' | 'high' | 'full' | 'custom'
   qualityScale?: number
+  lnMapEngine?: string
+  cudaWarp?: boolean
   background?: boolean
   width?: number
   height?: number
@@ -395,6 +405,7 @@ export interface VideoZoomRequest {
   height?: number
   startLnRadius?: number
   depthOctaves?: number
+  cudaWarp?: boolean
 }
 
 export interface VideoZoomResponse {
@@ -410,6 +421,9 @@ export interface VideoZoomResponse {
   depthOctaves?: number
   width: number
   height: number
+  warpMethod?: string
+  encoder?: string
+  ffmpegStderr?: string
   generatedMs: number
 }
 

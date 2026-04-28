@@ -1,0 +1,47 @@
+// compute/ln_map.hpp
+//
+// Shared ln-map strip renderer used by /api/map/ln and /api/video/export.
+
+#pragma once
+
+#include "colormap.hpp"
+#include "variants.hpp"
+
+#include <opencv2/core.hpp>
+
+#include <functional>
+#include <string>
+
+namespace fsd::compute {
+
+struct LnMapParams {
+    bool julia = false;
+    double center_re = 0.0;
+    double center_im = 0.0;
+    double julia_re = 0.0;
+    double julia_im = 0.0;
+    int width_s = 1024;
+    int height_t = 4096;
+    int iterations = 2048;
+    double bailout = 2.0;
+    double bailout_sq = 4.0;
+    Variant variant = Variant::Mandelbrot;
+    Colormap colormap = Colormap::ClassicCos;
+    std::string engine = "auto"; // auto, cuda, avx512, openmp
+};
+
+struct LnMapStats {
+    double elapsed_ms = 0.0;
+    int pixel_count = 0;
+    std::string engine_used = "openmp";
+    std::string scalar_used = "fp64";
+};
+
+using LnMapProgress = std::function<void(int rowsDone)>;
+
+bool ln_map_variant_supported_by_simd(Variant v);
+LnMapStats render_ln_map_openmp(const LnMapParams& p, cv::Mat& out, const LnMapProgress& on_row_done = nullptr);
+LnMapStats render_ln_map_avx512(const LnMapParams& p, cv::Mat& out, const LnMapProgress& on_row_done = nullptr);
+LnMapStats render_ln_map(const LnMapParams& p, cv::Mat& out, const LnMapProgress& on_row_done = nullptr);
+
+} // namespace fsd::compute
