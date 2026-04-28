@@ -246,6 +246,13 @@ void render_ln_strip_dispatch(
     const compute::Cx<double> c_julia{jre, jim};
     const int thread_count = compute::default_render_threads();
     std::atomic<int> rows_done{0};
+    std::vector<double> cos_col(static_cast<size_t>(s));
+    std::vector<double> sin_col(static_cast<size_t>(s));
+    for (int x = 0; x < s; x++) {
+        const double th = TAU * static_cast<double>(x) / static_cast<double>(s);
+        cos_col[static_cast<size_t>(x)] = std::cos(th);
+        sin_col[static_cast<size_t>(x)] = std::sin(th);
+    }
 
     #pragma omp parallel num_threads(thread_count)
     {
@@ -255,9 +262,8 @@ void render_ln_strip_dispatch(
             const double k     = LN_FOUR - static_cast<double>(row) * TAU / static_cast<double>(s);
             const double r_mag = std::exp(k);
             for (int x = 0; x < s; x++) {
-                const double th  = TAU * static_cast<double>(x) / static_cast<double>(s);
-                const double pre = cr + r_mag * std::cos(th);
-                const double pim = ci + r_mag * std::sin(th);
+                const double pre = cr + r_mag * cos_col[static_cast<size_t>(x)];
+                const double pim = ci + r_mag * sin_col[static_cast<size_t>(x)];
                 compute::Cx<double> z0, c;
                 if (julia) {
                     z0 = {pre, pim};
@@ -298,6 +304,7 @@ void dispatch_ln_strip_full(
         CASE(Mandelbrot); CASE(Tri); CASE(Boat); CASE(Duck); CASE(Bell);
         CASE(Fish);       CASE(Vase); CASE(Bird); CASE(Mask); CASE(Ship);
         CASE(SinZ);       CASE(CosZ); CASE(ExpZ); CASE(SinhZ); CASE(CoshZ); CASE(TanZ);
+        case V::Custom: break;
     }
 #undef CASE
 }
@@ -408,8 +415,11 @@ static std::string generateZoomVideo(
     double kTop_start, double kTop_end, double depthOctaves,
     const std::filesystem::path& outDir, const std::string& baseName,
     const std::function<void(int)>& on_frame_done = nullptr,
-    std::string* ffmpeg_stderr_out = nullptr
+    std::string* ffmpeg_stderr_out = nullptr,
+    std::string* encoder_out = nullptr
 ) {
+    if (encoder_out) *encoder_out = "";
+
     cv::Mat stripWrap;
     cv::copyMakeBorder(strip, stripWrap, 0, 0, 0, 1, cv::BORDER_WRAP);
 
@@ -436,50 +446,60 @@ static std::string generateZoomVideo(
     };
 
     const std::filesystem::path ffmpegErr = outDir / (baseName + "_ffmpeg.stderr.txt");
-    std::vector<std::string> ffmpegCmds;
+    std::vector<std::pair<std::string, std::string>> ffmpegCmds;
     const std::string inputArgs =
         "ffmpeg -y -f rawvideo -pix_fmt bgr24 -s " + std::to_string(W) + "x" + std::to_string(H) +
         " -r " + std::to_string(fps) + " -i - -an ";
     if (commandSucceeds("bash -lc \"ffmpeg -hide_banner -encoders 2>/dev/null | grep -q h264_nvenc\"")) {
-        ffmpegCmds.push_back(inputArgs + "-c:v h264_nvenc -pix_fmt yuv420p -preset p5 -cq 18 \"" + mp4.string() +
-                             "\" 2>\"" + ffmpegErr.string() + "\"");
+        ffmpegCmds.push_back({"h264_nvenc",
+            inputArgs + "-c:v h264_nvenc -pix_fmt yuv420p -preset p5 -cq 18 \"" + mp4.string() +
+            "\" 2>\"" + ffmpegErr.string() + "\""});
     }
     if (commandSucceeds("bash -lc \"ffmpeg -hide_banner -encoders 2>/dev/null | grep -q hevc_nvenc\"")) {
-        ffmpegCmds.push_back(inputArgs + "-c:v hevc_nvenc -pix_fmt yuv420p -preset p5 -cq 20 \"" + mp4.string() +
-                             "\" 2>\"" + ffmpegErr.string() + "\"");
+        ffmpegCmds.push_back({"hevc_nvenc",
+            inputArgs + "-c:v hevc_nvenc -pix_fmt yuv420p -preset p5 -cq 20 \"" + mp4.string() +
+            "\" 2>\"" + ffmpegErr.string() + "\""});
     }
-    ffmpegCmds.push_back(inputArgs + "-c:v libx264 -pix_fmt yuv420p -preset medium -crf 16 \"" + mp4.string() +
-                         "\" 2>\"" + ffmpegErr.string() + "\"");
+    ffmpegCmds.push_back({"libx264",
+        inputArgs + "-c:v libx264 -pix_fmt yuv420p -preset medium -crf 16 \"" + mp4.string() +
+        "\" 2>\"" + ffmpegErr.string() + "\""});
 
-    for (const std::string& ffmpegCmd : ffmpegCmds) {
-    if (FILE* pipe = popen(ffmpegCmd.c_str(), "w")) {
-        bool ok = true;
-        try {
-            renderFrames([&](const cv::Mat& rendered) {
-                const size_t bytes = static_cast<size_t>(rendered.rows) * rendered.step;
-                if (std::fwrite(rendered.data, 1, bytes, pipe) != bytes) {
-                    ok = false;
-                    throw std::runtime_error("ffmpeg pipe write failed");
-                }
-            });
-        } catch (...) {
-            pclose(pipe);
-            throw;
+    for (const auto& [encoderName, ffmpegCmd] : ffmpegCmds) {
+        if (FILE* pipe = popen(ffmpegCmd.c_str(), "w")) {
+            bool ok = true;
+            try {
+                renderFrames([&](const cv::Mat& rendered) {
+                    const size_t bytes = static_cast<size_t>(rendered.rows) * rendered.step;
+                    if (std::fwrite(rendered.data, 1, bytes, pipe) != bytes) {
+                        ok = false;
+                        throw std::runtime_error("ffmpeg pipe write failed");
+                    }
+                });
+            } catch (...) {
+                pclose(pipe);
+                throw;
+            }
+            const int rc = pclose(pipe);
+            if (ffmpeg_stderr_out) {
+                std::ifstream errIn(ffmpegErr);
+                std::ostringstream ss; ss << errIn.rdbuf();
+                *ffmpeg_stderr_out = ss.str();
+            }
+            if (ok && rc == 0 && std::filesystem::exists(mp4)) {
+                if (encoder_out) *encoder_out = encoderName;
+                return mp4.string();
+            }
         }
-        const int rc = pclose(pipe);
-        if (ffmpeg_stderr_out) {
-            std::ifstream errIn(ffmpegErr);
-            std::ostringstream ss; ss << errIn.rdbuf();
-            *ffmpeg_stderr_out = ss.str();
-        }
-        if (ok && rc == 0 && std::filesystem::exists(mp4)) return mp4.string();
-    }
     }
 
+    std::error_code removeEc;
+    std::filesystem::remove(mp4, removeEc);
     const int fourcc = cv::VideoWriter::fourcc('m', 'p', '4', 'v');
     cv::VideoWriter writer(mp4.string(), fourcc, static_cast<double>(fps), cv::Size(W, H), true);
+    std::string encoderName = "VideoWriter:mp4v";
     if (!writer.isOpened()) {
         writer.open(avi.string(), cv::VideoWriter::fourcc('M','J','P','G'), static_cast<double>(fps), cv::Size(W, H), true);
+        encoderName = "VideoWriter:MJPG";
         if (!writer.isOpened()) {
             std::string msg = "VideoWriter failed";
             if (ffmpeg_stderr_out && !ffmpeg_stderr_out->empty()) {
@@ -494,8 +514,14 @@ static std::string generateZoomVideo(
     });
     writer.release();
 
-    if (std::filesystem::exists(mp4)) return mp4.string();
-    if (std::filesystem::exists(avi)) return avi.string();
+    if (std::filesystem::exists(mp4)) {
+        if (encoder_out) *encoder_out = encoderName;
+        return mp4.string();
+    }
+    if (std::filesystem::exists(avi)) {
+        if (encoder_out) *encoder_out = encoderName;
+        return avi.string();
+    }
     return mp4.string();
 }
 
@@ -917,7 +943,7 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
         mp.scalar_type = "auto";
 
         cv::Mat finalImg(H, W, CV_8UC3);
-        compute::render_map(mp, finalImg);
+        const compute::MapStats finalStats = compute::render_map(mp, finalImg);
 
         const std::filesystem::path finalPath = std::filesystem::path(run.outputDir) / "final_frame.png";
         compute::write_png(finalPath.string(), finalImg);
@@ -926,6 +952,8 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
 
         // ── 2. Render ln-map strip ─────────────────────────────────────────────
         const int t = stripPlan.heightT;
+        const std::string lnMapEngine = "openmp";
+        const std::string lnMapScalar = "fp64";
         cv::Mat strip(t, s, CV_8UC3);
         setVideoProgress(runner, run.id, "ln_map", 0, t, 0.0, depth);
         dispatch_ln_strip_full(
@@ -972,6 +1000,8 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
         // ── 4. Generate video ──────────────────────────────────────────────────
         setVideoProgress(runner, run.id, "video_warp_encode", 0, frameCount, depth, depth);
         std::string ffmpegStderr;
+        std::string encoderUsed;
+        const std::string warpMethod = "opencv_cpu_remap";
         const std::string videoPath = generateZoomVideo(
             strip, finalImg, W, H, fps, frameCount,
             kTop_start, kTop_end, depth,
@@ -979,10 +1009,26 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
             [&](int frameDone) {
                 setVideoProgress(runner, run.id, "video_warp_encode", frameDone, frameCount, depth, depth);
             },
-            &ffmpegStderr
+            &ffmpegStderr,
+            &encoderUsed
         );
         const std::string videoFile = std::filesystem::path(videoPath).filename().string();
         runner.addArtifact(run.id, Artifact{"zoom-video", videoPath, "video"});
+
+        Json renderLog = {
+            {"finalFrameEngine", finalStats.engine_used},
+            {"finalFrameScalar", finalStats.scalar_used},
+            {"lnMapEngine", lnMapEngine},
+            {"lnMapScalar", lnMapScalar},
+            {"warpMethod", warpMethod},
+            {"encoder", encoderUsed},
+        };
+        const std::filesystem::path reportPath = std::filesystem::path(run.outputDir) / "video_export.json";
+        {
+            std::ofstream os(reportPath);
+            os << renderLog.dump(2);
+        }
+        runner.addArtifact(run.id, Artifact{"video-export", reportPath.string(), "report"});
 
         const auto t1 = std::chrono::steady_clock::now();
         const double elapsed = std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -994,6 +1040,7 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
         const std::string startArtId = run.id + ":start_frame.png";
         const std::string endArtId   = run.id + ":end_frame.png";
         const std::string videoArtId = run.id + ":" + videoFile;
+        const std::string reportArtId = run.id + ":video_export.json";
 
         Json resp = {
             {"runId",              run.id},
@@ -1011,6 +1058,8 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
             {"endFrameArtifactId", endArtId},
             {"endFrameUrl",        "/api/artifacts/content?artifactId="  + endArtId},
             {"endFrameDownloadUrl", "/api/artifacts/download?artifactId=" + endArtId},
+            {"reportArtifactId",   reportArtId},
+            {"reportDownloadUrl",  "/api/artifacts/download?artifactId=" + reportArtId},
             {"frameCount",         frameCount},
             {"fps",                fps},
             {"durationSec",        durSec},
@@ -1026,6 +1075,12 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
             {"width",              W},
             {"height",             H},
             {"generatedMs",        elapsed},
+            {"finalFrameEngine",   finalStats.engine_used},
+            {"finalFrameScalar",   finalStats.scalar_used},
+            {"lnMapEngine",        lnMapEngine},
+            {"lnMapScalar",        lnMapScalar},
+            {"warpMethod",         warpMethod},
+            {"encoder",            encoderUsed},
             {"ffmpegStderr",       ffmpegStderr},
         };
         return resp;
@@ -1062,6 +1117,9 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
             {"estimatedPeakMemory", stripPlan.estimatedPeakMemory},
             {"width", W},
             {"height", H},
+            {"lnMapEngine", "openmp"},
+            {"lnMapScalar", "fp64"},
+            {"warpMethod", "opencv_cpu_remap"},
         };
         return resp.dump();
     }

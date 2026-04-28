@@ -239,8 +239,10 @@ TileSchedulerStats render_map_hybrid(
     const bool fx       = requested_fx && supports_fx64_int_path(p);
     const std::string fixed_scalar_type =
         requested_q360(p) ? "q3.60" : (requested_q459(p) ? "q4.59" : "fx64");
-    const bool use_avx2 = map_engine_supported(p, "avx2", fx);
-    const bool use_avx512 = !use_avx2 && map_engine_supported(p, "avx512", fx);
+    const bool avx512_ok = map_engine_supported(p, "avx512", fx);
+    const bool avx2_ok = map_engine_supported(p, "avx2", fx);
+    const bool use_avx512 = avx512_ok;
+    const bool use_avx2 = !use_avx512 && avx2_ok;
     const bool use_gpu  = false
 #if USE_CUDA
                        || map_engine_supported(p, "cuda", fx)
@@ -341,10 +343,10 @@ TileSchedulerStats render_map_hybrid(
         result.engine_used = "hybrid";
     else if (use_gpu && gpu_tiles > 0)
         result.engine_used = "cuda";
-    else if (use_avx2)
-        result.engine_used = "avx2";
     else if (use_avx512)
         result.engine_used = "avx512";
+    else if (use_avx2)
+        result.engine_used = "avx2";
     else
         result.engine_used = "openmp";
 

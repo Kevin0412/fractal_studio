@@ -303,6 +303,8 @@ export interface VideoExportResponse {
   endFrameArtifactId?: string
   endFrameUrl?: string
   endFrameDownloadUrl?: string
+  reportArtifactId?: string
+  reportDownloadUrl?: string
   frameCount: number
   fps: number
   durationSec: number
@@ -315,6 +317,12 @@ export interface VideoExportResponse {
   qualityPreset?: string
   qualityScale?: number
   estimatedPeakMemory?: number
+  finalFrameEngine?: string
+  finalFrameScalar?: string
+  lnMapEngine?: string
+  lnMapScalar?: string
+  warpMethod?: string
+  encoder?: string
   ffmpegStderr?: string
   width: number
   height: number

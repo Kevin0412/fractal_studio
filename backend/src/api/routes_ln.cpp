@@ -35,6 +35,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace fsd {
 
@@ -83,6 +84,13 @@ void render_ln_strip(
     cv::Mat& out
 ) {
     const int thread_count = compute::default_render_threads();
+    std::vector<double> cos_col(static_cast<size_t>(s));
+    std::vector<double> sin_col(static_cast<size_t>(s));
+    for (int x = 0; x < s; x++) {
+        const double th = TAU * static_cast<double>(x) / static_cast<double>(s);
+        cos_col[static_cast<size_t>(x)] = std::cos(th);
+        sin_col[static_cast<size_t>(x)] = std::sin(th);
+    }
 
     #pragma omp parallel num_threads(thread_count)
     {
@@ -92,9 +100,8 @@ void render_ln_strip(
             const double k = LN_FOUR - static_cast<double>(row) * TAU / static_cast<double>(s);
             const double r_mag = std::exp(k);
             for (int x = 0; x < s; x++) {
-                const double th = TAU * static_cast<double>(x) / static_cast<double>(s);
-                const double ore = cr + r_mag * std::cos(th);
-                const double oim = ci + r_mag * std::sin(th);
+                const double ore = cr + r_mag * cos_col[static_cast<size_t>(x)];
+                const double oim = ci + r_mag * sin_col[static_cast<size_t>(x)];
                 const compute::Cx<double> c{ore, oim};
                 const compute::Cx<double> z0{0.0, 0.0};
                 const compute::IterResult ir = compute::iterate_masked<
@@ -134,6 +141,7 @@ void dispatch_ln_strip(
         case V::SinhZ:      render_ln_strip<V::SinhZ>     (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
         case V::CoshZ:      render_ln_strip<V::CoshZ>     (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
         case V::TanZ:       render_ln_strip<V::TanZ>      (cr, ci, s, t, iters, bailout, bailoutSq, colormap, out); break;
+        case V::Custom:     break;
     }
 }
 

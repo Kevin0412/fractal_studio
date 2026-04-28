@@ -160,8 +160,8 @@ bool map_work_is_large(const MapParams& p) {
 std::string select_map_engine(const MapParams& p, bool fx, const std::string& purpose) {
     if (p.engine != "auto") {
         if (p.engine == "hybrid" && !map_work_is_large(p)) {
-            if (map_engine_supported(p, "avx2", fx)) return "avx2";
-            return map_engine_supported(p, "avx512", fx) ? "avx512" : "openmp";
+            if (map_engine_supported(p, "avx512", fx)) return "avx512";
+            return map_engine_supported(p, "avx2", fx) ? "avx2" : "openmp";
         }
         return map_engine_supported(p, p.engine, fx) ? p.engine : "openmp";
     }
@@ -174,11 +174,11 @@ std::string select_map_engine(const MapParams& p, bool fx, const std::string& pu
     const bool large = map_work_is_large(p);
 
     if (has_benchmark_cache()) {
-        std::vector<std::string> candidates = {"openmp", "avx2", "avx512", "cuda"};
+        std::vector<std::string> candidates = {"openmp", "avx512", "cuda", "avx2"};
         if (large || purpose == "batch" || purpose == "volume") candidates.push_back("hybrid");
 
-        std::string best = "openmp";
-        double best_speed = cached_speed("openmp", scalar);
+        std::string best;
+        double best_speed = 0.0;
         for (const auto& engine : candidates) {
             if (!map_engine_supported(p, engine, fx)) continue;
             const double speed = cached_speed(engine, scalar);
@@ -187,24 +187,17 @@ std::string select_map_engine(const MapParams& p, bool fx, const std::string& pu
                 best = engine;
             }
         }
-        return best;
+        return best.empty() ? "openmp" : best;
     }
 
-    if (!large) {
-        if (map_engine_supported(p, "avx2", fx) && p.iterations >= 256) return "avx2";
-        if (map_engine_supported(p, "avx512", fx) && p.iterations >= 512) return "avx512";
+    if (fx) {
+        if (map_engine_supported(p, "cuda", fx)) return "cuda";
         return "openmp";
     }
 
-    const RuntimeCapabilities caps = runtime_capabilities();
-    if ((purpose == "batch" || purpose == "volume") &&
-        !caps.cuda_low_end &&
-        map_engine_supported(p, "hybrid", fx)) {
-        return "hybrid";
-    }
-    if (!caps.cuda_low_end && map_engine_supported(p, "cuda", fx)) return "cuda";
-    if (map_engine_supported(p, "avx2", fx)) return "avx2";
     if (map_engine_supported(p, "avx512", fx)) return "avx512";
+    if (map_engine_supported(p, "cuda", fx)) return "cuda";
+    if (map_engine_supported(p, "avx2", fx)) return "avx2";
     return "openmp";
 }
 
