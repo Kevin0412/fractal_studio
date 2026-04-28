@@ -6,6 +6,7 @@
 
 #include "routes.hpp"
 #include "routes_common.hpp"
+#include "resource_manager.hpp"
 
 #include "../compute/hs/heightfield_mesh.hpp"
 #include "../compute/engine_select.hpp"
@@ -21,6 +22,7 @@
 #include <fstream>
 #include <limits>
 #include <stdexcept>
+#include <system_error>
 #include <cstring>
 
 namespace fsd {
@@ -80,6 +82,51 @@ int defaultTransitionResolution(bool voxelPreview) {
     if (voxelPreview) return 128;
     const auto caps = compute::runtime_capabilities();
     return caps.cuda_low_end ? 128 : 192;
+}
+
+void setTransitionProgress(
+    JobRunner& runner,
+    const std::string& runId,
+    const std::string& stage,
+    int current,
+    int total,
+    const std::string& engine,
+    const std::string& scalar,
+    bool cancelable = false
+) {
+    const double percent = total > 0
+        ? (100.0 * static_cast<double>(current) / static_cast<double>(total))
+        : 0.0;
+    Json j = {
+        {"taskType", "transition_volume"},
+        {"stage", stage},
+        {"current", current},
+        {"total", total},
+        {"percent", percent},
+        {"engine", engine},
+        {"scalar", scalar},
+        {"elapsedMs", runner.runElapsedMs(runId)},
+        {"estimatedRemainingMs", nullptr},
+        {"cancelable", cancelable},
+        {"resourceLocks", Json::array({"transition_volume", "cuda_heavy", "cpu_heavy"})},
+        {"details", Json::object()},
+    };
+    runner.setProgress(runId, j.dump());
+}
+
+ResourceManager::Lease acquireTransitionLease(JobRunner& runner, const std::string& runId) {
+    ResourceManager::Lease lease;
+    std::string conflictLock, activeRunId;
+    if (!resourceManager().tryAcquire(runId, "transition_volume", {"transition_volume", "cuda_heavy", "cpu_heavy"}, lease, conflictLock, activeRunId)) {
+        runner.setStatus(runId, "failed");
+        throw HttpError(409, Json{
+            {"error", "transition_volume already running"},
+            {"activeRunId", activeRunId},
+            {"taskType", "transition_volume"},
+            {"resourceLock", conflictLock},
+        }.dump());
+    }
+    return lease;
 }
 
 } // namespace
@@ -268,7 +315,11 @@ std::string transitionMeshRoute(const std::filesystem::path&, JobRunner& runner,
     if (!(p.bailout_sq > 0.0) || !std::isfinite(p.bailout_sq)) throw std::runtime_error("invalid bailoutSq");
 
     auto run = runner.createRun("transition-mesh", body);
+    auto transitionLease = acquireTransitionLease(runner, run.id);
+    (void)transitionLease;
     runner.setStatus(run.id, "running");
+    runner.setCancelable(run.id, false);
+    setTransitionProgress(runner, run.id, "volume", 0, 2, p.engine, p.scalar_type);
 
     double fieldMs = 0.0, mcMs = 0.0;
     size_t vc = 0, tc = 0;
@@ -281,6 +332,7 @@ std::string transitionMeshRoute(const std::filesystem::path&, JobRunner& runner,
         fieldEngineUsed = field.engine_used;
         fieldScalarUsed = field.scalar_used;
         const auto t1 = std::chrono::steady_clock::now();
+        setTransitionProgress(runner, run.id, "marching_cubes", 1, 2, fieldEngineUsed, fieldScalarUsed);
         compute::Mesh mesh = compute::marchingCubes(field, static_cast<float>(iso));
         const auto t2 = std::chrono::steady_clock::now();
         fieldMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -299,8 +351,10 @@ std::string transitionMeshRoute(const std::filesystem::path&, JobRunner& runner,
 
         runner.addArtifact(run.id, Artifact{"transition-mesh", glbPath.string(), "mesh"});
         runner.addArtifact(run.id, Artifact{"transition-mesh", stlPath.string(), "stl"});
+        setTransitionProgress(runner, run.id, "completed", 2, 2, fieldEngineUsed, fieldScalarUsed);
         runner.setStatus(run.id, "completed");
     } catch (const std::exception&) {
+        setTransitionProgress(runner, run.id, "failed", 0, 2, fieldEngineUsed, fieldScalarUsed);
         runner.setStatus(run.id, "failed");
         throw;
     }
@@ -364,14 +418,19 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
     if (!(p.bailout_sq > 0.0) || !std::isfinite(p.bailout_sq)) throw std::runtime_error("invalid bailoutSq");
 
     auto run = runner.createRun("transition-voxels", body);
+    auto transitionLease = acquireTransitionLease(runner, run.id);
+    (void)transitionLease;
     runner.setStatus(run.id, "running");
+    runner.setCancelable(run.id, false);
+    setTransitionProgress(runner, run.id, "volume", 0, 2, p.engine, p.scalar_type);
 
     const auto t0 = std::chrono::steady_clock::now();
     compute::McField field;
     try {
         field = compute::buildTransitionVolume(p);
-        runner.setStatus(run.id, "completed");
+        setTransitionProgress(runner, run.id, "voxel_mesh", 1, 2, field.engine_used, field.scalar_used);
     } catch (const std::exception&) {
+        setTransitionProgress(runner, run.id, "failed", 0, 2, p.engine, p.scalar_type);
         runner.setStatus(run.id, "failed");
         throw;
     }
@@ -455,7 +514,8 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
         std::filesystem::path(run.outputDir) / "transition_voxels.stl";
     {
         const uint32_t triCount = static_cast<uint32_t>(faceCount * 2);
-        std::ofstream stlOut(stlPath, std::ios::binary);
+        const std::filesystem::path tmpPath = stlPath.string() + ".tmp";
+        std::ofstream stlOut(tmpPath, std::ios::binary);
         // 80-byte header
         char header[80] = {};
         std::memcpy(header, "fractal_studio voxel STL", 24);
@@ -486,8 +546,23 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
             stlOut.write(reinterpret_cast<const char*>(v + 9),  12); // v3
             stlOut.write(reinterpret_cast<const char*>(&attr), 2);
         }
+        stlOut.close();
+        if (!stlOut) throw std::runtime_error("failed to write transition voxel STL");
+        std::error_code ec;
+        std::filesystem::rename(tmpPath, stlPath, ec);
+        if (ec) {
+            std::filesystem::remove(stlPath, ec);
+            ec.clear();
+            std::filesystem::rename(tmpPath, stlPath, ec);
+        }
+        if (ec) {
+            std::filesystem::remove(tmpPath, ec);
+            throw std::runtime_error("failed to finalize transition voxel STL");
+        }
     }
     runner.addArtifact(run.id, Artifact{"transition-voxels", stlPath.string(), "stl"});
+    setTransitionProgress(runner, run.id, "completed", 2, 2, field.engine_used, field.scalar_used);
+    runner.setStatus(run.id, "completed");
 
     const std::string stlId = run.id + ":transition_voxels.stl";
     Json resp = {

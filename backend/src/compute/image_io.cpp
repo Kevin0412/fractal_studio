@@ -21,8 +21,20 @@ std::string write_png(const std::string& path, const cv::Mat& bgr) {
     const std::vector<int> params = {
         cv::IMWRITE_PNG_COMPRESSION, 3,
     };
-    if (!cv::imwrite(path, bgr, params)) {
-        throw std::runtime_error("write_png: imwrite failed for " + path);
+    const std::filesystem::path tmp = p.string() + ".tmp";
+    if (!cv::imwrite(tmp.string(), bgr, params)) {
+        throw std::runtime_error("write_png: imwrite failed for " + tmp.string());
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, p, ec);
+    if (ec) {
+        std::filesystem::remove(p, ec);
+        ec.clear();
+        std::filesystem::rename(tmp, p, ec);
+    }
+    if (ec) {
+        std::filesystem::remove(tmp, ec);
+        throw std::runtime_error("write_png: rename failed for " + path);
     }
     return path;
 }

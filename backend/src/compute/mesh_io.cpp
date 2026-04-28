@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <system_error>
 #include <vector>
 
 namespace fsd::compute {
@@ -18,6 +19,20 @@ namespace {
 void ensureParent(const std::string& path) {
     std::filesystem::path p(path);
     if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path());
+}
+
+void finalizeTempFile(const std::filesystem::path& tmp, const std::filesystem::path& finalPath, const char* label) {
+    std::error_code ec;
+    std::filesystem::rename(tmp, finalPath, ec);
+    if (ec) {
+        std::filesystem::remove(finalPath, ec);
+        ec.clear();
+        std::filesystem::rename(tmp, finalPath, ec);
+    }
+    if (ec) {
+        std::filesystem::remove(tmp, ec);
+        throw std::runtime_error(std::string(label) + ": cannot finalize " + finalPath.string());
+    }
 }
 
 // Put an integer into a byte buffer at offset (little-endian).
@@ -32,8 +47,10 @@ inline void putU32(std::vector<uint8_t>& buf, size_t off, uint32_t v) {
 
 void writeStlBinary(const std::string& path, const Mesh& mesh) {
     ensureParent(path);
-    std::ofstream out(path, std::ios::binary);
-    if (!out) throw std::runtime_error("writeStlBinary: cannot open " + path);
+    const std::filesystem::path finalPath(path);
+    const std::filesystem::path tmpPath = path + ".tmp";
+    std::ofstream out(tmpPath, std::ios::binary);
+    if (!out) throw std::runtime_error("writeStlBinary: cannot open " + tmpPath.string());
 
     // 80-byte header
     char header[80] = {0};
@@ -78,6 +95,13 @@ void writeStlBinary(const std::string& path, const Mesh& mesh) {
         const uint16_t attr = 0;
         out.write(reinterpret_cast<const char*>(&attr), 2);
     }
+    out.close();
+    if (!out) {
+        std::error_code ec;
+        std::filesystem::remove(tmpPath, ec);
+        throw std::runtime_error("writeStlBinary: write failed " + path);
+    }
+    finalizeTempFile(tmpPath, finalPath, "writeStlBinary");
 }
 
 // Minimal GLB: container of JSON + BIN chunks. Buffer has two bufferViews
@@ -173,8 +197,10 @@ void writeGlb(const std::string& path, const Mesh& mesh) {
         8 + jsonChunkLen +           // JSON chunk header + data
         8 + binChunkLen;             // BIN chunk header + data
 
-    std::ofstream out(path, std::ios::binary);
-    if (!out) throw std::runtime_error("writeGlb: cannot open " + path);
+    const std::filesystem::path finalPath(path);
+    const std::filesystem::path tmpPath = path + ".tmp";
+    std::ofstream out(tmpPath, std::ios::binary);
+    if (!out) throw std::runtime_error("writeGlb: cannot open " + tmpPath.string());
 
     auto writeU32 = [&](uint32_t v) {
         uint8_t b[4] = {
@@ -199,6 +225,13 @@ void writeGlb(const std::string& path, const Mesh& mesh) {
     writeU32(binChunkLen);
     out.write("BIN\0", 4);
     out.write(reinterpret_cast<const char*>(binChunk.data()), binChunk.size());
+    out.close();
+    if (!out) {
+        std::error_code ec;
+        std::filesystem::remove(tmpPath, ec);
+        throw std::runtime_error("writeGlb: write failed " + path);
+    }
+    finalizeTempFile(tmpPath, finalPath, "writeGlb");
 }
 
 } // namespace fsd::compute

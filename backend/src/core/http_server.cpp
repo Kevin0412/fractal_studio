@@ -30,6 +30,7 @@ std::string HttpServer::makeHttpResponse(int status, const std::string& body, co
     if (status == 400) statusText = "Bad Request";
     if (status == 404) statusText = "Not Found";
     if (status == 405) statusText = "Method Not Allowed";
+    if (status == 409) statusText = "Conflict";
     if (status == 500) statusText = "Internal Server Error";
 
     std::ostringstream ss;
@@ -88,7 +89,7 @@ std::string HttpServer::handleRequest(const std::string& request) const {
     if (method == "GET"  && path == "/api/special-points")      return makeHttpResponse(200, specialPointsListRoute(repoRoot_, query));
 
     // Benchmark
-    if (method == "POST" && path == "/api/benchmark") return makeHttpResponse(200, benchmarkRoute(body));
+    if (method == "POST" && path == "/api/benchmark") return makeHttpResponse(200, benchmarkRoute(runner_, body));
 
     // Custom variants
     if (method == "POST" && path == "/api/variants/compile") return makeHttpResponse(200, variantCompileRoute(repoRoot_, body));
@@ -98,6 +99,12 @@ std::string HttpServer::handleRequest(const std::string& request) const {
     // Runs
     if (method == "GET"  && path == "/api/runs/status") return makeHttpResponse(200, runStatusRoute(repoRoot_, runner_, query));
     if (method == "GET"  && path == "/api/runs") return makeHttpResponse(200, runsListRoute(repoRoot_, query));
+    if (method == "GET"  && path == "/api/tasks/active") return makeHttpResponse(200, activeTasksRoute(runner_));
+    if (method == "POST" && path == "/api/runs/cancel") return makeHttpResponse(200, cancelRunRoute(runner_, body));
+    if (method == "POST" && path.rfind("/api/runs/", 0) == 0 && path.size() > 17 && path.substr(path.size() - 7) == "/cancel") {
+        const std::string runId = path.substr(10, path.size() - 10 - 7);
+        return makeHttpResponse(200, cancelRunRoute(runner_, runId, body));
+    }
 
     // Artifacts
     if (method == "GET"  && path == "/api/artifacts") return makeHttpResponse(200, artifactsListRoute(repoRoot_, query));
@@ -123,6 +130,8 @@ std::string HttpServer::handleRequest(const std::string& request) const {
 
     if (method != "GET" && method != "POST") return makeHttpResponse(405, "{\"error\":\"method not allowed\"}");
     return makeHttpResponse(404, "{\"error\":\"not found\"}");
+    } catch (const HttpError& ex) {
+        return makeHttpResponse(ex.status(), ex.body());
     } catch (const std::exception& ex) {
         return makeHttpResponse(500, std::string("{\"error\":\"") + ex.what() + "\"}");
     }

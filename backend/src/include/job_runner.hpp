@@ -6,6 +6,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace fsd {
 
@@ -23,6 +24,11 @@ public:
     void setProgress(const std::string& runId, const std::string& progressJson);
     std::string getProgress(const std::string& runId) const;
     void addArtifact(const std::string& runId, const Artifact& artifact);
+    void requestCancel(const std::string& runId);
+    bool isCancelRequested(const std::string& runId) const;
+    void setCancelable(const std::string& runId, bool cancelable);
+    std::vector<ActiveTaskSnapshot> activeTasks() const;
+    long long runElapsedMs(const std::string& runId) const;
 
     // Lookup the on-disk path for a run by id, consulting sqlite on miss.
     std::string resolveOutputDir(const std::string& runId) const;
@@ -36,6 +42,8 @@ private:
     std::unordered_map<std::string, std::string> runParams_;
     std::unordered_map<std::string, std::string> runProgress_;
     std::unordered_map<std::string, long long>   runStarted_;
+    std::unordered_map<std::string, bool>        runCancelRequested_;
+    std::unordered_map<std::string, bool>        runCancelable_;
 
     static std::string makeRunId();
 };

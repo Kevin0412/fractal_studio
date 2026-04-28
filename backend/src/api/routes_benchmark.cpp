@@ -8,6 +8,7 @@
 
 #include "routes.hpp"
 #include "routes_common.hpp"
+#include "resource_manager.hpp"
 
 #include "../compute/map_kernel.hpp"
 #include "../compute/map_kernel_avx2.hpp"
@@ -28,7 +29,26 @@
 
 namespace fsd {
 
-std::string benchmarkRoute(const std::string& body) {
+namespace {
+
+void setBenchmarkProgress(JobRunner& runner, const std::string& runId, const std::string& stage, int current, int total) {
+    const double percent = total > 0 ? (100.0 * static_cast<double>(current) / static_cast<double>(total)) : 0.0;
+    runner.setProgress(runId, Json{
+        {"taskType", "benchmark"},
+        {"stage", stage},
+        {"current", current},
+        {"total", total},
+        {"percent", percent},
+        {"elapsedMs", runner.runElapsedMs(runId)},
+        {"cancelable", false},
+        {"resourceLocks", Json::array({"benchmark", "cpu_heavy", "cuda_heavy"})},
+        {"details", Json::object()},
+    }.dump());
+}
+
+} // namespace
+
+std::string benchmarkRoute(JobRunner& runner, const std::string& body) {
     const Json jbody = body.empty() ? Json::object() : parseJsonBody(body);
 
     const double cRe   = jbody.value("centerRe",   -0.75);
@@ -37,6 +57,22 @@ std::string benchmarkRoute(const std::string& body) {
     const int W        = jbody.value("width",       512);
     const int H        = jbody.value("height",      512);
     const int iters    = jbody.value("iterations",  2000);
+
+    auto run = runner.createRun("benchmark", body);
+    ResourceManager::Lease lease;
+    std::string conflictLock, activeRunId;
+    if (!resourceManager().tryAcquire(run.id, "benchmark", {"benchmark", "cpu_heavy", "cuda_heavy"}, lease, conflictLock, activeRunId)) {
+        runner.setStatus(run.id, "failed");
+        throw HttpError(409, Json{
+            {"error", "benchmark already running"},
+            {"activeRunId", activeRunId},
+            {"taskType", "benchmark"},
+            {"resourceLock", conflictLock},
+        }.dump());
+    }
+    (void)lease;
+    runner.setStatus(run.id, "running");
+    runner.setCancelable(run.id, false);
 
     struct BenchResult {
         std::string engine;
@@ -86,18 +122,24 @@ std::string benchmarkRoute(const std::string& body) {
         return r;
     };
 
+    setBenchmarkProgress(runner, run.id, "running", 0, 8);
+
     // OpenMP fp64 / fx64
     results.push_back(run_bench("openmp", "fp64"));
+    setBenchmarkProgress(runner, run.id, "running", static_cast<int>(results.size()), 8);
     results.push_back(run_bench("openmp", "fx64"));
+    setBenchmarkProgress(runner, run.id, "running", static_cast<int>(results.size()), 8);
 
     // AVX2/FMA (mainstream CPU SIMD path)
     if (compute::avx2_available() && compute::fma_available()) {
         results.push_back(run_bench("avx2", "fp64"));
+        setBenchmarkProgress(runner, run.id, "running", static_cast<int>(results.size()), 8);
     }
 
     // AVX-512 (only if available)
     if (compute::avx512_available()) {
         results.push_back(run_bench("avx512", "fp64"));
+        setBenchmarkProgress(runner, run.id, "running", static_cast<int>(results.size()), 8);
     }
 
     // CUDA (only if available)
@@ -105,9 +147,13 @@ std::string benchmarkRoute(const std::string& body) {
     if (fsd_cuda::cuda_available()) {
         // CUDA path via render_map — uses CUDA internally when engine="cuda"
         results.push_back(run_bench("cuda", "fp64"));
+        setBenchmarkProgress(runner, run.id, "running", static_cast<int>(results.size()), 8);
         results.push_back(run_bench("cuda", "fx64"));
+        setBenchmarkProgress(runner, run.id, "running", static_cast<int>(results.size()), 8);
         results.push_back(run_bench("hybrid", "fp64"));
+        setBenchmarkProgress(runner, run.id, "running", static_cast<int>(results.size()), 8);
         results.push_back(run_bench("hybrid", "fx64"));
+        setBenchmarkProgress(runner, run.id, "running", static_cast<int>(results.size()), 8);
     }
 #endif
 
@@ -126,11 +172,15 @@ std::string benchmarkRoute(const std::string& body) {
     compute::update_benchmark_cache(cache_entries);
 
     Json resp = {
+        {"runId",      run.id},
+        {"status",     "completed"},
         {"width",      W},
         {"height",     H},
         {"iterations", iters},
         {"results",    jresults},
     };
+    setBenchmarkProgress(runner, run.id, "completed", 8, 8);
+    runner.setStatus(run.id, "completed");
     return resp.dump();
 }
 

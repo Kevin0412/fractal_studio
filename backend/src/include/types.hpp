@@ -18,4 +18,17 @@ struct RunRecord {
     std::vector<Artifact> artifacts;
 };
 
+struct ActiveTaskSnapshot {
+    std::string runId;
+    std::string taskType;
+    std::string status;
+    std::string stage;
+    std::string engine;
+    std::string scalar;
+    std::string progressJson;
+    long long startedAt = 0;
+    long long elapsedMs = 0;
+    bool cancelable = false;
+};
+
 } // namespace fsd

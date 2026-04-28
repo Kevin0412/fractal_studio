@@ -90,7 +90,7 @@ async function computeHsField() {
     hsFieldData.value = r
     info.value = `${r.width}×${r.height} field · range [${r.fieldMin.toFixed(3)}, ${r.fieldMax.toFixed(3)}] · ${r.generatedMs.toFixed(0)}ms`
   } catch (e: any) {
-    error.value = e?.message ?? String(e)
+    error.value = e?.data?.error ?? e?.message ?? String(e)
     info.value  = ''
   } finally {
     loading.value = false
@@ -116,7 +116,7 @@ async function exportHsStl() {
     })
     stlUrl.value = api.artifactDownloadUrl(r.stlArtifactId)
   } catch (e: any) {
-    error.value = e?.message ?? String(e)
+    error.value = e?.data?.error ?? e?.message ?? String(e)
   } finally {
     stlLoading.value = false
   }
@@ -146,7 +146,7 @@ async function computeTransitionVoxels() {
     stlUrl.value = transitionStlDownloadUrl(r)
     info.value = `${(r.voxelCount ?? 0).toLocaleString()} voxels · ${r.faceCount.toLocaleString()} faces · ${r.resolution}³ grid · ${r.generatedMs.toFixed(0)}ms`
   } catch (e: any) {
-    error.value = e?.message ?? String(e)
+    error.value = e?.data?.error ?? e?.message ?? String(e)
     info.value  = ''
   } finally {
     loading.value = false

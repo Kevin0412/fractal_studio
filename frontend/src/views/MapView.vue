@@ -248,6 +248,7 @@ const videoPreset = computed(() =>
 async function exportPng() {
   try {
     const resp = await api.mapRender({
+      taskType:   'still_export',
       centerRe:   centerRe.value,
       centerIm:   centerIm.value,
       scale:      scale.value,
@@ -267,7 +268,7 @@ async function exportPng() {
     }) as any
     window.open(api.artifactDownloadUrl(resp.artifactId), '_blank')
   } catch (e: any) {
-    console.error('export PNG failed:', e)
+    console.error('export PNG failed:', e?.data?.error ?? e)
   }
 }
 
@@ -418,7 +419,7 @@ async function runPreview() {
     exportPreviewResult.value = resp
     exportPreviewStatus.value = `${resp.width}×${resp.height} · depth ${resp.depthOctaves.toFixed(2)} · ${resp.generatedMs.toFixed(0)} ms`
   } catch (e: any) {
-    exportPreviewStatus.value = 'failed: ' + (e?.message || e)
+    exportPreviewStatus.value = 'failed: ' + (e?.data?.error || e?.message || e)
   } finally {
     exportPreviewBusy.value = false
   }
@@ -435,7 +436,7 @@ async function runExport() {
     exportStatus.value = `${resp.runId} · ${resp.frameCount} frames · ${resp.durationSec.toFixed(2)}s`
     await pollVideoExport(resp)
   } catch (e: any) {
-    exportStatus.value = 'failed: ' + (e?.message || e)
+    exportStatus.value = 'failed: ' + (e?.data?.error || e?.message || e)
   } finally {
     exportBusy.value = false
   }
@@ -453,6 +454,10 @@ async function pollVideoExport(initial: VideoExportResponse) {
     if (status.status === 'failed') {
       const msg = status.progress?.errorMessage || 'video export failed'
       exportStatus.value = `failed: ${status.progress?.failedStage || status.progress?.stage || 'video_export'} · ${msg}`
+      return
+    }
+    if (status.status === 'cancelled') {
+      exportStatus.value = 'cancelled'
       return
     }
     if (status.status !== 'completed') continue

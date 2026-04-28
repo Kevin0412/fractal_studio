@@ -45,6 +45,7 @@ add_executable(fractal_studio_backend
     # Core
     src/core/path_guard.cpp
     src/core/job_runner.cpp
+    src/core/resource_manager.cpp
     src/core/http_server.cpp
     src/core/hardware_probe.cpp
     src/core/db.cpp

@@ -1,13 +1,17 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
+import type { ActiveTask, ResourceLockStatus } from '../api'
 import type { StatusState } from '../types'
 import { t, lang, setLang } from '../i18n'
 
 defineProps<{ status: StatusState }>()
 
 const hw = ref<any>(null)
+const tasks = ref<ActiveTask[]>([])
+const locks = ref<ResourceLockStatus[]>([])
 let interval: any
+let taskInterval: any
 
 async function refresh() {
   try {
@@ -15,12 +19,32 @@ async function refresh() {
   } catch {}
 }
 
+async function refreshTasks() {
+  try {
+    const r = await api.activeTasks()
+    tasks.value = r.items
+    locks.value = r.resourceLocks
+  } catch {}
+}
+
+async function cancelTask(runId: string) {
+  try {
+    await api.cancelRun(runId)
+    await refreshTasks()
+  } catch {}
+}
+
 onMounted(() => {
   refresh()
+  refreshTasks()
   interval = setInterval(refresh, 10000)
+  taskInterval = setInterval(refreshTasks, 1500)
 })
 
-onUnmounted(() => { if (interval) clearInterval(interval) })
+onUnmounted(() => {
+  if (interval) clearInterval(interval)
+  if (taskInterval) clearInterval(taskInterval)
+})
 
 function fmt(n: number | null, digits = 6): string {
   if (n === null || !isFinite(n)) return '—'
@@ -35,6 +59,24 @@ function fmtSci(n: number | null): string {
 function fmtMs(n: number | null): string {
   if (n === null || !isFinite(n)) return '—'
   return n.toFixed(1) + 'ms'
+}
+
+function fmtElapsed(n?: number): string {
+  if (!n || !isFinite(n)) return '0s'
+  if (n < 1000) return `${Math.round(n)}ms`
+  const s = Math.round(n / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  return `${m}m ${s % 60}s`
+}
+
+function taskPercent(task: ActiveTask): string {
+  const p = task.progress?.percent
+  if (typeof p === 'number' && isFinite(p)) return `${Math.max(0, Math.min(100, p)).toFixed(0)}%`
+  const c = task.progress?.current
+  const total = task.progress?.total
+  if (typeof c === 'number' && typeof total === 'number' && total > 0) return `${Math.round(c / total * 100)}%`
+  return '—'
 }
 </script>
 
@@ -75,6 +117,27 @@ function fmtMs(n: number | null): string {
         <div class="row"><span class="k">mem</span><span class="v num">{{ Math.round(hw.memoryAvailableMiB/1024) }} / {{ Math.round(hw.memoryTotalMiB/1024) }} GiB</span></div>
         <div class="row"><span class="k">gpu</span><span class="v mono hwcpu">{{ hw.gpuModel }}</span></div>
         <div class="row"><span class="k">vram</span><span class="v mono">{{ hw.gpuMemory }}</span></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">active tasks</div>
+      <div class="locks">
+        <span v-for="lock in locks" :key="lock.name" :class="['lock', lock.busy ? 'busy' : 'idle']">
+          {{ lock.name }}
+        </span>
+      </div>
+      <div v-if="tasks.length === 0" class="empty">idle</div>
+      <div v-for="task in tasks" :key="task.runId" class="task">
+        <div class="task-head">
+          <span class="mono task-type">{{ task.taskType }}</span>
+          <button v-if="task.cancelable" class="cancel" @click="cancelTask(task.runId)">cancel</button>
+        </div>
+        <div class="row"><span class="k">stage</span><span class="v mono">{{ task.stage || task.status }}</span></div>
+        <div class="row"><span class="k">engine</span><span class="v mono">{{ task.engine || '—' }}</span></div>
+        <div class="row"><span class="k">progress</span><span class="v num">{{ taskPercent(task) }}</span></div>
+        <div class="bar"><span :style="{ width: taskPercent(task) === '—' ? '0%' : taskPercent(task) }"></span></div>
+        <div class="row"><span class="k">elapsed</span><span class="v num">{{ fmtElapsed(task.elapsedMs) }}</span></div>
       </div>
     </div>
   </aside>
@@ -151,5 +214,84 @@ function fmtMs(n: number | null): string {
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 10px;
+}
+
+.locks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.lock {
+  border: 1px solid var(--rule);
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 9px;
+  padding: 2px 5px;
+  text-transform: uppercase;
+}
+
+.lock.busy {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--rule));
+}
+
+.empty {
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: var(--fs-label);
+  text-transform: uppercase;
+}
+
+.task {
+  border-top: 1px solid var(--rule);
+  padding-top: 8px;
+  margin-top: 8px;
+}
+
+.task-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.task-type {
+  flex: 1;
+  color: var(--text);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cancel {
+  border: 1px solid var(--rule);
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+
+.cancel:hover {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.bar {
+  height: 3px;
+  background: var(--bg-raised);
+  border-radius: 2px;
+  overflow: hidden;
+  margin: 3px 0 5px;
+}
+
+.bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
 }
 </style>

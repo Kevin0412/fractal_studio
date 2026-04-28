@@ -26,6 +26,7 @@
 
 #include "routes.hpp"
 #include "routes_common.hpp"
+#include "resource_manager.hpp"
 
 #include "../compute/image_io.hpp"
 #include "../compute/ln_map.hpp"
@@ -53,6 +54,7 @@
 #include <filesystem>
 #include <functional>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -343,7 +345,8 @@ static std::string generateZoomVideo(
     std::string* ffmpeg_stderr_out = nullptr,
     std::string* encoder_out = nullptr,
     bool prefer_cuda_warp = true,
-    std::string* warp_method_out = nullptr
+    std::string* warp_method_out = nullptr,
+    const std::function<bool()>& should_cancel = nullptr
 ) {
     if (encoder_out) *encoder_out = "";
     if (warp_method_out) *warp_method_out = "opencv_cpu_remap";
@@ -374,6 +377,8 @@ static std::string generateZoomVideo(
 
     const std::filesystem::path mp4 = outDir / (baseName + ".mp4");
     const std::filesystem::path avi = outDir / (baseName + ".avi");
+    const std::filesystem::path tmpMp4 = outDir / (baseName + ".mp4.tmp");
+    const std::filesystem::path tmpAvi = outDir / (baseName + ".avi.tmp");
 
     cv::Mat frame(H, W, CV_8UC3);
     cv::Mat stripFrame(H, W, CV_8UC3);
@@ -386,6 +391,7 @@ static std::string generateZoomVideo(
 
     auto renderFrames = [&](auto&& writeFrame) {
         for (int f = 0; f < frameCount; f++) {
+            if (should_cancel && should_cancel()) throw std::runtime_error("cancelled");
             const double tNorm = static_cast<double>(f) / std::max(1, frameCount - 1);
             const double kTop  = kTop_start - tNorm * depthOctaves * LN_TWO;
 #if USE_CUDA_VIDEO_WARP
@@ -395,28 +401,30 @@ static std::string generateZoomVideo(
 #endif
             renderWarpFrameShared(stripWrap, finalImg, W, H, kTop, kTop_end, frame, stripFrame, finalFrame, mapX, mapY, fmapX, fmapY, useStrip);
             writeFrame(frame);
+            if (should_cancel && should_cancel()) throw std::runtime_error("cancelled");
             if (on_frame_done && (f + 1 == frameCount || ((f + 1) % 8) == 0)) on_frame_done(f + 1);
         }
     };
 
     const std::filesystem::path ffmpegErr = outDir / (baseName + "_ffmpeg.stderr.txt");
+    const std::filesystem::path ffmpegErrTmp = outDir / (baseName + "_ffmpeg.stderr.txt.tmp");
     std::vector<std::pair<std::string, std::string>> ffmpegCmds;
     const std::string inputArgs =
         "ffmpeg -y -f rawvideo -pix_fmt bgr24 -s " + std::to_string(W) + "x" + std::to_string(H) +
         " -r " + std::to_string(fps) + " -i - -an ";
     if (commandSucceeds("bash -lc \"ffmpeg -hide_banner -encoders 2>/dev/null | grep -q h264_nvenc\"")) {
         ffmpegCmds.push_back({"h264_nvenc",
-            inputArgs + "-c:v h264_nvenc -pix_fmt yuv420p -preset p5 -cq 18 \"" + mp4.string() +
-            "\" 2>\"" + ffmpegErr.string() + "\""});
+            inputArgs + "-c:v h264_nvenc -pix_fmt yuv420p -preset p5 -cq 18 \"" + tmpMp4.string() +
+            "\" 2>\"" + ffmpegErrTmp.string() + "\""});
     }
     if (commandSucceeds("bash -lc \"ffmpeg -hide_banner -encoders 2>/dev/null | grep -q hevc_nvenc\"")) {
         ffmpegCmds.push_back({"hevc_nvenc",
-            inputArgs + "-c:v hevc_nvenc -pix_fmt yuv420p -preset p5 -cq 20 \"" + mp4.string() +
-            "\" 2>\"" + ffmpegErr.string() + "\""});
+            inputArgs + "-c:v hevc_nvenc -pix_fmt yuv420p -preset p5 -cq 20 \"" + tmpMp4.string() +
+            "\" 2>\"" + ffmpegErrTmp.string() + "\""});
     }
     ffmpegCmds.push_back({"libx264",
-        inputArgs + "-c:v libx264 -pix_fmt yuv420p -preset medium -crf 16 \"" + mp4.string() +
-        "\" 2>\"" + ffmpegErr.string() + "\""});
+        inputArgs + "-c:v libx264 -pix_fmt yuv420p -preset medium -crf 16 \"" + tmpMp4.string() +
+        "\" 2>\"" + ffmpegErrTmp.string() + "\""});
 
     for (const auto& [encoderName, ffmpegCmd] : ffmpegCmds) {
         if (FILE* pipe = popen(ffmpegCmd.c_str(), "w")) {
@@ -431,15 +439,35 @@ static std::string generateZoomVideo(
                 });
             } catch (...) {
                 pclose(pipe);
+                std::error_code ec;
+                std::filesystem::remove(tmpMp4, ec);
+                std::filesystem::remove(tmpAvi, ec);
+                std::filesystem::remove(ffmpegErrTmp, ec);
                 throw;
             }
             const int rc = pclose(pipe);
             if (ffmpeg_stderr_out) {
-                std::ifstream errIn(ffmpegErr);
+                std::ifstream errIn(ffmpegErrTmp);
                 std::ostringstream ss; ss << errIn.rdbuf();
                 *ffmpeg_stderr_out = ss.str();
             }
-            if (ok && rc == 0 && std::filesystem::exists(mp4)) {
+            if (std::filesystem::exists(ffmpegErrTmp)) {
+                std::error_code ec;
+                std::filesystem::rename(ffmpegErrTmp, ffmpegErr, ec);
+                if (ec) {
+                    std::filesystem::remove(ffmpegErr, ec);
+                    ec.clear();
+                    std::filesystem::rename(ffmpegErrTmp, ffmpegErr, ec);
+                }
+            }
+            if (ok && rc == 0 && std::filesystem::exists(tmpMp4)) {
+                std::error_code ec;
+                std::filesystem::rename(tmpMp4, mp4, ec);
+                if (ec) {
+                    std::filesystem::remove(mp4, ec);
+                    ec.clear();
+                    std::filesystem::rename(tmpMp4, mp4, ec);
+                }
                 if (encoder_out) *encoder_out = encoderName;
                 return mp4.string();
             }
@@ -449,10 +477,10 @@ static std::string generateZoomVideo(
     std::error_code removeEc;
     std::filesystem::remove(mp4, removeEc);
     const int fourcc = cv::VideoWriter::fourcc('m', 'p', '4', 'v');
-    cv::VideoWriter writer(mp4.string(), fourcc, static_cast<double>(fps), cv::Size(W, H), true);
+    cv::VideoWriter writer(tmpMp4.string(), fourcc, static_cast<double>(fps), cv::Size(W, H), true);
     std::string encoderName = "VideoWriter:mp4v";
     if (!writer.isOpened()) {
-        writer.open(avi.string(), cv::VideoWriter::fourcc('M','J','P','G'), static_cast<double>(fps), cv::Size(W, H), true);
+        writer.open(tmpAvi.string(), cv::VideoWriter::fourcc('M','J','P','G'), static_cast<double>(fps), cv::Size(W, H), true);
         encoderName = "VideoWriter:MJPG";
         if (!writer.isOpened()) {
             std::string msg = "VideoWriter failed";
@@ -463,16 +491,38 @@ static std::string generateZoomVideo(
         }
     }
 
-    renderFrames([&](const cv::Mat& rendered) {
-        writer.write(rendered);
-    });
-    writer.release();
+    try {
+        renderFrames([&](const cv::Mat& rendered) {
+            writer.write(rendered);
+        });
+        writer.release();
+    } catch (...) {
+        writer.release();
+        std::error_code ec;
+        std::filesystem::remove(tmpMp4, ec);
+        std::filesystem::remove(tmpAvi, ec);
+        throw;
+    }
 
-    if (std::filesystem::exists(mp4)) {
+    if (std::filesystem::exists(tmpMp4)) {
+        std::error_code ec;
+        std::filesystem::rename(tmpMp4, mp4, ec);
+        if (ec) {
+            std::filesystem::remove(mp4, ec);
+            ec.clear();
+            std::filesystem::rename(tmpMp4, mp4, ec);
+        }
         if (encoder_out) *encoder_out = encoderName;
         return mp4.string();
     }
-    if (std::filesystem::exists(avi)) {
+    if (std::filesystem::exists(tmpAvi)) {
+        std::error_code ec;
+        std::filesystem::rename(tmpAvi, avi, ec);
+        if (ec) {
+            std::filesystem::remove(avi, ec);
+            ec.clear();
+            std::filesystem::rename(tmpAvi, avi, ec);
+        }
         if (encoder_out) *encoder_out = encoderName;
         return avi.string();
     }
@@ -512,18 +562,33 @@ void setVideoProgress(
     double depthCurrent,
     double depthTotal,
     const std::string& failedStage = "",
-    const std::string& errorMessage = ""
+    const std::string& errorMessage = "",
+    Json details = Json::object()
 ) {
+    const double percent = total > 0 ? (100.0 * static_cast<double>(current) / static_cast<double>(total)) : 0.0;
     Json j = {
+        {"taskType", "video_export"},
         {"stage", stage},
         {"current", current},
         {"total", total},
+        {"percent", percent},
+        {"elapsedMs", runner.runElapsedMs(runId)},
+        {"cancelable", true},
+        {"resourceLocks", Json::array({"video_export", "cuda_heavy", "cpu_heavy"})},
         {"depthOctave", depthCurrent},
         {"totalDepthOctaves", depthTotal},
         {"failedStage", failedStage},
         {"errorMessage", errorMessage},
+        {"details", details},
     };
+    for (const char* key : {"engine", "scalar", "finalFrameEngine", "finalFrameScalar", "lnMapEngine", "lnMapScalar", "warpMethod", "encoder", "currentFrame", "totalFrames", "currentLnMapRow", "totalLnMapRows"}) {
+        if (details.contains(key)) j[key] = details[key];
+    }
     runner.setProgress(runId, j.dump());
+}
+
+void throwIfCancelled(JobRunner& runner, const std::string& runId) {
+    if (runner.isCancelRequested(runId)) throw std::runtime_error("cancelled");
 }
 
 } // namespace
@@ -603,13 +668,25 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
     mp.engine     = "auto";
     mp.scalar_type = "auto";
 
-    cv::Mat finalImg(H, W, CV_8UC3);
-    compute::render_map(mp, finalImg);
+    auto run = runner.createRun("zoom-video", body);
+    ResourceManager::Lease videoLeaseRaw;
+    std::string conflictLock, activeRunId;
+    if (!resourceManager().tryAcquire(run.id, "video_export", {"video_export", "cuda_heavy", "cpu_heavy"}, videoLeaseRaw, conflictLock, activeRunId)) {
+        runner.setStatus(run.id, "failed");
+        throw HttpError(409, Json{
+            {"error", "video_export already running"},
+            {"activeRunId", activeRunId},
+            {"taskType", "video_export"},
+            {"resourceLock", conflictLock},
+        }.dump());
+    }
+    auto videoLease = std::make_shared<ResourceManager::Lease>(std::move(videoLeaseRaw));
+    (void)videoLease;
+    runner.setStatus(run.id, "running");
+    runner.setCancelable(run.id, true);
 
     // ── Video writer ──────────────────────────────────────────────────────────
-    auto run = runner.createRun("zoom-video", body);
-    runner.setStatus(run.id, "running");
-
+    cv::Mat finalImg(H, W, CV_8UC3);
     std::string mp4Path;
     std::string ffmpegStderr;
     std::string encoderUsed;
@@ -618,26 +695,39 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
 
     try {
         const auto t0 = std::chrono::steady_clock::now();
-        setVideoProgress(runner, run.id, "video_warp_encode", 0, frameCount, depthOctaves, depthOctaves);
+        throwIfCancelled(runner, run.id);
+        compute::render_map(mp, finalImg);
+        throwIfCancelled(runner, run.id);
+        setVideoProgress(runner, run.id, "video_warp_encode", 0, frameCount, depthOctaves, depthOctaves,
+                         "", "", Json{{"currentFrame", 0}, {"totalFrames", frameCount}});
         mp4Path = generateZoomVideo(
             strip, finalImg, W, H, fps, frameCount,
             kTop_start, kTop_end, depthOctaves,
             std::filesystem::path(run.outputDir), "zoom",
             [&](int frameDone) {
-                setVideoProgress(runner, run.id, "video_warp_encode", frameDone, frameCount, depthOctaves, depthOctaves);
+                setVideoProgress(runner, run.id, "video_warp_encode", frameDone, frameCount, depthOctaves, depthOctaves,
+                                 "", "", Json{{"currentFrame", frameDone}, {"totalFrames", frameCount}});
             },
             &ffmpegStderr,
             &encoderUsed,
             j.value("cudaWarp", true),
-            &warpMethod
+            &warpMethod,
+            [&]() { return runner.isCancelRequested(run.id); }
         );
         const auto t1 = std::chrono::steady_clock::now();
         elapsed = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        setVideoProgress(runner, run.id, "video_warp_encode", frameCount, frameCount, depthOctaves, depthOctaves,
+                         "", "", Json{{"currentFrame", frameCount}, {"totalFrames", frameCount}, {"warpMethod", warpMethod}, {"encoder", encoderUsed}});
 
         runner.addArtifact(run.id, Artifact{"zoom-video", mp4Path, "video"});
         runner.setStatus(run.id, "completed");
-    } catch (const std::exception&) {
-        runner.setStatus(run.id, "failed");
+    } catch (const std::exception& e) {
+        if (runner.isCancelRequested(run.id) || std::string(e.what()) == "cancelled") {
+            setVideoProgress(runner, run.id, "cancelled", 0, frameCount, 0.0, depthOctaves, "video_export", "cancelled");
+            runner.setStatus(run.id, "cancelled");
+        } else {
+            runner.setStatus(run.id, "failed");
+        }
         throw;
     }
 
@@ -850,11 +940,26 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
     if (!compute::colormap_from_name(colormapStr.c_str(), cm)) cm = compute::Colormap::ClassicCos;
 
     auto run = runner.createRun("video-export", body);
+    ResourceManager::Lease videoLeaseRaw;
+    std::string conflictLock, activeRunId;
+    if (!resourceManager().tryAcquire(run.id, "video_export", {"video_export", "cuda_heavy", "cpu_heavy"}, videoLeaseRaw, conflictLock, activeRunId)) {
+        runner.setStatus(run.id, "failed");
+        throw HttpError(409, Json{
+            {"error", "video_export already running"},
+            {"activeRunId", activeRunId},
+            {"taskType", "video_export"},
+            {"resourceLock", conflictLock},
+        }.dump());
+    }
+    auto videoLease = std::make_shared<ResourceManager::Lease>(std::move(videoLeaseRaw));
+    runner.setCancelable(run.id, true);
 
     auto execute = [=, &runner]() mutable -> Json {
+    (void)videoLease;
     runner.setStatus(run.id, "running");
     try {
         const auto t0 = std::chrono::steady_clock::now();
+        throwIfCancelled(runner, run.id);
 
         // ── 1. Render final cartesian frame ────────────────────────────────────
         setVideoProgress(runner, run.id, "final_frame", 0, 1, depth, depth);
@@ -881,11 +986,13 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
 
         cv::Mat finalImg(H, W, CV_8UC3);
         const compute::MapStats finalStats = compute::render_map(mp, finalImg);
+        throwIfCancelled(runner, run.id);
 
         const std::filesystem::path finalPath = std::filesystem::path(run.outputDir) / "final_frame.png";
         compute::write_png(finalPath.string(), finalImg);
         runner.addArtifact(run.id, Artifact{"final-frame", finalPath.string(), "image"});
-        setVideoProgress(runner, run.id, "final_frame", 1, 1, depth, depth);
+        setVideoProgress(runner, run.id, "final_frame", 1, 1, depth, depth,
+                         "", "", Json{{"engine", finalStats.engine_used}, {"scalar", finalStats.scalar_used}, {"finalFrameEngine", finalStats.engine_used}, {"finalFrameScalar", finalStats.scalar_used}});
 
         // ── 2. Render ln-map strip ─────────────────────────────────────────────
         const int t = stripPlan.heightT;
@@ -905,12 +1012,18 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
         lp.colormap = cm;
         lp.engine = j.value("lnMapEngine", std::string("auto"));
         setVideoProgress(runner, run.id, "ln_map", 0, t, 0.0, depth);
+        throwIfCancelled(runner, run.id);
         const compute::LnMapStats lnStats = compute::render_ln_map(
             lp, strip,
             [&](int rowsDone) {
+                throwIfCancelled(runner, run.id);
                 const double octave = depth * static_cast<double>(rowsDone) / std::max(1, t);
-                setVideoProgress(runner, run.id, "ln_map", rowsDone, t, octave, depth);
+                setVideoProgress(runner, run.id, "ln_map", rowsDone, t, octave, depth,
+                                 "", "", Json{{"currentLnMapRow", rowsDone}, {"totalLnMapRows", t}});
             });
+        throwIfCancelled(runner, run.id);
+        setVideoProgress(runner, run.id, "ln_map", t, t, depth, depth,
+                         "", "", Json{{"engine", lnStats.engine_used}, {"scalar", lnStats.scalar_used}, {"lnMapEngine", lnStats.engine_used}, {"lnMapScalar", lnStats.scalar_used}, {"currentLnMapRow", t}, {"totalLnMapRows", t}});
 
         const std::filesystem::path stripPath = std::filesystem::path(run.outputDir) / "ln_map.png";
         compute::write_png(stripPath.string(), strip);
@@ -934,11 +1047,11 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
                 {"scalar", lnStats.scalar_used},
             };
             const std::filesystem::path scPath = std::filesystem::path(run.outputDir) / "ln_map.json";
-            std::ofstream os(scPath);
-            os << sc.dump(2);
+            atomicWriteText(scPath, sc.dump(2));
         }
 
         // ── 3. Render first/last preview frames ───────────────────────────────
+        throwIfCancelled(runner, run.id);
         const cv::Mat startPreview = renderZoomPreviewFrame(strip, finalImg, W, H, kTop_start, kTop_end);
         const cv::Mat endPreview   = renderZoomPreviewFrame(strip, finalImg, W, H, kTop_end,   kTop_end);
         const std::filesystem::path startPreviewPath = std::filesystem::path(run.outputDir) / "start_frame.png";
@@ -949,7 +1062,8 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
         runner.addArtifact(run.id, Artifact{"end-frame",   endPreviewPath.string(),   "image"});
 
         // ── 4. Generate video ──────────────────────────────────────────────────
-        setVideoProgress(runner, run.id, "video_warp_encode", 0, frameCount, depth, depth);
+        setVideoProgress(runner, run.id, "video_warp_encode", 0, frameCount, depth, depth,
+                         "", "", Json{{"currentFrame", 0}, {"totalFrames", frameCount}, {"lnMapEngine", lnStats.engine_used}, {"lnMapScalar", lnStats.scalar_used}, {"finalFrameEngine", finalStats.engine_used}, {"finalFrameScalar", finalStats.scalar_used}});
         std::string ffmpegStderr;
         std::string encoderUsed;
         std::string warpMethod;
@@ -958,13 +1072,18 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
             kTop_start, kTop_end, depth,
             std::filesystem::path(run.outputDir), "zoom",
             [&](int frameDone) {
-                setVideoProgress(runner, run.id, "video_warp_encode", frameDone, frameCount, depth, depth);
+                setVideoProgress(runner, run.id, "video_warp_encode", frameDone, frameCount, depth, depth,
+                                 "", "", Json{{"currentFrame", frameDone}, {"totalFrames", frameCount}, {"lnMapEngine", lnStats.engine_used}, {"lnMapScalar", lnStats.scalar_used}, {"finalFrameEngine", finalStats.engine_used}, {"finalFrameScalar", finalStats.scalar_used}});
             },
             &ffmpegStderr,
             &encoderUsed,
             j.value("cudaWarp", true),
-            &warpMethod
+            &warpMethod,
+            [&]() { return runner.isCancelRequested(run.id); }
         );
+        throwIfCancelled(runner, run.id);
+        setVideoProgress(runner, run.id, "video_warp_encode", frameCount, frameCount, depth, depth,
+                         "", "", Json{{"currentFrame", frameCount}, {"totalFrames", frameCount}, {"lnMapEngine", lnStats.engine_used}, {"lnMapScalar", lnStats.scalar_used}, {"finalFrameEngine", finalStats.engine_used}, {"finalFrameScalar", finalStats.scalar_used}, {"warpMethod", warpMethod}, {"encoder", encoderUsed}});
         const std::string videoFile = std::filesystem::path(videoPath).filename().string();
         runner.addArtifact(run.id, Artifact{"zoom-video", videoPath, "video"});
 
@@ -975,12 +1094,15 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
             {"lnMapScalar", lnStats.scalar_used},
             {"warpMethod", warpMethod},
             {"encoder", encoderUsed},
+            {"durationSec", durSec},
+            {"fps", fps},
+            {"frameCount", frameCount},
+            {"qualityPreset", stripPlan.qualityPreset},
+            {"qualityScale", stripPlan.qualityScale},
+            {"estimatedPeakMemory", stripPlan.estimatedPeakMemory},
         };
         const std::filesystem::path reportPath = std::filesystem::path(run.outputDir) / "video_export.json";
-        {
-            std::ofstream os(reportPath);
-            os << renderLog.dump(2);
-        }
+        atomicWriteText(reportPath, renderLog.dump(2));
         runner.addArtifact(run.id, Artifact{"video-export", reportPath.string(), "report"});
 
         const auto t1 = std::chrono::steady_clock::now();
@@ -1039,8 +1161,13 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
         return resp;
 
     } catch (const std::exception& e) {
-        setVideoProgress(runner, run.id, "failed", 0, 0, 0.0, depth, "video_export", e.what());
-        runner.setStatus(run.id, "failed");
+        if (runner.isCancelRequested(run.id) || std::string(e.what()) == "cancelled") {
+            setVideoProgress(runner, run.id, "cancelled", 0, frameCount, 0.0, depth, "video_export", "cancelled");
+            runner.setStatus(run.id, "cancelled");
+        } else {
+            setVideoProgress(runner, run.id, "failed", 0, 0, 0.0, depth, "video_export", e.what());
+            runner.setStatus(run.id, "failed");
+        }
         throw;
     }
     };

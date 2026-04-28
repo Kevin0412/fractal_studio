@@ -42,22 +42,17 @@ async function runBenchmark() {
   benchError.value   = ''
   benchResults.value = []
   try {
-    const res = await fetch(`http://${location.hostname}:18080/api/benchmark`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        width: benchSize.value,
-        height: benchSize.value,
-        iterations: benchIters.value,
-        centerRe: -0.75,
-        centerIm: 0,
-        scale: 1.5,
-      }),
+    const data = await api.benchmark({
+      width: benchSize.value,
+      height: benchSize.value,
+      iterations: benchIters.value,
+      centerRe: -0.75,
+      centerIm: 0,
+      scale: 1.5,
     })
-    const data = await res.json()
     benchResults.value = data.results ?? []
   } catch (e: any) {
-    benchError.value = e?.message ?? String(e)
+    benchError.value = e?.data?.error ?? e?.message ?? String(e)
   } finally {
     benchRunning.value = false
   }

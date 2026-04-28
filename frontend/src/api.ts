@@ -12,8 +12,14 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`)
-  return res.json() as Promise<T>
+  const text = await res.text()
+  if (!res.ok) {
+    const err = new Error(`${path}: ${res.status} ${text}`) as Error & { status?: number; data?: any }
+    err.status = res.status
+    try { err.data = JSON.parse(text) } catch {}
+    throw err
+  }
+  return (text ? JSON.parse(text) : {}) as T
 }
 
 async function getJson<T>(path: string): Promise<T> {
@@ -64,6 +70,8 @@ export type ColorMap = 'classic_cos' | 'mod17' | 'hsv_wheel' | 'tri765' | 'grays
 export const COLORMAPS: ColorMap[] = ['classic_cos', 'mod17', 'hsv_wheel', 'tri765', 'grayscale', 'hs_rainbow']
 
 export interface MapRenderRequest {
+  requestId?: string
+  taskType?: string
   centerRe: number
   centerIm: number
   scale: number          // height in complex units
@@ -86,6 +94,7 @@ export interface MapRenderRequest {
 
 export interface MapRenderResponse {
   runId: string
+  requestId?: string
   status: string
   artifactId: string
   imagePath: string
@@ -343,10 +352,28 @@ export interface RunProgress {
   stage?: string
   current?: number
   total?: number
+  percent?: number
+  engine?: string
+  scalar?: string
+  elapsedMs?: number
+  estimatedRemainingMs?: number | null
+  cancelable?: boolean
+  resourceLocks?: string[]
   depthOctave?: number
   totalDepthOctaves?: number
+  currentFrame?: number
+  totalFrames?: number
+  currentLnMapRow?: number
+  totalLnMapRows?: number
+  finalFrameEngine?: string
+  finalFrameScalar?: string
+  lnMapEngine?: string
+  lnMapScalar?: string
+  warpMethod?: string
+  encoder?: string
   failedStage?: string
   errorMessage?: string
+  details?: Record<string, any>
 }
 
 export interface RunArtifactStatus {
@@ -366,6 +393,33 @@ export interface RunStatusResponse {
   outputDir: string
   progress: RunProgress
   artifacts: RunArtifactStatus[]
+}
+
+export interface ResourceLockStatus {
+  name: string
+  active: number
+  limit: number
+  busy: boolean
+  activeRunId?: string
+  taskType?: string
+}
+
+export interface ActiveTask {
+  runId: string
+  taskType: string
+  status: string
+  stage: string
+  engine?: string
+  scalar?: string
+  startedAt: number
+  elapsedMs: number
+  cancelable: boolean
+  progress: RunProgress
+}
+
+export interface ActiveTasksResponse {
+  items: ActiveTask[]
+  resourceLocks: ResourceLockStatus[]
 }
 
 export interface VideoPreviewRequest extends VideoExportRequest {
@@ -524,6 +578,11 @@ export const api = {
   runs: (limit = 50) => getJson<{ items: RunRow[] }>(`/api/runs?limit=${limit}`),
   runStatus: (runId: string) =>
     getJson<RunStatusResponse>(`/api/runs/status?runId=${encodeURIComponent(runId)}`),
+  activeTasks: () => getJson<ActiveTasksResponse>('/api/tasks/active'),
+  cancelRun: (runId: string) =>
+    postJson<{ runId: string; status: string }>(`/api/runs/${encodeURIComponent(runId)}/cancel`, {}),
+  benchmark: (req: Record<string, any> = {}) =>
+    postJson<Record<string, any>>('/api/benchmark', req),
 
   artifacts: (kind?: string, runId?: string) => {
     const q = new URLSearchParams()

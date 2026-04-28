@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <regex>
 #include <string>
 
@@ -85,6 +86,29 @@ inline Db openDb(const std::filesystem::path& repoRoot) {
 
 inline std::filesystem::path repoRuntime(const std::filesystem::path& repoRoot) {
     return repoRoot / "fractal_studio" / "runtime";
+}
+
+inline void atomicWriteText(const std::filesystem::path& path, const std::string& text) {
+    namespace fs = std::filesystem;
+    if (path.has_parent_path()) fs::create_directories(path.parent_path());
+    const fs::path tmp = path.string() + ".tmp";
+    {
+        std::ofstream os(tmp, std::ios::binary);
+        os << text;
+        if (!os) {
+            std::error_code ec;
+            fs::remove(tmp, ec);
+            throw std::runtime_error("atomic write failed: " + path.string());
+        }
+    }
+    std::error_code ec;
+    fs::rename(tmp, path, ec);
+    if (ec) {
+        fs::remove(path, ec);
+        ec.clear();
+        fs::rename(tmp, path, ec);
+    }
+    if (ec) throw std::runtime_error("atomic write failed: " + path.string());
 }
 
 } // namespace fsd

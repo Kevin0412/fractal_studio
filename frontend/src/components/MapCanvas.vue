@@ -41,6 +41,7 @@ const domH     = ref(0)
 let   ro: ResizeObserver | null = null
 let   renderTimer: ReturnType<typeof setTimeout> | null = null
 let   currentRender: AbortController | null = null
+let   renderSeq = 0
 
 // ── Full-frame render ─────────────────────────────────────────────────────────
 
@@ -52,8 +53,11 @@ async function renderFrame() {
   // Abort any in-flight render
   currentRender?.abort()
   currentRender = new AbortController()
+  const seq = ++renderSeq
+  const requestId = `${Date.now()}-${seq}`
 
   const req: MapRenderRequest = {
+    requestId,
     centerRe:   props.centerRe,
     centerIm:   props.centerIm,
     scale:      props.scale,
@@ -76,10 +80,12 @@ async function renderFrame() {
 
   try {
     const resp = await api.mapRender(req) as any
+    if (seq !== renderSeq || (resp.requestId && resp.requestId !== requestId)) return
     const imgUrl = api.artifactContentUrl(resp.artifactId)
     await new Promise<void>((res, rej) => {
       const img = new Image()
       img.onload = () => {
+        if (seq !== renderSeq) { res(); return }
         const ctx = canvasEl.value?.getContext('2d')
         if (ctx) ctx.drawImage(img, 0, 0, domW.value, domH.value)
         res()
@@ -87,6 +93,7 @@ async function renderFrame() {
       img.onerror = rej
       img.src = imgUrl
     })
+    if (seq !== renderSeq) return
     emit('rendered', {
       generatedMs: resp.generatedMs,
       artifactId:  resp.artifactId,
@@ -94,9 +101,9 @@ async function renderFrame() {
       scalarUsed:  resp.effective?.scalar ?? resp.scalarUsed,
     })
   } catch (e: any) {
-    if (e?.name !== 'AbortError') error.value = e?.message ?? String(e)
+    if (seq === renderSeq && e?.name !== 'AbortError') error.value = e?.message ?? String(e)
   } finally {
-    pending.value = false
+    if (seq === renderSeq) pending.value = false
   }
 }
 

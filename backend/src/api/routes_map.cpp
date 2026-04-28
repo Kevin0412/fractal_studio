@@ -6,6 +6,7 @@
 
 #include "routes.hpp"
 #include "routes_common.hpp"
+#include "resource_manager.hpp"
 
 #include "../compute/map_kernel.hpp"
 #include "../compute/tile_scheduler.hpp"
@@ -119,6 +120,7 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
     const bool julia              = j.value("julia",    false);
     const double juliaRe          = j.value("juliaRe",  0.0);
     const double juliaIm          = j.value("juliaIm",  0.0);
+    const std::string requestId   = j.value("requestId", std::string(""));
 
     const bool hasTheta = j.contains("transitionTheta") && !j["transitionTheta"].is_null();
     const double theta  = hasTheta ? j.value("transitionTheta", 0.0) : 0.0;
@@ -126,6 +128,7 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
     const std::string scalarType = j.value("scalarType", std::string("auto"));
     const std::string engine     = j.value("engine",     std::string("openmp"));
     const bool smooth            = j.value("smooth",     false);
+    const bool stillExport       = j.value("taskType", std::string("")) == "still_export";
 
     // Basic validation.
     if (!(scale > 0.0) || !std::isfinite(scale))            throw std::runtime_error("invalid scale");
@@ -135,7 +138,35 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
     if (!std::isfinite(cRe) || !std::isfinite(cIm))         throw std::runtime_error("invalid center");
     if (hasTheta && (theta < 0.0 || theta > 3.15))          throw std::runtime_error("invalid transitionTheta (0..π)");
 
-    auto run = runner.createRun("map", body);
+    auto run = runner.createRun(stillExport ? "map-export" : "map", body);
+    ResourceManager::Lease heavyLease;
+    if (stillExport) {
+        std::string conflictLock, activeRunId;
+        if (!resourceManager().tryAcquire(run.id, "still_export", {"cuda_heavy", "cpu_heavy"}, heavyLease, conflictLock, activeRunId)) {
+            runner.setStatus(run.id, "failed");
+            throw HttpError(409, Json{
+                {"error", "heavy render already running"},
+                {"activeRunId", activeRunId},
+                {"taskType", "still_export"},
+                {"resourceLock", conflictLock},
+            }.dump());
+        }
+        runner.setCancelable(run.id, false);
+        runner.setProgress(run.id, Json{
+            {"taskType", "map_export"},
+            {"stage", "render"},
+            {"current", 0},
+            {"total", 1},
+            {"percent", 0.0},
+            {"engine", engine},
+            {"scalar", scalarType},
+            {"elapsedMs", runner.runElapsedMs(run.id)},
+            {"cancelable", false},
+            {"resourceLocks", Json::array({"cuda_heavy", "cpu_heavy"})},
+            {"details", Json::object()},
+        }.dump());
+    }
+    (void)heavyLease;
     runner.setStatus(run.id, "running");
 
     std::string artifactName;
@@ -228,6 +259,21 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
             std::filesystem::path(run.outputDir) / artifactName;
         compute::write_png(imagePath.string(), out);
         runner.addArtifact(run.id, Artifact{"map", imagePath.string(), "image"});
+        if (stillExport) {
+            runner.setProgress(run.id, Json{
+                {"taskType", "map_export"},
+                {"stage", "completed"},
+                {"current", 1},
+                {"total", 1},
+                {"percent", 100.0},
+                {"engine", engineUsed},
+                {"scalar", scalarUsed},
+                {"elapsedMs", runner.runElapsedMs(run.id)},
+                {"cancelable", false},
+                {"resourceLocks", Json::array({"cuda_heavy", "cpu_heavy"})},
+                {"details", Json::object()},
+            }.dump());
+        }
         runner.setStatus(run.id, "completed");
     } catch (const std::exception&) {
         runner.setStatus(run.id, "failed");
@@ -245,6 +291,7 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
         {"height", height},
         {"scalarUsed", scalarUsed},
         {"engineUsed", engineUsed},
+        {"requestId", requestId},
         {"effective", {
             {"centerRe",  cRe},
             {"centerIm",  cIm},

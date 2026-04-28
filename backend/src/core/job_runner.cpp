@@ -2,9 +2,13 @@
 #include "db.hpp"
 
 #include <chrono>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <stdexcept>
+#include <atomic>
+#include <sstream>
 
 namespace fs = std::filesystem;
 
@@ -29,6 +33,8 @@ RunRecord JobRunner::createRun(const std::string& module, const std::string& par
         runModules_[run.id] = module;
         runParams_[run.id] = paramsJson;
         runStarted_[run.id] = started;
+        runCancelRequested_[run.id] = false;
+        runCancelable_[run.id] = false;
     }
 
     if (db_) {
@@ -62,7 +68,7 @@ void JobRunner::setStatus(const std::string& runId, const std::string& status) {
         started = runStarted_[runId];
     }
     if (db_) {
-        const long long finished = (status == "completed" || status == "failed") ? nowUnixMs() : 0;
+        const long long finished = (status == "completed" || status == "failed" || status == "cancelled") ? nowUnixMs() : 0;
         RunRow row{runId, module, status, paramsJson, started, finished, outDir};
         std::lock_guard<std::mutex> lk(mu_);
         db_->upsertRun(row);
@@ -79,8 +85,19 @@ void JobRunner::setProgress(const std::string& runId, const std::string& progres
         outDir = it->second.outputDir;
     }
     if (!outDir.empty()) {
-        std::ofstream os(fs::path(outDir) / "progress.json");
-        os << progressJson;
+        const fs::path finalPath = fs::path(outDir) / "progress.json";
+        const fs::path tmpPath = fs::path(outDir) / "progress.json.tmp";
+        {
+            std::ofstream os(tmpPath);
+            os << progressJson;
+        }
+        std::error_code ec;
+        fs::rename(tmpPath, finalPath, ec);
+        if (ec) {
+            fs::remove(finalPath, ec);
+            ec.clear();
+            fs::rename(tmpPath, finalPath, ec);
+        }
     }
 }
 
@@ -120,6 +137,53 @@ void JobRunner::addArtifact(const std::string& runId, const Artifact& artifact) 
     }
 }
 
+void JobRunner::requestCancel(const std::string& runId) {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = runs_.find(runId);
+    if (it == runs_.end()) throw std::runtime_error("run not found: " + runId);
+    runCancelRequested_[runId] = true;
+}
+
+bool JobRunner::isCancelRequested(const std::string& runId) const {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = runCancelRequested_.find(runId);
+    return it != runCancelRequested_.end() && it->second;
+}
+
+void JobRunner::setCancelable(const std::string& runId, bool cancelable) {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = runs_.find(runId);
+    if (it == runs_.end()) throw std::runtime_error("run not found: " + runId);
+    runCancelable_[runId] = cancelable;
+}
+
+long long JobRunner::runElapsedMs(const std::string& runId) const {
+    const long long now = nowUnixMs();
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = runStarted_.find(runId);
+    if (it == runStarted_.end()) return 0;
+    return std::max(0LL, now - it->second);
+}
+
+std::vector<ActiveTaskSnapshot> JobRunner::activeTasks() const {
+    const long long now = nowUnixMs();
+    std::vector<ActiveTaskSnapshot> tasks;
+    std::lock_guard<std::mutex> lk(mu_);
+    for (const auto& [runId, run] : runs_) {
+        if (run.status != "queued" && run.status != "running") continue;
+        ActiveTaskSnapshot t;
+        t.runId = runId;
+        t.taskType = runModules_.count(runId) ? runModules_.at(runId) : "";
+        t.status = run.status;
+        t.progressJson = runProgress_.count(runId) ? runProgress_.at(runId) : "{}";
+        t.startedAt = runStarted_.count(runId) ? runStarted_.at(runId) : 0;
+        t.elapsedMs = t.startedAt > 0 ? std::max(0LL, now - t.startedAt) : 0;
+        t.cancelable = runCancelable_.count(runId) ? runCancelable_.at(runId) : false;
+        tasks.push_back(std::move(t));
+    }
+    return tasks;
+}
+
 std::string JobRunner::resolveOutputDir(const std::string& runId) const {
     {
         std::lock_guard<std::mutex> lk(mu_);
@@ -135,8 +199,12 @@ std::string JobRunner::resolveOutputDir(const std::string& runId) const {
 }
 
 std::string JobRunner::makeRunId() {
+    static std::atomic<unsigned long long> counter{0};
     const auto now = std::chrono::system_clock::now().time_since_epoch();
-    return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+    std::ostringstream ss;
+    ss << ns << "-" << counter.fetch_add(1, std::memory_order_relaxed);
+    return ss.str();
 }
 
 } // namespace fsd

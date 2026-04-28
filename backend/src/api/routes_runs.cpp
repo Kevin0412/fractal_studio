@@ -2,6 +2,7 @@
 
 #include "routes.hpp"
 #include "routes_common.hpp"
+#include "resource_manager.hpp"
 
 #include <filesystem>
 
@@ -70,6 +71,55 @@ std::string runStatusRoute(const std::filesystem::path& repoRoot, JobRunner& run
         {"artifacts", artifacts},
     };
     return resp.dump();
+}
+
+std::string activeTasksRoute(JobRunner& runner) {
+    Json items = Json::array();
+    for (const auto& t : runner.activeTasks()) {
+        Json progress = Json::object();
+        try { progress = Json::parse(t.progressJson.empty() ? "{}" : t.progressJson); } catch (...) {}
+        const std::string stage = progress.value("stage", std::string(""));
+        const std::string engine = progress.value("engine", progress.value("finalFrameEngine", std::string("")));
+        const std::string scalar = progress.value("scalar", progress.value("finalFrameScalar", std::string("")));
+        items.push_back({
+            {"runId", t.runId},
+            {"taskType", progress.value("taskType", t.taskType)},
+            {"status", t.status},
+            {"stage", stage},
+            {"engine", engine},
+            {"scalar", scalar},
+            {"startedAt", t.startedAt},
+            {"elapsedMs", t.elapsedMs},
+            {"cancelable", progress.value("cancelable", t.cancelable)},
+            {"progress", progress},
+        });
+    }
+
+    Json locks = Json::array();
+    for (const auto& l : resourceManager().snapshot()) {
+        locks.push_back({
+            {"name", l.name},
+            {"active", l.active},
+            {"limit", l.limit},
+            {"busy", l.active > 0},
+            {"activeRunId", l.activeRunId},
+            {"taskType", l.taskType},
+        });
+    }
+
+    return Json{{"items", items}, {"resourceLocks", locks}}.dump();
+}
+
+std::string cancelRunRoute(JobRunner& runner, const std::string& body) {
+    const Json j = parseJsonBody(body);
+    const std::string runId = j.value("runId", std::string(""));
+    if (runId.empty()) throw std::runtime_error("runId required");
+    return cancelRunRoute(runner, runId, body);
+}
+
+std::string cancelRunRoute(JobRunner& runner, const std::string& runId, const std::string&) {
+    runner.requestCancel(runId);
+    return Json{{"runId", runId}, {"status", "cancel_requested"}}.dump();
 }
 
 } // namespace fsd

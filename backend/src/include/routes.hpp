@@ -3,9 +3,23 @@
 #include "job_runner.hpp"
 
 #include <filesystem>
+#include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace fsd {
+
+class HttpError : public std::runtime_error {
+public:
+    HttpError(int status, std::string body)
+        : std::runtime_error(body), status_(status), body_(std::move(body)) {}
+    int status() const noexcept { return status_; }
+    const std::string& body() const noexcept { return body_; }
+
+private:
+    int status_ = 500;
+    std::string body_;
+};
 
 // System / hardware
 std::string systemCheckRoute();
@@ -45,7 +59,7 @@ std::string specialPointsSeedRoute(const std::filesystem::path& repoRoot, const 
 std::string specialPointsListRoute(const std::filesystem::path& repoRoot, const std::string& query);
 
 // Benchmark
-std::string benchmarkRoute(const std::string& body);
+std::string benchmarkRoute(JobRunner& runner, const std::string& body);
 
 // Custom variants (dynamic formula compile via g++ + dlopen)
 std::string variantCompileRoute(const std::filesystem::path& repoRoot, const std::string& body);
@@ -62,6 +76,9 @@ double lookupCustomBailoutSq(const std::filesystem::path& repoRoot, const std::s
 // Runs
 std::string runsListRoute(const std::filesystem::path& repoRoot, const std::string& query);
 std::string runStatusRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& query);
+std::string activeTasksRoute(JobRunner& runner);
+std::string cancelRunRoute(JobRunner& runner, const std::string& body);
+std::string cancelRunRoute(JobRunner& runner, const std::string& runId, const std::string& body);
 
 // Artifacts (filesystem scan of runs dir; artifactId = "runId:fileName")
 std::string artifactsListRoute(const std::filesystem::path& repoRoot, const std::string& query);
