@@ -9,7 +9,7 @@
 #include <cstdint>
 #include <limits>
 
-#if defined(__AVX2__)
+#if defined(__AVX2__) && defined(__FMA__)
 #  include <immintrin.h>
 #endif
 
@@ -69,20 +69,14 @@ inline __m256 imag_projection(__m256 x, __m256 axis, const FoldRules& r) {
     return r.neg_imag ? _mm256_sub_ps(_mm256_setzero_ps(), q) : q;
 }
 
-} // namespace
-
-bool buildTransitionVolumeAvx2(const TransitionVolumeParams& p, McField& field) {
+bool build_range_impl(const TransitionVolumeParams& p, int N, int z_begin, int z_end, McField& field, bool threaded) {
     if (!avx2_available() || !fma_available()) return false;
     if (!variant_supports_axis_transition(p.from_variant) ||
         !variant_supports_axis_transition(p.to_variant)) {
         return false;
     }
-
-    const int N = std::max(4, std::min(1024, p.resolution));
-    field.Nx = field.Ny = field.Nz = N;
-    field.data.assign(static_cast<size_t>(N) * N * N, 1.0f);
-    field.scalar_used = "fp32";
-    field.engine_used = "avx2_fp32";
+    if (N <= 0 || z_begin < 0 || z_end < z_begin || z_end > N) return false;
+    if (field.data.size() < static_cast<size_t>(N) * N * N) return false;
 
     const FoldRules from = fold_rules(p.from_variant);
     const FoldRules to = fold_rules(p.to_variant);
@@ -93,15 +87,14 @@ bool buildTransitionVolumeAvx2(const TransitionVolumeParams& p, McField& field) 
     const float bail2 = static_cast<float>(p.bailout_sq);
     const float bailout = static_cast<float>(p.bailout);
     const int maxIter = p.iterations;
-    const int thread_count = default_render_threads();
 
     const __m256 lane_offsets = _mm256_set_ps(7.5f, 6.5f, 5.5f, 4.5f, 3.5f, 2.5f, 1.5f, 0.5f);
     const __m256 vN = _mm256_set1_ps(static_cast<float>(N));
     const __m256 vspan = _mm256_set1_ps(span);
     const __m256 vxmin = _mm256_set1_ps(xmin);
     const __m256 vbail2 = _mm256_set1_ps(bail2);
-    #pragma omp parallel for num_threads(thread_count) schedule(dynamic, 1)
-    for (int zi = 0; zi < N; ++zi) {
+
+    auto render_z = [&](int zi) {
         const float z0s = zmin + (static_cast<float>(zi) + 0.5f) / static_cast<float>(N) * span;
         const __m256 vz0 = _mm256_set1_ps(z0s);
         for (int yi = 0; yi < N; ++yi) {
@@ -118,6 +111,9 @@ bool buildTransitionVolumeAvx2(const TransitionVolumeParams& p, McField& field) 
                 __m256 vx = vx0;
                 __m256 vy = vy0;
                 __m256 vz = vz0;
+                __m256 vx2 = _mm256_mul_ps(vx, vx);
+                __m256 vy2 = _mm256_mul_ps(vy, vy);
+                __m256 vz2 = _mm256_mul_ps(vz, vz);
                 int active = lane_mask;
                 int iters[8] = {
                     maxIter, maxIter, maxIter, maxIter,
@@ -125,25 +121,19 @@ bool buildTransitionVolumeAvx2(const TransitionVolumeParams& p, McField& field) 
                 };
 
                 for (int iter = 0; iter < maxIter && active; ++iter) {
-                    const __m256 active_vec = avx2_lane_mask_ps(active);
-                    const __m256 x2 = _mm256_mul_ps(vx, vx);
-                    const __m256 y2 = _mm256_mul_ps(vy, vy);
-                    const __m256 z2 = _mm256_mul_ps(vz, vz);
                     const __m256 nx = _mm256_add_ps(
                         _mm256_sub_ps(
-                            _mm256_add_ps(real_projection(x2, y2, from),
-                                          real_projection(x2, z2, to)),
-                            x2),
+                            _mm256_add_ps(real_projection(vx2, vy2, from),
+                                          real_projection(vx2, vz2, to)),
+                            vx2),
                         vx0);
                     const __m256 ny = _mm256_add_ps(imag_projection(vx, vy, from), vy0);
                     const __m256 nz = _mm256_add_ps(imag_projection(vx, vz, to), vz0);
 
-                    vx = _mm256_blendv_ps(vx, nx, active_vec);
-                    vy = _mm256_blendv_ps(vy, ny, active_vec);
-                    vz = _mm256_blendv_ps(vz, nz, active_vec);
-
-                    const __m256 n2 = _mm256_fmadd_ps(vz, vz,
-                        _mm256_fmadd_ps(vy, vy, _mm256_mul_ps(vx, vx)));
+                    const __m256 nx2 = _mm256_mul_ps(nx, nx);
+                    const __m256 ny2 = _mm256_mul_ps(ny, ny);
+                    const __m256 nz2 = _mm256_mul_ps(nz, nz);
+                    const __m256 n2 = _mm256_add_ps(nx2, _mm256_add_ps(ny2, nz2));
                     const __m256 escaped_radius = _mm256_cmp_ps(n2, vbail2, _CMP_GT_OQ);
                     const __m256 escaped_nan = _mm256_cmp_ps(n2, n2, _CMP_UNORD_Q);
                     const int escaped = _mm256_movemask_ps(_mm256_or_ps(escaped_radius, escaped_nan)) & active;
@@ -153,18 +143,26 @@ bool buildTransitionVolumeAvx2(const TransitionVolumeParams& p, McField& field) 
                         }
                         active &= ~escaped;
                     }
+
+                    const __m256 active_vec = avx2_lane_mask_ps(active);
+                    vx = _mm256_blendv_ps(vx, nx, active_vec);
+                    vy = _mm256_blendv_ps(vy, ny, active_vec);
+                    vz = _mm256_blendv_ps(vz, nz, active_vec);
+                    vx2 = _mm256_blendv_ps(vx2, nx2, active_vec);
+                    vy2 = _mm256_blendv_ps(vy2, ny2, active_vec);
+                    vz2 = _mm256_blendv_ps(vz2, nz2, active_vec);
                 }
 
-                alignas(32) float xs[8], ys[8], zs[8];
-                _mm256_store_ps(xs, vx);
-                _mm256_store_ps(ys, vy);
-                _mm256_store_ps(zs, vz);
+                alignas(32) float xs2[8], ys2[8], zs2[8];
+                _mm256_store_ps(xs2, vx2);
+                _mm256_store_ps(ys2, vy2);
+                _mm256_store_ps(zs2, vz2);
                 for (int k = 0; k < 8 && xi + k < N; ++k) {
                     float value = 0.0f;
                     if (iters[k] < maxIter) {
                         value = 0.5f + 0.5f * (static_cast<float>(iters[k]) / static_cast<float>(maxIter));
                     } else {
-                        const float mag2 = xs[k] * xs[k] + ys[k] * ys[k] + zs[k] * zs[k];
+                        const float mag2 = xs2[k] + ys2[k] + zs2[k];
                         const float finalMag = std::isfinite(mag2) ? std::sqrt(mag2) : bailout;
                         value = std::min(0.48f, (finalMag / bailout) * 0.48f);
                     }
@@ -175,12 +173,50 @@ bool buildTransitionVolumeAvx2(const TransitionVolumeParams& p, McField& field) 
                 }
             }
         }
+    };
+
+    if (threaded) {
+        const int thread_count = default_render_threads();
+        #pragma omp parallel for num_threads(thread_count) schedule(dynamic, 1)
+        for (int zi = z_begin; zi < z_end; ++zi) {
+            render_z(zi);
+        }
+    } else {
+        for (int zi = z_begin; zi < z_end; ++zi) {
+            render_z(zi);
+        }
     }
 
     return true;
 }
 
+} // namespace
+
+bool buildTransitionVolumeAvx2Range(const TransitionVolumeParams& p, int N, int z_begin, int z_end, McField& field) {
+    return build_range_impl(p, N, z_begin, z_end, field, false);
+}
+
+bool buildTransitionVolumeAvx2(const TransitionVolumeParams& p, McField& field) {
+    if (!avx2_available() || !fma_available()) return false;
+    if (!variant_supports_axis_transition(p.from_variant) ||
+        !variant_supports_axis_transition(p.to_variant)) {
+        return false;
+    }
+
+    const int N = std::max(4, std::min(1024, p.resolution));
+    field.Nx = field.Ny = field.Nz = N;
+    field.data.assign(static_cast<size_t>(N) * N * N, 1.0f);
+    field.scalar_used = "fp32";
+    field.engine_used = "avx2_fp32";
+    return build_range_impl(p, N, 0, N, field, true);
+}
+
 #else
+
+bool buildTransitionVolumeAvx2Range(const TransitionVolumeParams& p, int N, int z_begin, int z_end, McField& field) {
+    (void)p; (void)N; (void)z_begin; (void)z_end; (void)field;
+    return false;
+}
 
 bool buildTransitionVolumeAvx2(const TransitionVolumeParams& p, McField& field) {
     (void)p; (void)field;

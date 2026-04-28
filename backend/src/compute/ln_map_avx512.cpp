@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #if defined(__AVX512F__)
@@ -82,12 +83,10 @@ inline void step_variant(
             nre = _mm512_add_pd(abs_pd(sq_re), cre);
             nim = _mm512_add_pd(abs_pd(sq_im), cim);
             break;
-        case 8: {
-            const __m512d wim = abs_pd(zim);
+        case 8:
             nre = _mm512_add_pd(abs_pd(sq_re), cre);
-            nim = _mm512_add_pd(_mm512_mul_pd(_mm512_mul_pd(two, zre), wim), cim);
+            nim = _mm512_add_pd(_mm512_mul_pd(_mm512_mul_pd(two, zre), abs_pd(zim)), cim);
             break;
-        }
         case 9:
             nre = _mm512_add_pd(abs_pd(sq_re), cre);
             nim = _mm512_sub_pd(cim, _mm512_mul_pd(_mm512_mul_pd(two, abs_pd(zre)), zim));
@@ -99,40 +98,53 @@ inline void step_variant(
     }
 }
 
-} // namespace
-#endif
-
-LnMapStats render_ln_map_avx512(const LnMapParams& p, cv::Mat& out, const LnMapProgress& on_row_done) {
-    if (!avx512_available() || !ln_map_variant_supported_by_simd(p.variant)) {
-        return render_ln_map_openmp(p, out, on_row_done);
-    }
-
-#if defined(__AVX512F__)
+void ensure_out(const LnMapParams& p, cv::Mat& out) {
     if (out.empty() || out.rows != p.height_t || out.cols != p.width_s || out.type() != CV_8UC3) {
         out.create(p.height_t, p.width_s, CV_8UC3);
     }
+}
 
-    const int s = p.width_s;
-    const int t = p.height_t;
-    std::vector<double> cos_col(static_cast<size_t>(s));
-    std::vector<double> sin_col(static_cast<size_t>(s));
+std::pair<int, int> clamp_rows(const LnMapParams& p, int row_start, int row_count) {
+    const int start = std::max(0, std::min(row_start, p.height_t));
+    const int end = std::max(start, std::min(p.height_t, start + std::max(0, row_count)));
+    return {start, end};
+}
+
+struct TrigColumns {
+    std::vector<double> cos_col;
+    std::vector<double> sin_col;
+};
+
+TrigColumns make_trig_columns(int s) {
+    TrigColumns cols;
+    cols.cos_col.resize(static_cast<size_t>(s));
+    cols.sin_col.resize(static_cast<size_t>(s));
     for (int x = 0; x < s; x++) {
         const double th = TAU * static_cast<double>(x) / static_cast<double>(s);
-        cos_col[static_cast<size_t>(x)] = std::cos(th);
-        sin_col[static_cast<size_t>(x)] = std::sin(th);
+        cols.cos_col[static_cast<size_t>(x)] = std::cos(th);
+        cols.sin_col[static_cast<size_t>(x)] = std::sin(th);
     }
+    return cols;
+}
 
+void render_rows_impl(
+    const LnMapParams& p,
+    cv::Mat& out,
+    int row_start,
+    int row_end,
+    bool threaded,
+    const LnMapProgress& on_row_done
+) {
+    const int s = p.width_s;
+    const TrigColumns cols = make_trig_columns(s);
     const int variant = static_cast<int>(p.variant);
     const __m512d vbail2 = _mm512_set1_pd(p.bailout_sq);
     const __m512d vzero = _mm512_setzero_pd();
     const __m512d vjre = _mm512_set1_pd(p.julia_re);
     const __m512d vjim = _mm512_set1_pd(p.julia_im);
-    const int thread_count = default_render_threads();
     std::atomic<int> rows_done{0};
 
-    const auto t0 = std::chrono::steady_clock::now();
-    #pragma omp parallel for num_threads(thread_count) schedule(dynamic, 4)
-    for (int row = 0; row < t; ++row) {
+    auto render_row = [&](int row) {
         uint8_t* rowp = out.ptr<uint8_t>(row);
         const double k = LN_FOUR - static_cast<double>(row) * TAU / static_cast<double>(s);
         const double r_mag = std::exp(k);
@@ -142,8 +154,8 @@ LnMapStats render_ln_map_avx512(const LnMapParams& p, cv::Mat& out, const LnMapP
             alignas(64) double pim_arr[8] = {};
             for (int lane = 0; lane < 8 && col + lane < s; ++lane) {
                 const size_t idx = static_cast<size_t>(col + lane);
-                pre_arr[lane] = p.center_re + r_mag * cos_col[idx];
-                pim_arr[lane] = p.center_im + r_mag * sin_col[idx];
+                pre_arr[lane] = p.center_re + r_mag * cols.cos_col[idx];
+                pim_arr[lane] = p.center_im + r_mag * cols.sin_col[idx];
             }
 
             const __mmask8 valid = lane_mask(col, s);
@@ -189,14 +201,63 @@ LnMapStats render_ln_map_avx512(const LnMapParams& p, cv::Mat& out, const LnMapP
 
         if (on_row_done) {
             const int done = rows_done.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (done == t || (done % 16) == 0) on_row_done(done);
+            if (done == row_end - row_start || (done % 16) == 0) on_row_done(done);
+        }
+    };
+
+    if (threaded) {
+        const int thread_count = default_render_threads();
+        #pragma omp parallel for num_threads(thread_count) schedule(dynamic, 4)
+        for (int row = row_start; row < row_end; ++row) {
+            render_row(row);
+        }
+    } else {
+        for (int row = row_start; row < row_end; ++row) {
+            render_row(row);
         }
     }
+}
+
+} // namespace
+#endif
+
+LnMapStats render_ln_map_avx512_rows(const LnMapParams& p, cv::Mat& out, int row_start, int row_count, const LnMapProgress& on_row_done) {
+    if (!avx512_available() || !ln_map_variant_supported_by_simd(p.variant)) {
+        return render_ln_map_openmp_rows(p, out, row_start, row_count, on_row_done);
+    }
+
+#if defined(__AVX512F__)
+    ensure_out(p, out);
+    const auto [start, end] = clamp_rows(p, row_start, row_count);
+    const auto t0 = std::chrono::steady_clock::now();
+    render_rows_impl(p, out, start, end, false, on_row_done);
     const auto t1 = std::chrono::steady_clock::now();
 
     LnMapStats stats;
     stats.elapsed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    stats.pixel_count = s * t;
+    stats.pixel_count = p.width_s * (end - start);
+    stats.engine_used = "avx512";
+    stats.scalar_used = "fp64";
+    return stats;
+#else
+    return render_ln_map_openmp_rows(p, out, row_start, row_count, on_row_done);
+#endif
+}
+
+LnMapStats render_ln_map_avx512(const LnMapParams& p, cv::Mat& out, const LnMapProgress& on_row_done) {
+    if (!avx512_available() || !ln_map_variant_supported_by_simd(p.variant)) {
+        return render_ln_map_openmp(p, out, on_row_done);
+    }
+
+#if defined(__AVX512F__)
+    ensure_out(p, out);
+    const auto t0 = std::chrono::steady_clock::now();
+    render_rows_impl(p, out, 0, p.height_t, true, on_row_done);
+    const auto t1 = std::chrono::steady_clock::now();
+
+    LnMapStats stats;
+    stats.elapsed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    stats.pixel_count = p.width_s * p.height_t;
     stats.engine_used = "avx512";
     stats.scalar_used = "fp64";
     return stats;

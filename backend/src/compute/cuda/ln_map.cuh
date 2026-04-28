@@ -27,5 +27,6 @@ struct CudaLnMapStats {
 
 bool cuda_ln_map_available() noexcept;
 CudaLnMapStats cuda_render_ln_map(const CudaLnMapParams& p, cv::Mat& out);
+CudaLnMapStats cuda_render_ln_map_rows(const CudaLnMapParams& p, cv::Mat& out, int row_start, int row_count);
 
 } // namespace fsd_cuda

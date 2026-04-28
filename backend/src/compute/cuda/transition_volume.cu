@@ -49,27 +49,34 @@ __global__ void transition_volume_kernel(CudaTransitionVolumeParams p, int z_sta
     const float z0 = (p.center_z - p.extent) + (static_cast<float>(zi) + 0.5f) / static_cast<float>(N) * span;
 
     float x = x0, y = y0, z = z0;
+    float x2 = x * x;
+    float y2 = y * y;
+    float z2 = z * z;
     int iter = 0;
     bool escaped = false;
     for (; iter < p.iterations; ++iter) {
-        const float x2 = x * x;
-        const float nx = real_projection(p.from_variant, x2, y * y)
-                       + real_projection(p.to_variant,   x2, z * z)
+        const float nx = real_projection(p.from_variant, x2, y2)
+                       + real_projection(p.to_variant,   x2, z2)
                        - x2 + x0;
         const float ny = imag_projection(p.from_variant, x, y) + y0;
         const float nz = imag_projection(p.to_variant,   x, z) + z0;
-        x = nx; y = ny; z = nz;
-        const float n2 = x * x + y * y + z * z;
-        if (!isfinite(n2) || n2 > p.bailout_sq) {
+        const bool finite = isfinite(nx) && isfinite(ny) && isfinite(nz);
+        const float nx2 = finite ? nx * nx : INFINITY;
+        const float ny2 = finite ? ny * ny : INFINITY;
+        const float nz2 = finite ? nz * nz : INFINITY;
+        const float n2 = nx2 + ny2 + nz2;
+        if (!finite || n2 > p.bailout_sq) {
             escaped = true;
             break;
         }
+        x = nx; y = ny; z = nz;
+        x2 = nx2; y2 = ny2; z2 = nz2;
     }
 
     if (escaped) {
         out[idx] = 0.5f + 0.5f * (static_cast<float>(iter) / static_cast<float>(p.iterations));
     } else {
-        const float final_mag = sqrtf(x * x + y * y + z * z);
+        const float final_mag = sqrtf(x2 + y2 + z2);
         out[idx] = fminf(0.48f, final_mag / p.bailout * 0.48f);
     }
 }

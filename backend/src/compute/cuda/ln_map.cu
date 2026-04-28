@@ -5,10 +5,13 @@
 #include <cuda_runtime.h>
 #include <opencv2/core.hpp>
 
+#include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #define CUDA_LN_CHECK(expr) do {                                             \
     cudaError_t _e = (expr);                                                 \
@@ -97,31 +100,60 @@ __device__ inline void d_colorize_escape_bgr(int iter, int max_iter, int cmap, u
     }
 }
 
-__device__ inline void d_step(int variant, double zr, double zi, double cr, double ci, double& nr, double& ni) {
-    const double zr2 = zr * zr;
-    const double zi2 = zi * zi;
+template <int VariantId>
+__device__ inline void d_step_cached(
+    double zr,
+    double zi,
+    double zr2,
+    double zi2,
+    double cr,
+    double ci,
+    double& nr,
+    double& ni
+) {
     const double sq_re = zr2 - zi2;
     const double sq_im = 2.0 * zr * zi;
-    switch (variant) {
-        case 1: nr = sq_re + cr; ni = ci - sq_im; break;
-        case 2: nr = sq_re + cr; ni = 2.0 * fabs(zr) * fabs(zi) + ci; break;
-        case 3: nr = sq_re + cr; ni = 2.0 * zr * fabs(zi) + ci; break;
-        case 4: nr = sq_re + cr; ni = -2.0 * fabs(zr) * zi + ci; break;
-        case 5: nr = fabs(sq_re) + cr; ni = sq_im + ci; break;
-        case 6: nr = fabs(sq_re) + cr; ni = ci - sq_im; break;
-        case 7: nr = fabs(sq_re) + cr; ni = fabs(sq_im) + ci; break;
-        case 8: nr = fabs(sq_re) + cr; ni = 2.0 * zr * fabs(zi) + ci; break;
-        case 9: nr = fabs(sq_re) + cr; ni = ci - 2.0 * fabs(zr) * zi; break;
-        default: nr = sq_re + cr; ni = sq_im + ci; break;
+    if constexpr (VariantId == 1) {
+        nr = sq_re + cr;
+        ni = ci - sq_im;
+    } else if constexpr (VariantId == 2) {
+        nr = sq_re + cr;
+        ni = 2.0 * fabs(zr) * fabs(zi) + ci;
+    } else if constexpr (VariantId == 3) {
+        nr = sq_re + cr;
+        ni = 2.0 * zr * fabs(zi) + ci;
+    } else if constexpr (VariantId == 4) {
+        nr = sq_re + cr;
+        ni = -2.0 * fabs(zr) * zi + ci;
+    } else if constexpr (VariantId == 5) {
+        nr = fabs(sq_re) + cr;
+        ni = sq_im + ci;
+    } else if constexpr (VariantId == 6) {
+        nr = fabs(sq_re) + cr;
+        ni = ci - sq_im;
+    } else if constexpr (VariantId == 7) {
+        nr = fabs(sq_re) + cr;
+        ni = fabs(sq_im) + ci;
+    } else if constexpr (VariantId == 8) {
+        nr = fabs(sq_re) + cr;
+        ni = 2.0 * zr * fabs(zi) + ci;
+    } else if constexpr (VariantId == 9) {
+        nr = fabs(sq_re) + cr;
+        ni = ci - 2.0 * fabs(zr) * zi;
+    } else {
+        nr = sq_re + cr;
+        ni = sq_im + ci;
     }
 }
 
-__global__ void ln_map_kernel(CudaLnMapParams p, unsigned char* out) {
+template <int VariantId>
+__global__ void ln_map_kernel_templated(CudaLnMapParams p, int row_start, int row_count, unsigned char* out) {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    const int total = p.width_s * p.height_t;
+    const int total = p.width_s * row_count;
     if (idx >= total) return;
     const int x = idx % p.width_s;
-    const int row = idx / p.width_s;
+    const int local_row = idx / p.width_s;
+    const int row = row_start + local_row;
 
     const double th = TAU * static_cast<double>(x) / static_cast<double>(p.width_s);
     const double k = LN_FOUR - static_cast<double>(row) * TAU / static_cast<double>(p.width_s);
@@ -133,17 +165,55 @@ __global__ void ln_map_kernel(CudaLnMapParams p, unsigned char* out) {
     double zi = p.julia ? pim : 0.0;
     const double cr = p.julia ? p.julia_re : pre;
     const double ci = p.julia ? p.julia_im : pim;
+    double zr2 = zr * zr;
+    double zi2 = zi * zi;
+
     int iter = 0;
     for (; iter < p.iterations; ++iter) {
         double nr = 0.0, ni = 0.0;
-        d_step(p.variant_id, zr, zi, cr, ci, nr, ni);
+        d_step_cached<VariantId>(zr, zi, zr2, zi2, cr, ci, nr, ni);
+        const bool finite = isfinite(nr) && isfinite(ni);
+        const double nr2 = finite ? nr * nr : INFINITY;
+        const double ni2 = finite ? ni * ni : INFINITY;
+        const double norm2 = nr2 + ni2;
+        if (!finite || norm2 > p.bailout_sq) break;
         zr = nr;
         zi = ni;
-        const double norm2 = zr * zr + zi * zi;
-        if (!isfinite(norm2) || norm2 > p.bailout_sq) break;
+        zr2 = nr2;
+        zi2 = ni2;
     }
 
     d_colorize_escape_bgr(iter, p.iterations, p.colormap_id, out + 3 * idx);
+}
+
+template <int VariantId>
+void launch_ln_map_variant(const CudaLnMapParams& p, int row_start, int row_count, unsigned char* d_out) {
+    const int block = 256;
+    const int total = p.width_s * row_count;
+    const int grid = (total + block - 1) / block;
+    ln_map_kernel_templated<VariantId><<<grid, block>>>(p, row_start, row_count, d_out);
+}
+
+void launch_ln_map(const CudaLnMapParams& p, int row_start, int row_count, unsigned char* d_out) {
+    switch (p.variant_id) {
+        case 0: launch_ln_map_variant<0>(p, row_start, row_count, d_out); break;
+        case 1: launch_ln_map_variant<1>(p, row_start, row_count, d_out); break;
+        case 2: launch_ln_map_variant<2>(p, row_start, row_count, d_out); break;
+        case 3: launch_ln_map_variant<3>(p, row_start, row_count, d_out); break;
+        case 4: launch_ln_map_variant<4>(p, row_start, row_count, d_out); break;
+        case 5: launch_ln_map_variant<5>(p, row_start, row_count, d_out); break;
+        case 6: launch_ln_map_variant<6>(p, row_start, row_count, d_out); break;
+        case 7: launch_ln_map_variant<7>(p, row_start, row_count, d_out); break;
+        case 8: launch_ln_map_variant<8>(p, row_start, row_count, d_out); break;
+        case 9: launch_ln_map_variant<9>(p, row_start, row_count, d_out); break;
+        default: throw std::runtime_error("CUDA ln-map unsupported variant");
+    }
+}
+
+void ensure_out(const CudaLnMapParams& p, cv::Mat& out) {
+    if (out.empty() || out.rows != p.height_t || out.cols != p.width_s || out.type() != CV_8UC3) {
+        out.create(p.height_t, p.width_s, CV_8UC3);
+    }
 }
 
 } // namespace
@@ -153,32 +223,40 @@ bool cuda_ln_map_available() noexcept {
     return cudaGetDeviceCount(&count) == cudaSuccess && count > 0;
 }
 
-CudaLnMapStats cuda_render_ln_map(const CudaLnMapParams& p, cv::Mat& out) {
+CudaLnMapStats cuda_render_ln_map_rows(const CudaLnMapParams& p, cv::Mat& out, int row_start, int row_count) {
     if (!cuda_ln_map_available()) throw std::runtime_error("CUDA ln-map not available");
-    std::lock_guard<std::mutex> lock(g_ln_mu);
-
-    if (out.empty() || out.rows != p.height_t || out.cols != p.width_s || out.type() != CV_8UC3) {
-        out.create(p.height_t, p.width_s, CV_8UC3);
+    if (p.variant_id < 0 || p.variant_id > 9) throw std::runtime_error("CUDA ln-map unsupported variant");
+    if (row_start < 0 || row_count <= 0 || row_start + row_count > p.height_t) {
+        throw std::runtime_error("invalid CUDA ln-map row range");
     }
-    const size_t bytes = static_cast<size_t>(p.width_s) * p.height_t * 3u;
+    std::lock_guard<std::mutex> lock(g_ln_mu);
+    ensure_out(p, out);
+
+    const size_t row_bytes = static_cast<size_t>(p.width_s) * 3u;
+    const size_t bytes = row_bytes * static_cast<size_t>(row_count);
     unsigned char* d_out = nullptr;
-    CUDA_LN_CHECK(cudaMalloc(&d_out, bytes));
+    CUDA_LN_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_out), bytes));
 
     cudaEvent_t start, stop;
     CUDA_LN_CHECK(cudaEventCreate(&start));
     CUDA_LN_CHECK(cudaEventCreate(&stop));
     CUDA_LN_CHECK(cudaEventRecord(start));
-
-    const int block = 256;
-    const int total = p.width_s * p.height_t;
-    const int grid = (total + block - 1) / block;
-    ln_map_kernel<<<grid, block>>>(p, d_out);
+    launch_ln_map(p, row_start, row_count, d_out);
     CUDA_LN_CHECK(cudaGetLastError());
     CUDA_LN_CHECK(cudaEventRecord(stop));
     CUDA_LN_CHECK(cudaEventSynchronize(stop));
+
     float ms = 0.0f;
     CUDA_LN_CHECK(cudaEventElapsedTime(&ms, start, stop));
-    CUDA_LN_CHECK(cudaMemcpy(out.data, d_out, bytes, cudaMemcpyDeviceToHost));
+    if (out.isContinuous() && out.step == row_bytes) {
+        CUDA_LN_CHECK(cudaMemcpy(out.ptr<unsigned char>(row_start), d_out, bytes, cudaMemcpyDeviceToHost));
+    } else {
+        std::vector<unsigned char> tmp(bytes);
+        CUDA_LN_CHECK(cudaMemcpy(tmp.data(), d_out, bytes, cudaMemcpyDeviceToHost));
+        for (int r = 0; r < row_count; ++r) {
+            std::memcpy(out.ptr<unsigned char>(row_start + r), tmp.data() + static_cast<size_t>(r) * row_bytes, row_bytes);
+        }
+    }
     CUDA_LN_CHECK(cudaEventDestroy(start));
     CUDA_LN_CHECK(cudaEventDestroy(stop));
     cudaFree(d_out);
@@ -186,6 +264,10 @@ CudaLnMapStats cuda_render_ln_map(const CudaLnMapParams& p, cv::Mat& out) {
     CudaLnMapStats stats;
     stats.elapsed_ms = static_cast<double>(ms);
     return stats;
+}
+
+CudaLnMapStats cuda_render_ln_map(const CudaLnMapParams& p, cv::Mat& out) {
+    return cuda_render_ln_map_rows(p, out, 0, p.height_t);
 }
 
 } // namespace fsd_cuda

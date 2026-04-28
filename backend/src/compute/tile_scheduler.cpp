@@ -124,7 +124,7 @@ static double render_tile_cpu(
     p.scale     = t.h * im_step;    // height of this tile in complex units
     p.width     = t.w;
     p.height    = t.h;
-    p.engine    = use_avx2 ? "avx2" : (use_avx512 ? "avx512" : "openmp");
+    p.engine    = use_avx512 ? "avx512" : (use_avx2 ? "avx2" : "openmp");
     p.scalar_type = use_fx ? fixed_scalar_type : "fp64";
     p.render_threads = 1;
 
@@ -132,10 +132,10 @@ static double render_tile_cpu(
     cv::Mat tile_mat = out(cv::Rect(t.x, t.y, t.w, t.h));
 
     MapStats stats;
-    if (use_avx2 && !use_fx) {
-        stats = render_map_avx2_fp64(p, tile_mat);
-    } else if (use_avx512 && !use_fx) {
+    if (use_avx512 && !use_fx) {
         stats = render_map_avx512_fp64(p, tile_mat);
+    } else if (use_avx2 && !use_fx) {
+        stats = render_map_avx2_fp64(p, tile_mat);
     } else {
         // OpenMP path (single-threaded for this tile since the outer scheduler
         // calls render_tile_cpu from multiple CPU workers concurrently).

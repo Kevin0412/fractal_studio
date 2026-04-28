@@ -84,33 +84,39 @@ void build_transition_range_openmp(const TransitionVolumeParams& p, int N, int z
                 const float x0 = xmin + (static_cast<float>(xi) + 0.5f) / static_cast<float>(N) * span;
 
                 float x = x0, y = y0, z = z0;
+                float x2 = x * x;
+                float y2 = y * y;
+                float z2 = z * z;
                 int iter = 0;
                 bool escaped = false;
                 for (; iter < maxIter; iter++) {
-                    const float x2 = x * x;
                     const float nx =
-                        transition_real_projection_f32(p.from_variant, x2, y * y)
-                      + transition_real_projection_f32(p.to_variant,   x2, z * z)
+                        transition_real_projection_f32(p.from_variant, x2, y2)
+                      + transition_real_projection_f32(p.to_variant,   x2, z2)
                       - x2 + x0;
                     const float ny = transition_imag_projection_f32(p.from_variant, x, y) + y0;
                     const float nz = transition_imag_projection_f32(p.to_variant,   x, z) + z0;
-                    x = nx; y = ny; z = nz;
-                    const bool finite_xyz = std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
+                    const bool finite_xyz = std::isfinite(nx) && std::isfinite(ny) && std::isfinite(nz);
+                    const float nx2 = finite_xyz ? nx * nx : std::numeric_limits<float>::infinity();
+                    const float ny2 = finite_xyz ? ny * ny : std::numeric_limits<float>::infinity();
+                    const float nz2 = finite_xyz ? nz * nz : std::numeric_limits<float>::infinity();
                     const float n2 = finite_xyz
-                        ? (x*x + y*y + z*z)
+                        ? (nx2 + ny2 + nz2)
                         : std::numeric_limits<float>::infinity();
                     if (!finite_xyz || n2 > bail2) {
                         escaped = true;
                         break;
                     }
+                    x = nx; y = ny; z = nz;
+                    x2 = nx2; y2 = ny2; z2 = nz2;
                 }
 
                 float v = 0.0f;
                 if (escaped) {
                     v = 0.5f + 0.5f * (static_cast<float>(iter) / static_cast<float>(maxIter));
                 } else {
-                    const bool finite_xyz = std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
-                    const float finalMag = finite_xyz ? std::sqrt(x*x + y*y + z*z) : bailout;
+                    const float mag2 = x2 + y2 + z2;
+                    const float finalMag = std::isfinite(mag2) ? std::sqrt(mag2) : bailout;
                     v = (finalMag / bailout) * 0.48f;
                 }
 
@@ -141,7 +147,21 @@ bool build_transition_hybrid_cuda_cpu(const TransitionVolumeParams& p, int N, Mc
     std::atomic<int> gpu_slabs{0};
     std::atomic<int> cpu_slabs{0};
     std::atomic<bool> gpu_available{true};
+    const RuntimeCapabilities caps = runtime_capabilities();
+    std::atomic<bool> cpu_avx2_available{
+        caps.avx2_compiled && caps.avx2_runtime && caps.fma_runtime
+    };
     const int gpu_batch = runtime_capabilities().cuda_low_end ? 4 : 12;
+
+    auto render_cpu_range = [&](int z0, int zCount) {
+        if (cpu_avx2_available.load(std::memory_order_relaxed)) {
+            if (buildTransitionVolumeAvx2Range(p, N, z0, z0 + zCount, field)) {
+                return;
+            }
+            cpu_avx2_available.store(false, std::memory_order_relaxed);
+        }
+        build_transition_range_openmp(p, N, z0, z0 + zCount, field);
+    };
 
     auto copy_slabs = [&](int z0, int zCount, const std::vector<float>& tmp) {
         const size_t slab = static_cast<size_t>(N) * N;
@@ -160,7 +180,7 @@ bool build_transition_hybrid_cuda_cpu(const TransitionVolumeParams& p, int N, Mc
             if (z0 >= N) break;
             const int zCount = std::min(gpu_batch, N - z0);
             if (!gpu_available.load(std::memory_order_relaxed)) {
-                build_transition_range_openmp(p, N, z0, z0 + zCount, field);
+                render_cpu_range(z0, zCount);
                 cpu_slabs += zCount;
                 continue;
             }
@@ -171,7 +191,7 @@ bool build_transition_hybrid_cuda_cpu(const TransitionVolumeParams& p, int N, Mc
                 gpu_slabs += zCount;
             } catch (...) {
                 gpu_available.store(false, std::memory_order_relaxed);
-                build_transition_range_openmp(p, N, z0, z0 + zCount, field);
+                render_cpu_range(z0, zCount);
                 cpu_slabs += zCount;
             }
         }
@@ -185,7 +205,7 @@ bool build_transition_hybrid_cuda_cpu(const TransitionVolumeParams& p, int N, Mc
             while (true) {
                 const int z0 = next_z.fetch_add(1);
                 if (z0 >= N) break;
-                build_transition_range_openmp(p, N, z0, z0 + 1, field);
+                render_cpu_range(z0, 1);
                 cpu_slabs++;
             }
         });
@@ -195,14 +215,18 @@ bool build_transition_hybrid_cuda_cpu(const TransitionVolumeParams& p, int N, Mc
     if (gpu_thread.joinable()) gpu_thread.join();
 
     if (gpu_slabs.load() > 0 && cpu_slabs.load() > 0) {
-        field.engine_used = "hybrid_cuda_openmp_fp32";
+        field.engine_used = cpu_avx2_available.load(std::memory_order_relaxed)
+            ? "hybrid_cuda_avx2_fp32"
+            : "hybrid_cuda_openmp_fp32";
         return true;
     }
     if (gpu_slabs.load() > 0) {
         field.engine_used = "cuda_fp32";
         return true;
     }
-    field.engine_used = "openmp_fp32";
+    field.engine_used = cpu_avx2_available.load(std::memory_order_relaxed)
+        ? "avx2_fp32"
+        : "openmp_fp32";
     return cpu_slabs.load() > 0;
 }
 #endif

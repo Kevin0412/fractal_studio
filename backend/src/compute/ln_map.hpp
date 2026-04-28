@@ -27,7 +27,7 @@ struct LnMapParams {
     double bailout_sq = 4.0;
     Variant variant = Variant::Mandelbrot;
     Colormap colormap = Colormap::ClassicCos;
-    std::string engine = "auto"; // auto, cuda, avx512, openmp
+    std::string engine = "auto"; // auto, hybrid, cuda, avx512, avx2, openmp
 };
 
 struct LnMapStats {
@@ -40,8 +40,13 @@ struct LnMapStats {
 using LnMapProgress = std::function<void(int rowsDone)>;
 
 bool ln_map_variant_supported_by_simd(Variant v);
+bool ln_map_avx2_available() noexcept;
 LnMapStats render_ln_map_openmp(const LnMapParams& p, cv::Mat& out, const LnMapProgress& on_row_done = nullptr);
+LnMapStats render_ln_map_openmp_rows(const LnMapParams& p, cv::Mat& out, int row_start, int row_count, const LnMapProgress& on_row_done = nullptr);
 LnMapStats render_ln_map_avx512(const LnMapParams& p, cv::Mat& out, const LnMapProgress& on_row_done = nullptr);
+LnMapStats render_ln_map_avx512_rows(const LnMapParams& p, cv::Mat& out, int row_start, int row_count, const LnMapProgress& on_row_done = nullptr);
+LnMapStats render_ln_map_avx2(const LnMapParams& p, cv::Mat& out, const LnMapProgress& on_row_done = nullptr);
+LnMapStats render_ln_map_avx2_rows(const LnMapParams& p, cv::Mat& out, int row_start, int row_count, const LnMapProgress& on_row_done = nullptr);
 LnMapStats render_ln_map(const LnMapParams& p, cv::Mat& out, const LnMapProgress& on_row_done = nullptr);
 
 } // namespace fsd::compute

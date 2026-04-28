@@ -42,6 +42,9 @@ inline TransitionIterResult iterate_transition(
     std::vector<OrbitPt>& orbit
 ) {
     double x = x0, y = y0, z = z0;
+    double x2 = x * x;
+    double y2 = y * y;
+    double z2 = z * z;
     TransitionIterResult r{};
     r.iter = 0;
     r.min_abs_sq = std::numeric_limits<double>::infinity();
@@ -66,7 +69,7 @@ inline TransitionIterResult iterate_transition(
     if constexpr (M == Metric::MinPairwiseDist) r.valid_mask |= IterResultField::Extra;
 
     if constexpr (track_min_abs || track_max_abs) {
-        const double init_n2 = x*x + y*y + z*z;
+        const double init_n2 = x2 + y2 + z2;
         r.min_abs_sq = init_n2;
         r.max_abs_sq = init_n2;
     }
@@ -77,17 +80,18 @@ inline TransitionIterResult iterate_transition(
     }
 
     for (int i = 0; i < max_iter; i++) {
-        const double x2 = x * x;
         const double nx =
-            variant_transition_real_projection(from_variant, x2, y * y)
-          + variant_transition_real_projection(to_variant,   x2, z * z)
+            variant_transition_real_projection(from_variant, x2, y2)
+          + variant_transition_real_projection(to_variant,   x2, z2)
           - x2 + x0;
         const double ny = variant_transition_imag_projection(from_variant, x, y) + y0;
         const double nz = variant_transition_imag_projection(to_variant,   x, z) + z0;
-        x = nx; y = ny; z = nz;
-        const bool finite_xyz = std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
+        const bool finite_xyz = std::isfinite(nx) && std::isfinite(ny) && std::isfinite(nz);
+        const double nx2 = finite_xyz ? nx * nx : std::numeric_limits<double>::infinity();
+        const double ny2 = finite_xyz ? ny * ny : std::numeric_limits<double>::infinity();
+        const double nz2 = finite_xyz ? nz * nz : std::numeric_limits<double>::infinity();
         const double n2 = finite_xyz
-            ? (x*x + y*y + z*z)
+            ? (nx2 + ny2 + nz2)
             : std::numeric_limits<double>::infinity();
         if constexpr (track_min_abs) {
             if (n2 < r.min_abs_sq) r.min_abs_sq = n2;
@@ -97,7 +101,7 @@ inline TransitionIterResult iterate_transition(
         }
 
         if (track_orbit && static_cast<int>(orbit.size()) < pairwise_cap) {
-            orbit.push_back({x, y, z});
+            orbit.push_back({nx, ny, nz});
         }
 
         if (!finite_xyz || n2 > bail2) {
@@ -106,6 +110,9 @@ inline TransitionIterResult iterate_transition(
             if constexpr (track_escaped) r.escaped = true;
             break;
         }
+
+        x = nx; y = ny; z = nz;
+        x2 = nx2; y2 = ny2; z2 = nz2;
     }
     if (!r.escaped) {
         if constexpr (track_iter) r.iter = max_iter;

@@ -64,6 +64,7 @@ add_executable(fractal_studio_backend
     # Native compute
     src/compute/cpu_features.cpp
     src/compute/ln_map.cpp
+    src/compute/ln_map_avx2.cpp
     src/compute/ln_map_avx512.cpp
     src/compute/map_kernel.cpp
     src/compute/engine_select.cpp
@@ -142,6 +143,7 @@ check_cxx_compiler_flag("-mfma" COMPILER_HAS_FMA)
 if(COMPILER_HAS_AVX2 AND COMPILER_HAS_FMA)
     set_source_files_properties(
         src/compute/map_kernel_avx2.cpp
+        src/compute/ln_map_avx2.cpp
         src/compute/transition_volume_avx2.cpp
         PROPERTIES COMPILE_FLAGS "-mavx2 -mfma")
     target_compile_definitions(fractal_studio_backend PRIVATE HAS_AVX2_KERNEL=1)
