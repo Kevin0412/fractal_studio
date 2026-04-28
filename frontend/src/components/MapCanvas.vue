@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, watch } from 'vue'
-import { api, type MapRenderRequest, type Metric, type ColorMap } from '../api'
+import { api, type MapRenderRequest, type Metric, type ColorMap, type SpecialPointEnumResult } from '../api'
 
 // MapCanvas renders the fractal by requesting a full frame from the backend at
 // the exact canvas pixel dimensions. Every param/pan/zoom change triggers a
@@ -24,12 +24,17 @@ const props = defineProps<{
   juliaIm?: number
   engine?: string
   scalarType?: string
+  specialPoints?: SpecialPointEnumResult[]
+  hoveredSpecialPointId?: string
+  selectedSpecialPointId?: string
 }>()
 
 const emit = defineEmits<{
   (e: 'viewport-change', v: { centerRe: number; centerIm: number; scale: number }): void
   (e: 'rendered', meta: { generatedMs: number; artifactId: string; engineUsed?: string; scalarUsed?: string }): void
   (e: 'click-world', pos: { re: number; im: number }): void
+  (e: 'hover-special-point', id: string): void
+  (e: 'select-special-point', p: SpecialPointEnumResult): void
 }>()
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -266,6 +271,23 @@ function screenToWorld(e: MouseEvent): { re: number; im: number } | null {
   }
 }
 
+function worldToScreen(re: number, im: number): { x: number; y: number; visible: boolean } {
+  const w = Math.max(1, domW.value)
+  const h = Math.max(1, domH.value)
+  const aspect = w / h
+  const x = (0.5 + (re - props.centerRe) / (props.scale * aspect)) * w
+  const y = (0.5 - (im - props.centerIm) / props.scale) * h
+  return { x, y, visible: x >= -8 && x <= w + 8 && y >= -8 && y <= h + 8 }
+}
+
+function markerStyle(p: SpecialPointEnumResult) {
+  const pos = worldToScreen(p.re, p.im)
+  return {
+    transform: `translate(${pos.x}px, ${pos.y}px)`,
+    display: pos.visible ? 'block' : 'none',
+  }
+}
+
 function onMouseDown(e: MouseEvent) {
   dragging  = true
   dragMoved = false
@@ -317,6 +339,20 @@ function onMouseUp(e: MouseEvent) {
       :style="canvasStyle(1)"
     />
     <div v-if="pending" class="busy-line"></div>
+    <div v-if="specialPoints?.length" class="markers">
+      <button
+        v-for="p in specialPoints"
+        :key="p.id"
+        class="marker"
+        :class="{ hover: hoveredSpecialPointId === p.id, selected: selectedSpecialPointId === p.id, misi: p.kind === 'misiurewicz' }"
+        :style="markerStyle(p)"
+        :title="`${p.kind} p${p.period} ${p.re.toPrecision(8)} ${p.im.toPrecision(8)}i`"
+        @mousedown.stop
+        @mouseenter="$emit('hover-special-point', p.id)"
+        @mouseleave="$emit('hover-special-point', '')"
+        @click.stop="$emit('select-special-point', p)">
+      </button>
+    </div>
     <div v-if="error"   class="overlay error">{{ error }}</div>
   </div>
 </template>
@@ -401,5 +437,51 @@ function onMouseUp(e: MouseEvent) {
 .overlay.error {
   color: var(--bad);
   border-color: var(--bad);
+}
+
+.markers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.marker {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 11px;
+  height: 11px;
+  min-width: 11px;
+  padding: 0;
+  margin: -5.5px 0 0 -5.5px;
+  border-radius: 50%;
+  border: 1px solid #fff7a8;
+  background: rgba(255, 210, 70, 0.35);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.6), 0 0 10px rgba(255, 210, 70, 0.6);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.marker.misi {
+  border-color: #92d4ff;
+  background: rgba(80, 170, 255, 0.35);
+}
+
+.marker.hover,
+.marker:hover {
+  width: 15px;
+  height: 15px;
+  min-width: 15px;
+  margin: -7.5px 0 0 -7.5px;
+  border-width: 2px;
+}
+
+.marker.selected {
+  width: 17px;
+  height: 17px;
+  min-width: 17px;
+  margin: -8.5px 0 0 -8.5px;
+  border-width: 2px;
+  background: rgba(255, 255, 255, 0.75);
 }
 </style>

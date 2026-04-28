@@ -118,6 +118,85 @@ export interface SpecialPoint {
   createdAt: string
 }
 
+export type SpecialPointKind = 'center' | 'misiurewicz'
+
+export interface SpecialPointViewport {
+  centerRe: number
+  centerIm: number
+  scale: number
+  width: number
+  height: number
+}
+
+export interface SpecialPointEnumRequest {
+  kind: SpecialPointKind
+  periodMin?: number
+  periodMax?: number
+  preperiodMin?: number
+  preperiodMax?: number
+  maxNewtonIter?: number
+  maxSeedBatches?: number
+  seedsPerBatch?: number
+  includeVariantExistence?: boolean
+  includeRejectedDebug?: boolean
+  visibleOnly?: boolean
+  viewport?: SpecialPointViewport
+}
+
+export interface OrbitClassification {
+  found_repeat: boolean
+  is_center: boolean
+  is_misiurewicz: boolean
+  preperiod: number
+  period: number
+  repeat_error: number
+}
+
+export interface VariantExistence {
+  variant_name: string
+  exists: boolean
+  same_orbit_as_mandelbrot: boolean
+  actual_preperiod: number
+  actual_period: number
+  repeat_error: number
+  reason: string
+}
+
+export interface SpecialPointEnumResult {
+  id: string
+  kind: SpecialPointKind
+  preperiod: number
+  period: number
+  re: number
+  im: number
+  real?: number
+  imag?: number
+  converged: boolean
+  accepted: boolean
+  visible: boolean
+  residual: number
+  newtonIterations: number
+  actual: OrbitClassification
+  variants: VariantExistence[]
+  reason: string
+}
+
+export interface SpecialPointEnumResponse {
+  runId: string
+  complete: boolean
+  status: string
+  acceptedCount: number
+  expectedCount: number
+  seedCount: number
+  newtonSuccessCount: number
+  rejectedCount: number
+  points: SpecialPointEnumResult[]
+  rejected_debug?: SpecialPointEnumResult[]
+  warning?: string
+  reportArtifactId?: string
+  reportDownloadUrl?: string
+}
+
 export interface MapFieldRequest {
   centerRe: number
   centerIm: number
@@ -568,6 +647,9 @@ export const api = {
   specialPointsList: (family?: string) =>
     getJson<{ items: SpecialPoint[] }>(
       `/api/special-points${family ? `?family=${encodeURIComponent(family)}` : ''}`),
+
+  specialPointsEnumerate: (req: SpecialPointEnumRequest) =>
+    postJson<SpecialPointEnumResponse>('/api/special-points/enumerate', req),
 
   hsMesh:  (req: HsMeshRequest)  => postJson<MeshResponse>('/api/hs/mesh', req),
   hsField: (req: HsFieldRequest) => postJson<HsFieldResponse>('/api/hs/field', req),

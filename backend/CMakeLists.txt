@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.18)
 project(fractal_studio_backend LANGUAGES CXX)
+enable_testing()
 
 # ---- Optional CUDA ----
 # Enable CUDA if nvcc is available. The CUDA sources are only compiled when
@@ -75,6 +76,7 @@ add_executable(fractal_studio_backend
     src/compute/image_io.cpp
     src/compute/mesh_io.cpp
     src/compute/marching_cubes.cpp
+    src/compute/special_points.cpp
     src/compute/transition_volume.cpp
     src/compute/transition_volume_avx2.cpp
     src/compute/hs/heightfield_mesh.cpp
@@ -131,6 +133,19 @@ target_link_libraries(fractal_studio_backend PRIVATE
 target_compile_options(fractal_studio_backend PRIVATE
     -Wall -Wextra -Wno-unused-parameter -O3
 )
+
+add_executable(special_points_smoke
+    src/tests/special_points_smoke.cpp
+    src/compute/special_points.cpp
+)
+target_include_directories(special_points_smoke PRIVATE
+    src
+    src/include
+)
+target_compile_options(special_points_smoke PRIVATE
+    -Wall -Wextra -Wno-unused-parameter -O3
+)
+add_test(NAME special_points_smoke COMMAND special_points_smoke)
 
 # AVX-512 kernel: compile with AVX-512F + IFMA52 intrinsics enabled when the
 # compiler supports them. avx512_available() does a runtime CPUID check so the

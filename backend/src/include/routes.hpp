@@ -57,6 +57,7 @@ std::string transitionVoxelsRoute(const std::filesystem::path& repoRoot, JobRunn
 std::string specialPointsAutoRoute(const std::filesystem::path& repoRoot, const std::string& body);
 std::string specialPointsSeedRoute(const std::filesystem::path& repoRoot, const std::string& body);
 std::string specialPointsListRoute(const std::filesystem::path& repoRoot, const std::string& query);
+std::string specialPointsEnumerateRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body);
 
 // Benchmark
 std::string benchmarkRoute(JobRunner& runner, const std::string& body);

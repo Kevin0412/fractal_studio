@@ -5,6 +5,7 @@ import SpecialPointList from '../components/SpecialPointList.vue'
 import {
   api, VARIANTS, METRICS, COLORMAPS, VARIANT_LABELS,
   type Metric, type ColorMap, type SpecialPoint,
+  type SpecialPointEnumResult,
   type VideoExportResponse, type VideoPreviewResponse, type RunProgress, type RunStatusResponse, type CustomVariant,
 } from '../api'
 import type { StatusState } from '../types'
@@ -133,6 +134,9 @@ function onVariantSelect(val: string) {
 
 const transitionOn = ref(false)
 const pointsCollapsed = ref(false)
+const specialPointResults = ref<SpecialPointEnumResult[]>([])
+const hoveredSpecialPointId = ref('')
+const selectedSpecialPointId = ref('')
 const transitionFrom = ref<string>('mandelbrot')
 const transitionTo   = ref<string>('burning_ship')
 const AXIS_TRANSITION_VARIANTS = VARIANTS.slice(0, 10)
@@ -261,10 +265,51 @@ function resetView() {
   scale.value    = 4.0
 }
 
-function onImportPoint(p: SpecialPoint) {
-  centerRe.value = p.real
-  centerIm.value = p.imag
+function onImportPoint(p: SpecialPoint | SpecialPointEnumResult) {
+  centerRe.value = 're' in p ? p.re : p.real
+  centerIm.value = 'im' in p ? p.im : p.imag
   scale.value    = 0.01
+}
+
+const specialPointViewport = computed(() => ({
+  centerRe: centerRe.value,
+  centerIm: centerIm.value,
+  scale: scale.value,
+  width: 1200,
+  height: 800,
+}))
+
+function pointInCurrentView(p: SpecialPointEnumResult) {
+  const aspect = specialPointViewport.value.width / specialPointViewport.value.height
+  const halfH = scale.value * 0.5
+  const halfW = halfH * aspect
+  return p.re >= centerRe.value - halfW && p.re <= centerRe.value + halfW
+    && p.im >= centerIm.value - halfH && p.im <= centerIm.value + halfH
+}
+
+const visibleSpecialPoints = computed(() => specialPointResults.value.filter(pointInCurrentView))
+
+function onSpecialPointResults(points: SpecialPointEnumResult[]) {
+  specialPointResults.value = points
+  hoveredSpecialPointId.value = ''
+  if (selectedSpecialPointId.value && !points.some(p => p.id === selectedSpecialPointId.value)) {
+    selectedSpecialPointId.value = ''
+  }
+}
+
+function onSpecialPointHover(id: string) {
+  hoveredSpecialPointId.value = id
+}
+
+function onSpecialPointSelect(p: SpecialPointEnumResult) {
+  selectedSpecialPointId.value = p.id
+  onImportPoint(p)
+}
+
+function onUseSpecialPointAsJulia(p: SpecialPointEnumResult) {
+  juliaOn.value = true
+  juliaRe.value = p.re
+  juliaIm.value = p.im
 }
 
 const pngPresetKey = ref('fhd')
@@ -692,8 +737,13 @@ async function pollVideoExport(initial: VideoExportResponse) {
           :transition-theta-milli-deg="activeTransitionThetaMilliDeg"
           :transitionFrom="transitionFrom" :transitionTo="transitionTo"
           :engine="engineMode" :scalarType="scalarMode"
+          :special-points="visibleSpecialPoints"
+          :hovered-special-point-id="hoveredSpecialPointId"
+          :selected-special-point-id="selectedSpecialPointId"
           @viewport-change="onViewportChange"
           @rendered="onRendered"
+          @hover-special-point="onSpecialPointHover"
+          @select-special-point="onSpecialPointSelect"
         />
         <aside :class="['points', { collapsed: pointsCollapsed }]">
           <button
@@ -702,7 +752,17 @@ async function pollVideoExport(initial: VideoExportResponse) {
             @click="pointsCollapsed = !pointsCollapsed">
             <span>{{ pointsCollapsed ? '‹' : '›' }}</span>
           </button>
-          <SpecialPointList v-if="!pointsCollapsed" @import-point="onImportPoint" />
+          <SpecialPointList
+            v-if="!pointsCollapsed"
+            :viewport="specialPointViewport"
+            :hovered-id="hoveredSpecialPointId"
+            :selected-id="selectedSpecialPointId"
+            @import-point="onImportPoint"
+            @hover-point="onSpecialPointHover"
+            @select-point="onSpecialPointSelect"
+            @results-updated="onSpecialPointResults"
+            @use-julia="onUseSpecialPointAsJulia"
+          />
         </aside>
       </template>
 
@@ -727,9 +787,14 @@ async function pollVideoExport(initial: VideoExportResponse) {
                 :transition-theta-milli-deg="activeTransitionThetaMilliDeg"
                 :transitionFrom="transitionFrom" :transitionTo="transitionTo"
                 :engine="engineMode" :scalarType="scalarMode"
+                :special-points="visibleSpecialPoints"
+                :hovered-special-point-id="hoveredSpecialPointId"
+                :selected-special-point-id="selectedSpecialPointId"
                 @viewport-change="onViewportChange"
                 @rendered="onRendered"
                 @click-world="onPickJulia"
+                @hover-special-point="onSpecialPointHover"
+                @select-special-point="onSpecialPointSelect"
               />
             </div>
           </div>
