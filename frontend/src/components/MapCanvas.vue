@@ -34,28 +34,62 @@ const emit = defineEmits<{
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const wrapper  = ref<HTMLDivElement | null>(null)
-const canvasEl = ref<HTMLCanvasElement | null>(null)
+const canvasA = ref<HTMLCanvasElement | null>(null)
+const canvasB = ref<HTMLCanvasElement | null>(null)
 const pending  = ref(false)
 const error    = ref('')
 const domW     = ref(0)
 const domH     = ref(0)
+const activeCanvas = ref(0)
+const hasFrame = ref(false)
 let   ro: ResizeObserver | null = null
 let   renderTimer: ReturnType<typeof setTimeout> | null = null
 let   currentRender: AbortController | null = null
 let   renderSeq = 0
 
+type ViewportSnapshot = {
+  centerRe: number
+  centerIm: number
+  scale: number
+}
+
+let renderedViewport: ViewportSnapshot | null = null
+
 // ── Full-frame render ─────────────────────────────────────────────────────────
 
-function clearCanvas() {
-  const ctx = canvasEl.value?.getContext('2d')
-  if (!ctx) return
-  ctx.clearRect(0, 0, domW.value, domH.value)
+function canvasByIndex(index: number): HTMLCanvasElement | null {
+  return index === 0 ? canvasA.value : canvasB.value
+}
+
+function resizeCanvas(c: HTMLCanvasElement | null, w: number, h: number) {
+  if (!c) return
+  if (c.width !== w) c.width = w
+  if (c.height !== h) c.height = h
 }
 
 function invalidateCurrentRender() {
   currentRender?.abort()
   currentRender = null
   renderSeq += 1
+}
+
+function previewTransform(): string {
+  if (!hasFrame.value || !renderedViewport || domW.value < 16 || domH.value < 16) return 'none'
+  const aspect = domW.value / domH.value
+  const scaleRatio = renderedViewport.scale / props.scale
+  const dx = (renderedViewport.centerRe - props.centerRe) * domW.value / (props.scale * aspect)
+  const dy = -(renderedViewport.centerIm - props.centerIm) * domH.value / props.scale
+  const tx = domW.value * (1 - scaleRatio) * 0.5 + dx
+  const ty = domH.value * (1 - scaleRatio) * 0.5 + dy
+  if (Math.abs(scaleRatio - 1) < 0.000001 && Math.abs(tx) < 0.01 && Math.abs(ty) < 0.01) return 'none'
+  return `matrix(${scaleRatio}, 0, 0, ${scaleRatio}, ${tx}, ${ty})`
+}
+
+function canvasStyle(index: number) {
+  return {
+    opacity: activeCanvas.value === index ? 1 : 0,
+    transform: activeCanvas.value === index ? previewTransform() : 'none',
+  }
 }
 
 async function renderFrame() {
@@ -69,14 +103,16 @@ async function renderFrame() {
   currentRender = controller
   const seq = ++renderSeq
   const requestId = `${Date.now()}-${seq}`
+  const reqW = domW.value
+  const reqH = domH.value
 
   const req: MapRenderRequest = {
     requestId,
     centerRe:   props.centerRe,
     centerIm:   props.centerIm,
     scale:      props.scale,
-    width:      domW.value,
-    height:     domH.value,
+    width:      reqW,
+    height:     reqH,
     iterations: props.iterations,
     variant:    props.variant,
     metric:     props.metric,
@@ -105,8 +141,21 @@ async function renderFrame() {
       const img = new Image()
       img.onload = () => {
         if (seq !== renderSeq) { res(); return }
-        const ctx = canvasEl.value?.getContext('2d')
-        if (ctx) ctx.drawImage(img, 0, 0, domW.value, domH.value)
+        const next = activeCanvas.value === 0 ? 1 : 0
+        const target = canvasByIndex(next)
+        resizeCanvas(target, reqW, reqH)
+        const ctx = target?.getContext('2d')
+        if (ctx) {
+          ctx.clearRect(0, 0, reqW, reqH)
+          ctx.drawImage(img, 0, 0, reqW, reqH)
+          renderedViewport = {
+            centerRe: req.centerRe,
+            centerIm: req.centerIm,
+            scale: req.scale,
+          }
+          hasFrame.value = true
+          activeCanvas.value = next
+        }
         res()
       }
       img.onerror = rej
@@ -132,7 +181,6 @@ function scheduleRender(delay = 200) {
   if (domW.value >= 16 && domH.value >= 16) {
     pending.value = true
     error.value = ''
-    clearCanvas()
   }
   if (renderTimer) clearTimeout(renderTimer)
   renderTimer = setTimeout(renderFrame, delay)
@@ -152,7 +200,7 @@ watch(() => [
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 onMounted(() => {
-  if (!wrapper.value || !canvasEl.value) return
+  if (!wrapper.value || !canvasA.value || !canvasB.value) return
   ro = new ResizeObserver(entries => {
     for (const e of entries) {
       const w = Math.round(e.contentRect.width)
@@ -160,7 +208,10 @@ onMounted(() => {
       if (w !== domW.value || h !== domH.value) {
         domW.value = w
         domH.value = h
-        if (canvasEl.value) { canvasEl.value.width = w; canvasEl.value.height = h }
+        if (!hasFrame.value) {
+          resizeCanvas(canvasA.value, w, h)
+          resizeCanvas(canvasB.value, w, h)
+        }
       }
     }
   })
@@ -169,7 +220,8 @@ onMounted(() => {
   const h = Math.round(wrapper.value.clientHeight)
   domW.value = w
   domH.value = h
-  if (canvasEl.value) { canvasEl.value.width = w; canvasEl.value.height = h }
+  resizeCanvas(canvasA.value, w, h)
+  resizeCanvas(canvasB.value, w, h)
   scheduleRender(0)
 })
 
@@ -252,8 +304,19 @@ function onMouseUp(e: MouseEvent) {
        @mousemove="onMouseMove"
        @mouseup="onMouseUp"
        @mouseleave="onMouseUp">
-    <canvas ref="canvasEl" />
-    <div v-if="pending" class="overlay">rendering…</div>
+    <canvas
+      ref="canvasA"
+      class="frame"
+      :class="{ active: activeCanvas === 0, stale: pending && activeCanvas === 0 }"
+      :style="canvasStyle(0)"
+    />
+    <canvas
+      ref="canvasB"
+      class="frame"
+      :class="{ active: activeCanvas === 1, stale: pending && activeCanvas === 1 }"
+      :style="canvasStyle(1)"
+    />
+    <div v-if="pending" class="busy-line"></div>
     <div v-if="error"   class="overlay error">{{ error }}</div>
   </div>
 </template>
@@ -271,11 +334,53 @@ function onMouseUp(e: MouseEvent) {
 
 .map-wrap:active { cursor: grabbing; }
 
-canvas {
+.frame {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
   image-rendering: pixelated;
+  opacity: 0;
+  transform-origin: 0 0;
+  transition:
+    opacity 160ms ease,
+    transform 140ms ease,
+    filter 140ms ease;
+  will-change: opacity, transform, filter;
+}
+
+.frame.active {
+  opacity: 1;
+}
+
+.frame.stale {
+  filter: brightness(0.82) saturate(0.9);
+}
+
+.busy-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.busy-line::before {
+  content: '';
+  display: block;
+  width: 42%;
+  height: 100%;
+  background: var(--accent);
+  opacity: 0.75;
+  animation: sweep 900ms ease-in-out infinite;
+}
+
+@keyframes sweep {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(250%); }
 }
 
 .overlay {
