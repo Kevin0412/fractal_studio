@@ -13,8 +13,10 @@
 //
 // A 2D map at rotation angle θ around the x-axis embeds the screen's
 // imaginary axis into 3D as (cosθ·y + sinθ·z). Concretely a pixel (u, v)
-// maps to seed (x₀, y₀, z₀) = (u, v·cosθ, v·sinθ). θ=0 → Mandelbrot,
-// θ=π/2 → Burning Ship, anything in between is the continuous bridge.
+// maps to seed (x₀, y₀, z₀) = (u, v·cosθ, v·sinθ). θ=0 → the xy-plane
+// variant, θ=π/2 → the xz-plane variant, θ=-π/2 and θ=±π are vertically
+// flipped degenerate slices. render_transition snaps fixed-point cardinal
+// angles to the direct 2D map renderer to avoid tiny non-zero sin/cos drift.
 //
 // This matches cfiles/mandelbrot_3Dtranslation_minmax.c exactly (see its
 // `mandelbrot(c, max, num, theta)` at line 52).
@@ -27,6 +29,8 @@
 #include "variants.hpp"
 
 #include <opencv2/core.hpp>
+
+#include <string>
 
 namespace fsd::compute {
 
@@ -43,6 +47,10 @@ struct TransitionParams {
 
     // Rotation angle around x-axis, radians. 0 = Mandelbrot, π/2 = Burning Ship.
     double theta     = 0.0;
+    // Optional fixed-point angle from the UI/API, in milli-degrees. When set,
+    // cardinal slices are detected by exact integer comparison.
+    bool theta_milli_deg_set = false;
+    int theta_milli_deg = 0;
 
     // Quadratic/folded variants to place on the xy and xz planes. The default
     // preserves the original Mandelbrot → Burning Ship bridge.
@@ -54,6 +62,8 @@ struct TransitionParams {
     bool     smooth       = false;
     int      pairwise_cap = 64;   // orbit length cap for MinPairwiseDist
     int      render_threads = 0;  // 0 = auto-select visible logical cores
+    std::string scalar_type = "auto";
+    std::string engine = "openmp";
 };
 
 MapStats render_transition(const TransitionParams& p, cv::Mat& out);

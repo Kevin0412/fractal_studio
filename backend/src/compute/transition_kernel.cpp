@@ -18,6 +18,102 @@ namespace fsd::compute {
 
 namespace {
 
+constexpr double PI  = 3.14159265358979323846264338327950288;
+constexpr double TAU = 6.28318530717958647692528676655900576;
+constexpr int THETA_SCALE = 1000;
+constexpr int THETA_HALF_TURN_MDEG = 180 * THETA_SCALE;
+constexpr int THETA_FULL_TURN_MDEG = 360 * THETA_SCALE;
+
+enum class DirectSlice {
+    None,
+    From,
+    FromFlipY,
+    To,
+    ToFlipY,
+};
+
+struct NormalizedTheta {
+    double radians = 0.0;
+    int milli_deg = 0;
+};
+
+int normalize_transition_milli_deg(long long milli_deg) {
+    long long wrapped = (milli_deg + THETA_HALF_TURN_MDEG) % THETA_FULL_TURN_MDEG;
+    if (wrapped < 0) wrapped += THETA_FULL_TURN_MDEG;
+    wrapped -= THETA_HALF_TURN_MDEG;
+    if (wrapped == -THETA_HALF_TURN_MDEG && milli_deg > 0) {
+        wrapped = THETA_HALF_TURN_MDEG;
+    }
+    return static_cast<int>(wrapped);
+}
+
+NormalizedTheta normalize_transition_theta(const TransitionParams& p) {
+    if (p.theta_milli_deg_set) {
+        const int milli_deg = normalize_transition_milli_deg(p.theta_milli_deg);
+        return {
+            static_cast<double>(milli_deg) * PI / (180.0 * THETA_SCALE),
+            milli_deg,
+        };
+    }
+
+    double theta = p.theta;
+    if (!std::isfinite(theta)) throw std::runtime_error("invalid transitionTheta");
+    if (std::abs(theta) > TAU + 1e-6) {
+        theta = theta * PI / 180.0;
+    }
+    theta = std::remainder(theta, TAU);
+    const int milli_deg = normalize_transition_milli_deg(
+        static_cast<long long>(std::llround(theta * 180.0 * THETA_SCALE / PI)));
+    return {
+        static_cast<double>(milli_deg) * PI / (180.0 * THETA_SCALE),
+        milli_deg,
+    };
+}
+
+DirectSlice direct_slice_for_milli_deg(int milli_deg) {
+    switch (milli_deg) {
+        case 0:
+            return DirectSlice::From;
+        case 90 * THETA_SCALE:
+            return DirectSlice::To;
+        case -90 * THETA_SCALE:
+            return DirectSlice::ToFlipY;
+        case 180 * THETA_SCALE:
+        case -180 * THETA_SCALE:
+            return DirectSlice::FromFlipY;
+        default:
+            return DirectSlice::None;
+    }
+}
+
+MapStats render_direct_slice(const TransitionParams& p, DirectSlice slice, cv::Mat& out) {
+    const bool flip_y = slice == DirectSlice::FromFlipY || slice == DirectSlice::ToFlipY;
+
+    MapParams mp;
+    mp.center_re = p.center_re;
+    mp.center_im = flip_y ? -p.center_im : p.center_im;
+    mp.scale = p.scale;
+    mp.width = p.width;
+    mp.height = p.height;
+    mp.iterations = p.iterations;
+    mp.bailout = p.bailout;
+    mp.bailout_sq = p.bailout_sq;
+    mp.variant = (slice == DirectSlice::To || slice == DirectSlice::ToFlipY)
+        ? p.to_variant
+        : p.from_variant;
+    mp.metric = p.metric;
+    mp.colormap = p.colormap;
+    mp.smooth = p.smooth;
+    mp.pairwise_cap = p.pairwise_cap;
+    mp.render_threads = p.render_threads;
+    mp.scalar_type = p.scalar_type;
+    mp.engine = p.engine;
+
+    MapStats stats = render_map(mp, out);
+    if (flip_y) cv::flip(out, out, 0);
+    return stats;
+}
+
 struct TransitionIterResult {
     int    iter;
     double min_abs_sq;
@@ -253,32 +349,47 @@ MapStats render_transition_metric(const TransitionParams& p, cv::Mat& out) {
     MapStats s;
     s.elapsed_ms  = std::chrono::duration<double, std::milli>(t1 - t0).count();
     s.pixel_count = p.width * p.height;
+    s.scalar_used = "fp64";
+    s.engine_used = "openmp";
     return s;
 }
 
 } // namespace
 
 MapStats render_transition(const TransitionParams& p, cv::Mat& out) {
+    if (!variant_supports_axis_transition(p.from_variant) ||
+        !variant_supports_axis_transition(p.to_variant)) {
+        throw std::runtime_error("transition variants must be quadratic Mandelbrot-family variants");
+    }
+
+    const NormalizedTheta theta = normalize_transition_theta(p);
+    const DirectSlice direct = direct_slice_for_milli_deg(theta.milli_deg);
+    if (direct != DirectSlice::None) {
+        return render_direct_slice(p, direct, out);
+    }
+
+    TransitionParams q = p;
+    q.theta = theta.radians;
     switch (p.metric) {
         case Metric::Escape:
             if (p.smooth) {
                 return render_transition_metric<Metric::Escape,
-                    IterResultField::Iter | IterResultField::Escaped | IterResultField::Norm>(p, out);
+                    IterResultField::Iter | IterResultField::Escaped | IterResultField::Norm>(q, out);
             }
             return render_transition_metric<Metric::Escape,
-                IterResultField::Iter | IterResultField::Escaped>(p, out);
+                IterResultField::Iter | IterResultField::Escaped>(q, out);
         case Metric::MinAbs:
-            return render_transition_metric<Metric::MinAbs, IterResultField::MinAbs>(p, out);
+            return render_transition_metric<Metric::MinAbs, IterResultField::MinAbs>(q, out);
         case Metric::MaxAbs:
-            return render_transition_metric<Metric::MaxAbs, IterResultField::MaxAbs>(p, out);
+            return render_transition_metric<Metric::MaxAbs, IterResultField::MaxAbs>(q, out);
         case Metric::Envelope:
             return render_transition_metric<Metric::Envelope,
-                IterResultField::MinAbs | IterResultField::MaxAbs>(p, out);
+                IterResultField::MinAbs | IterResultField::MaxAbs>(q, out);
         case Metric::MinPairwiseDist:
-            return render_transition_metric<Metric::MinPairwiseDist, IterResultField::Extra>(p, out);
+            return render_transition_metric<Metric::MinPairwiseDist, IterResultField::Extra>(q, out);
     }
     return render_transition_metric<Metric::Escape,
-        IterResultField::Iter | IterResultField::Escaped>(p, out);
+        IterResultField::Iter | IterResultField::Escaped>(q, out);
 }
 
 } // namespace fsd::compute

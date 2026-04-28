@@ -5,7 +5,11 @@ import type { ActiveTask, ResourceLockStatus } from '../api'
 import type { StatusState } from '../types'
 import { t, lang, setLang } from '../i18n'
 
-defineProps<{ status: StatusState }>()
+defineProps<{
+  status: StatusState
+  collapsed?: boolean
+}>()
+defineEmits<{ (e: 'toggle'): void }>()
 
 const hw = ref<any>(null)
 const tasks = ref<ActiveTask[]>([])
@@ -81,7 +85,15 @@ function taskPercent(task: ActiveTask): string {
 </script>
 
 <template>
-  <aside class="rail">
+  <aside :class="['rail', { collapsed }]">
+    <button
+      class="rail-toggle"
+      :title="collapsed ? 'Expand system status / 展开系统状态' : 'Collapse system status / 折叠系统状态'"
+      @click="$emit('toggle')">
+      <span class="toggle-mark">{{ collapsed ? '‹' : '›' }}</span>
+    </button>
+
+    <template v-if="!collapsed">
     <!-- live bar -->
     <div class="live">
       <span class="dot"></span>
@@ -140,6 +152,7 @@ function taskPercent(task: ActiveTask): string {
         <div class="row"><span class="k">elapsed</span><span class="v num">{{ fmtElapsed(task.elapsedMs) }}</span></div>
       </div>
     </div>
+    </template>
   </aside>
 </template>
 
@@ -150,6 +163,38 @@ function taskPercent(task: ActiveTask): string {
   display: flex;
   flex-direction: column;
   gap: 1px;
+}
+
+.rail.collapsed {
+  overflow: hidden;
+  align-items: center;
+  padding-top: 8px;
+}
+
+.rail-toggle {
+  width: 20px;
+  height: 24px;
+  min-width: 20px;
+  padding: 0;
+  margin: 8px 4px 0;
+  border-color: transparent;
+  color: var(--text-faint);
+}
+
+.rail.collapsed .rail-toggle {
+  margin-top: 0;
+}
+
+.rail-toggle:hover {
+  border-color: var(--rule-hi);
+  color: var(--accent);
+}
+
+.toggle-mark {
+  display: block;
+  font-size: 16px;
+  line-height: 1;
+  letter-spacing: 0;
 }
 
 .live {

@@ -132,10 +132,41 @@ function onVariantSelect(val: string) {
 }
 
 const transitionOn = ref(false)
-const thetaDeg     = ref(0)
 const transitionFrom = ref<string>('mandelbrot')
 const transitionTo   = ref<string>('burning_ship')
 const AXIS_TRANSITION_VARIANTS = VARIANTS.slice(0, 10)
+const THETA_SCALE = 1000
+const THETA_HALF_TURN = 180 * THETA_SCALE
+const THETA_FULL_TURN = 360 * THETA_SCALE
+const thetaMilliDeg = ref(45 * THETA_SCALE)
+
+function normalizeThetaMilliDeg(mdeg: number): number {
+  if (!Number.isFinite(mdeg)) return 0
+  const raw = Math.round(mdeg)
+  let wrapped = ((raw + THETA_HALF_TURN) % THETA_FULL_TURN + THETA_FULL_TURN) % THETA_FULL_TURN - THETA_HALF_TURN
+  if (wrapped === -THETA_HALF_TURN && raw > 0) wrapped = THETA_HALF_TURN
+  return wrapped
+}
+
+function setThetaDeg(deg: number) {
+  thetaMilliDeg.value = normalizeThetaMilliDeg(deg * THETA_SCALE)
+}
+
+function nudgeThetaDeg(delta: number) {
+  thetaMilliDeg.value = normalizeThetaMilliDeg(thetaMilliDeg.value + delta * THETA_SCALE)
+}
+
+watch(thetaMilliDeg, (mdeg) => {
+  const normalized = normalizeThetaMilliDeg(mdeg)
+  if (normalized !== mdeg) thetaMilliDeg.value = normalized
+})
+
+const thetaDeg = computed({
+  get: () => thetaMilliDeg.value / THETA_SCALE,
+  set: (deg: number) => setThetaDeg(deg),
+})
+const transitionThetaMilliDeg = computed(() => normalizeThetaMilliDeg(thetaMilliDeg.value))
+const activeTransitionThetaMilliDeg = computed(() => transitionOn.value ? transitionThetaMilliDeg.value : null)
 
 // ── Julia mode ────────────────────────────────────────────────────────────────
 const juliaOn  = ref(false)
@@ -262,7 +293,8 @@ async function exportPng() {
       julia:      juliaOn.value,
       juliaRe:    juliaRe.value,
       juliaIm:    juliaIm.value,
-      transitionTheta: transitionOn.value ? thetaDeg.value * Math.PI / 180 : undefined,
+      transitionTheta: transitionOn.value ? transitionThetaMilliDeg.value * Math.PI / (180 * THETA_SCALE) : undefined,
+      transitionThetaMilliDeg: transitionOn.value ? transitionThetaMilliDeg.value : undefined,
       transitionFrom:  transitionOn.value ? transitionFrom.value : undefined,
       transitionTo:    transitionOn.value ? transitionTo.value : undefined,
     }) as any
@@ -542,8 +574,18 @@ async function pollVideoExport(initial: VideoExportResponse) {
           {{ t('transition') }}
         </label>
         <div v-if="transitionOn" class="theta-row">
-          <input type="range" min="0" max="90" step="0.1" v-model.number="thetaDeg" />
-          <span class="num">{{ thetaDeg.toFixed(1) }}°</span>
+          <button class="theta-loop-btn" @click="nudgeThetaDeg(-15)">−</button>
+          <input type="range" min="-180" max="180" step="0.1" v-model.number="thetaDeg" />
+          <button class="theta-loop-btn" @click="nudgeThetaDeg(15)">+</button>
+          <input class="theta-input num" type="number" min="-180" max="180" step="0.1" :value="thetaDeg.toFixed(1)" @change="setThetaDeg(Number(($event.target as HTMLInputElement).value))" />
+          <span class="num">°</span>
+        </div>
+        <div v-if="transitionOn" class="theta-row theta-snaps">
+          <button @click="setThetaDeg(-180)">−180</button>
+          <button @click="setThetaDeg(-90)">−90</button>
+          <button @click="setThetaDeg(0)">0</button>
+          <button @click="setThetaDeg(90)">90</button>
+          <button @click="setThetaDeg(180)">180</button>
         </div>
         <div v-if="transitionOn" class="theta-row">
           <select v-model="transitionFrom">
@@ -645,7 +687,8 @@ async function pollVideoExport(initial: VideoExportResponse) {
           :centerRe="centerRe" :centerIm="centerIm" :scale="scale"
           :iterations="iterations" :variant="variant" :metric="metric"
           :colorMap="colorMap" :smooth="smooth"
-          :transitionTheta="transitionOn ? thetaDeg * Math.PI / 180 : null"
+          :transitionTheta="transitionOn ? transitionThetaMilliDeg * Math.PI / (180 * THETA_SCALE) : null"
+          :transition-theta-milli-deg="activeTransitionThetaMilliDeg"
           :transitionFrom="transitionFrom" :transitionTo="transitionTo"
           :engine="engineMode" :scalarType="scalarMode"
           @viewport-change="onViewportChange"
@@ -673,7 +716,8 @@ async function pollVideoExport(initial: VideoExportResponse) {
                 :centerRe="centerRe" :centerIm="centerIm" :scale="scale"
                 :iterations="iterations" :variant="variant" :metric="metric"
                 :colorMap="colorMap" :smooth="smooth"
-                :transitionTheta="transitionOn ? thetaDeg * Math.PI / 180 : null"
+                :transitionTheta="transitionOn ? transitionThetaMilliDeg * Math.PI / (180 * THETA_SCALE) : null"
+                :transition-theta-milli-deg="activeTransitionThetaMilliDeg"
                 :transitionFrom="transitionFrom" :transitionTo="transitionTo"
                 :engine="engineMode" :scalarType="scalarMode"
                 @viewport-change="onViewportChange"
@@ -698,7 +742,7 @@ async function pollVideoExport(initial: VideoExportResponse) {
                 :centerRe="jCenterRe" :centerIm="jCenterIm" :scale="jScale"
                 :iterations="iterations" :variant="variant" :metric="metric"
                 :colorMap="colorMap" :smooth="smooth"
-                :transitionTheta="null"
+                :transition-theta="null"
                 :julia="true" :juliaRe="juliaRe" :juliaIm="juliaIm"
                 :engine="engineMode" :scalarType="scalarMode"
                 @viewport-change="onJuliaViewport"
@@ -842,7 +886,7 @@ async function pollVideoExport(initial: VideoExportResponse) {
   min-width: 100px;
 }
 
-.group.transition-group { min-width: 200px; }
+.group.transition-group { min-width: 290px; }
 .group.export-preset-group { min-width: 190px; }
 
 .theta-row {
@@ -851,6 +895,28 @@ async function pollVideoExport(initial: VideoExportResponse) {
   gap: 8px;
 }
 .theta-row input[type="range"] { flex: 1; }
+
+.theta-loop-btn {
+  width: 26px;
+  min-width: 26px;
+  padding: 3px 0;
+}
+
+.theta-input {
+  width: 68px;
+  min-width: 68px;
+}
+
+.theta-snaps {
+  gap: 4px;
+}
+
+.theta-snaps button {
+  flex: 1;
+  min-width: 42px;
+  padding: 3px 4px;
+  font-size: 10px;
+}
 
 .spacer { flex: 1; }
 

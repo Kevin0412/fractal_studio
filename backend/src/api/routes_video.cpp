@@ -377,8 +377,8 @@ static std::string generateZoomVideo(
 
     const std::filesystem::path mp4 = outDir / (baseName + ".mp4");
     const std::filesystem::path avi = outDir / (baseName + ".avi");
-    const std::filesystem::path tmpMp4 = outDir / (baseName + ".mp4.tmp");
-    const std::filesystem::path tmpAvi = outDir / (baseName + ".avi.tmp");
+    const std::filesystem::path tmpMp4 = outDir / (baseName + ".tmp.mp4");
+    const std::filesystem::path tmpAvi = outDir / (baseName + ".tmp.avi");
 
     cv::Mat frame(H, W, CV_8UC3);
     cv::Mat stripFrame(H, W, CV_8UC3);

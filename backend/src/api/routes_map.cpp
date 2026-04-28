@@ -27,6 +27,12 @@ namespace fsd {
 
 namespace {
 
+constexpr double TAU = 6.28318530717958647692528676655900576;
+constexpr double PI  = 3.14159265358979323846264338327950288;
+constexpr int THETA_SCALE = 1000;
+constexpr int THETA_HALF_TURN_MDEG = 180 * THETA_SCALE;
+constexpr int THETA_FULL_TURN_MDEG = 360 * THETA_SCALE;
+
 // Resolve a variant string into (Variant enum, optional custom step fn).
 // Custom variants use the "custom:HASH" prefix and look up the dlopen registry.
 struct VariantResolved {
@@ -103,6 +109,30 @@ compute::Variant parseBuiltinVariant(const std::string& s, compute::Variant fall
     return fallback;
 }
 
+double normalizeTransitionTheta(double theta) {
+    if (!std::isfinite(theta)) throw std::runtime_error("invalid transitionTheta");
+    if (std::abs(theta) > TAU + 1e-6) {
+        theta = theta * PI / 180.0;
+    }
+    return std::remainder(theta, TAU);
+}
+
+int normalizeTransitionMilliDeg(long long milliDeg) {
+    long long wrapped = (milliDeg + THETA_HALF_TURN_MDEG) % THETA_FULL_TURN_MDEG;
+    if (wrapped < 0) wrapped += THETA_FULL_TURN_MDEG;
+    wrapped -= THETA_HALF_TURN_MDEG;
+    if (wrapped == -THETA_HALF_TURN_MDEG && milliDeg > 0) {
+        wrapped = THETA_HALF_TURN_MDEG;
+    }
+    return static_cast<int>(wrapped);
+}
+
+int thetaToMilliDeg(double theta) {
+    const double radians = normalizeTransitionTheta(theta);
+    return normalizeTransitionMilliDeg(
+        static_cast<long long>(std::llround(radians * 180.0 * THETA_SCALE / PI)));
+}
+
 } // namespace
 
 std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body) {
@@ -122,8 +152,12 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
     const double juliaIm          = j.value("juliaIm",  0.0);
     const std::string requestId   = j.value("requestId", std::string(""));
 
-    const bool hasTheta = j.contains("transitionTheta") && !j["transitionTheta"].is_null();
-    const double theta  = hasTheta ? j.value("transitionTheta", 0.0) : 0.0;
+    const bool hasThetaMilliDeg = j.contains("transitionThetaMilliDeg") && !j["transitionThetaMilliDeg"].is_null();
+    const bool hasTheta = hasThetaMilliDeg || (j.contains("transitionTheta") && !j["transitionTheta"].is_null());
+    const int thetaMilliDeg = hasThetaMilliDeg
+        ? normalizeTransitionMilliDeg(j.value("transitionThetaMilliDeg", 0LL))
+        : (hasTheta ? thetaToMilliDeg(j.value("transitionTheta", 0.0)) : 0);
+    const double theta = static_cast<double>(thetaMilliDeg) * PI / (180.0 * THETA_SCALE);
 
     const std::string scalarType = j.value("scalarType", std::string("auto"));
     const std::string engine     = j.value("engine",     std::string("openmp"));
@@ -136,7 +170,6 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
     if (height < 64 || height > 4096)                       throw std::runtime_error("invalid height");
     if (iters < 1 || iters > 1000000)                       throw std::runtime_error("invalid iterations");
     if (!std::isfinite(cRe) || !std::isfinite(cIm))         throw std::runtime_error("invalid center");
-    if (hasTheta && (theta < 0.0 || theta > 3.15))          throw std::runtime_error("invalid transitionTheta (0..π)");
 
     auto run = runner.createRun(stillExport ? "map-export" : "map", body);
     ResourceManager::Lease heavyLease;
@@ -191,6 +224,16 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
             if (!(bailoutSq > 0.0) || !std::isfinite(bailoutSq)) throw std::runtime_error("invalid bailoutSq");
             effectiveBailout = bailout;
             effectiveBailoutSq = bailoutSq;
+            const compute::Variant fromVariant = parseBuiltinVariant(
+                j.value("transitionFrom", std::string("mandelbrot")),
+                compute::Variant::Mandelbrot);
+            const compute::Variant toVariant = parseBuiltinVariant(
+                j.value("transitionTo", std::string("burning_ship")),
+                compute::Variant::Boat);
+            if (!compute::variant_supports_axis_transition(fromVariant) ||
+                !compute::variant_supports_axis_transition(toVariant)) {
+                throw std::runtime_error("transition variants must be quadratic Mandelbrot-family variants");
+            }
             compute::TransitionParams p;
             p.center_re = cRe;
             p.center_im = cIm;
@@ -201,18 +244,20 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
             p.bailout    = bailout;
             p.bailout_sq = bailoutSq;
             p.theta      = theta;
+            p.theta_milli_deg_set = true;
+            p.theta_milli_deg = thetaMilliDeg;
             p.metric       = parseMetric(metricStr);
             p.colormap     = parseColormap(colormapStr);
             p.smooth       = smooth;
             p.pairwise_cap = j.value("pairwiseCap", 64);
-            p.from_variant = parseBuiltinVariant(
-                j.value("transitionFrom", std::string("mandelbrot")),
-                compute::Variant::Mandelbrot);
-            p.to_variant = parseBuiltinVariant(
-                j.value("transitionTo", std::string("burning_ship")),
-                compute::Variant::Boat);
+            p.from_variant = fromVariant;
+            p.to_variant   = toVariant;
+            p.scalar_type  = scalarType;
+            p.engine       = engine;
             auto stats = compute::render_transition(p, out);
             elapsed = stats.elapsed_ms;
+            scalarUsed = stats.scalar_used;
+            engineUsed = stats.engine_used;
             artifactName = "transition.png";
         } else {
             const auto vr = resolveVariant(variantStr, repoRoot);
@@ -306,6 +351,7 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
             {"juliaRe",   juliaRe},
             {"juliaIm",   juliaIm},
             {"transitionTheta", hasTheta ? theta : 0.0},
+            {"transitionThetaMilliDeg", hasTheta ? thetaMilliDeg : 0},
             {"transitionActive", hasTheta},
             {"transitionFrom", hasTheta ? j.value("transitionFrom", std::string("mandelbrot")) : std::string("")},
             {"transitionTo",   hasTheta ? j.value("transitionTo",   std::string("burning_ship")) : std::string("")},

@@ -6,11 +6,12 @@ const BASE =
   (import.meta as any).env?.VITE_BACKEND_URL ??
   `http://${location.hostname}:18080`
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
+async function postJson<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(BASE + path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   })
   const text = await res.text()
   if (!res.ok) {
@@ -87,7 +88,8 @@ export interface MapRenderRequest {
   julia?: boolean
   juliaRe?: number
   juliaIm?: number
-  transitionTheta?: number  // 0..π; when set, transition kernel is used instead of the variant kernel
+  transitionTheta?: number  // legacy radians/degrees; when set, transition kernel is used instead of the variant kernel
+  transitionThetaMilliDeg?: number
   transitionFrom?: Variant | string
   transitionTo?: Variant | string
 }
@@ -551,7 +553,7 @@ export const api = {
   hardware:    () => getJson<Hardware>('/api/system/hardware'),
   capabilities:() => getJson<Record<string, any>>('/api/system/capabilities'),
 
-  mapRender:  (req: MapRenderRequest)  => postJson<MapRenderResponse>('/api/map/render', req),
+  mapRender:  (req: MapRenderRequest, signal?: AbortSignal)  => postJson<MapRenderResponse>('/api/map/render', req, signal),
   mapField:   (req: MapFieldRequest)   => postJson<MapFieldResponse>('/api/map/field', req),
   lnMap:      (req: LnMapRequest)      => postJson<LnMapResponse>('/api/map/ln', req),
 

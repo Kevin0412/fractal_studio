@@ -16,6 +16,7 @@ const props = defineProps<{
   colorMap: ColorMap
   smooth?: boolean
   transitionTheta: number | null
+  transitionThetaMilliDeg?: number | null
   transitionFrom?: string
   transitionTo?: string
   julia?: boolean
@@ -45,6 +46,18 @@ let   renderSeq = 0
 
 // ── Full-frame render ─────────────────────────────────────────────────────────
 
+function clearCanvas() {
+  const ctx = canvasEl.value?.getContext('2d')
+  if (!ctx) return
+  ctx.clearRect(0, 0, domW.value, domH.value)
+}
+
+function invalidateCurrentRender() {
+  currentRender?.abort()
+  currentRender = null
+  renderSeq += 1
+}
+
 async function renderFrame() {
   if (domW.value < 16 || domH.value < 16) return
   pending.value = true
@@ -52,7 +65,8 @@ async function renderFrame() {
 
   // Abort any in-flight render
   currentRender?.abort()
-  currentRender = new AbortController()
+  const controller = new AbortController()
+  currentRender = controller
   const seq = ++renderSeq
   const requestId = `${Date.now()}-${seq}`
 
@@ -72,14 +86,19 @@ async function renderFrame() {
     juliaRe:    props.juliaRe ?? 0,
     juliaIm:    props.juliaIm ?? 0,
   }
-  if (props.transitionTheta !== null) (req as any).transitionTheta = props.transitionTheta
+  if (props.transitionThetaMilliDeg !== null && props.transitionThetaMilliDeg !== undefined) {
+    req.transitionThetaMilliDeg = props.transitionThetaMilliDeg
+    req.transitionTheta = props.transitionThetaMilliDeg * Math.PI / 180000
+  } else if (props.transitionTheta !== null) {
+    req.transitionTheta = props.transitionTheta
+  }
   if (props.transitionFrom)           (req as any).transitionFrom  = props.transitionFrom
   if (props.transitionTo)             (req as any).transitionTo    = props.transitionTo
   if (props.engine)                   (req as any).engine           = props.engine
   if (props.scalarType)               (req as any).scalarType       = props.scalarType
 
   try {
-    const resp = await api.mapRender(req) as any
+    const resp = await api.mapRender(req, controller.signal) as any
     if (seq !== renderSeq || (resp.requestId && resp.requestId !== requestId)) return
     const imgUrl = api.artifactContentUrl(resp.artifactId)
     await new Promise<void>((res, rej) => {
@@ -103,11 +122,18 @@ async function renderFrame() {
   } catch (e: any) {
     if (seq === renderSeq && e?.name !== 'AbortError') error.value = e?.message ?? String(e)
   } finally {
+    if (currentRender === controller) currentRender = null
     if (seq === renderSeq) pending.value = false
   }
 }
 
 function scheduleRender(delay = 200) {
+  invalidateCurrentRender()
+  if (domW.value >= 16 && domH.value >= 16) {
+    pending.value = true
+    error.value = ''
+    clearCanvas()
+  }
   if (renderTimer) clearTimeout(renderTimer)
   renderTimer = setTimeout(renderFrame, delay)
 }
@@ -118,7 +144,7 @@ watch(() => [
   props.centerRe, props.centerIm, props.scale,
   props.variant, props.metric, props.colorMap, props.smooth,
   props.iterations, props.julia, props.juliaRe, props.juliaIm,
-  props.engine, props.scalarType, props.transitionTheta,
+  props.engine, props.scalarType, props.transitionTheta, props.transitionThetaMilliDeg,
   props.transitionFrom, props.transitionTo,
   domW.value, domH.value,
 ], () => scheduleRender())
@@ -150,7 +176,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   ro?.disconnect()
   if (renderTimer) clearTimeout(renderTimer)
-  currentRender?.abort()
+  invalidateCurrentRender()
 })
 
 // ── Interaction ───────────────────────────────────────────────────────────────

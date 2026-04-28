@@ -3,6 +3,9 @@ import { RouterLink } from 'vue-router'
 import { t, lang, toggleLang } from '../i18n'
 import { isLight, toggleTheme } from '../theme'
 
+defineProps<{ collapsed?: boolean }>()
+defineEmits<{ (e: 'toggle'): void }>()
+
 const items = [
   { to: '/',       glyph: 'MP', label: 'nav_map' },
   { to: '/points', glyph: 'PT', label: 'nav_points' },
@@ -13,29 +16,38 @@ const items = [
 </script>
 
 <template>
-  <nav class="navrail">
-    <div class="brand mono">fs</div>
-    <RouterLink
-      v-for="item in items"
-      :key="item.to"
-      :to="item.to"
-      class="nav-item"
-      active-class="active">
-      <span class="glyph mono">{{ item.glyph }}</span>
-      <span class="tip">{{ t(item.label) }}</span>
-    </RouterLink>
-
-    <div class="spacer"></div>
-
-    <button class="theme-btn nav-item" @click="toggleLang" title="Toggle language / 切换语言">
-      <span class="glyph mono">{{ lang === 'en' ? 'ZH' : 'EN' }}</span>
-      <span class="tip">{{ lang === 'en' ? '中文' : 'English' }}</span>
+  <nav :class="['navrail', { collapsed }]">
+    <button
+      class="rail-toggle"
+      :title="collapsed ? 'Expand navigation / 展开导航' : 'Collapse navigation / 折叠导航'"
+      @click="$emit('toggle')">
+      <span class="toggle-mark">{{ collapsed ? '›' : '‹' }}</span>
     </button>
 
-    <button class="theme-btn nav-item" @click="toggleTheme" :title="isLight ? 'Switch to dark mode' : 'Switch to light mode'">
-      <span class="glyph theme-icon">{{ isLight ? '☀' : '☽' }}</span>
-      <span class="tip">{{ isLight ? t('nav_dark') : t('nav_light') }}</span>
-    </button>
+    <template v-if="!collapsed">
+      <div class="brand mono">fs</div>
+      <RouterLink
+        v-for="item in items"
+        :key="item.to"
+        :to="item.to"
+        class="nav-item"
+        active-class="active">
+        <span class="glyph mono">{{ item.glyph }}</span>
+        <span class="tip">{{ t(item.label) }}</span>
+      </RouterLink>
+
+      <div class="spacer"></div>
+
+      <button class="theme-btn nav-item" @click="toggleLang" title="Toggle language / 切换语言">
+        <span class="glyph mono">{{ lang === 'en' ? 'ZH' : 'EN' }}</span>
+        <span class="tip">{{ lang === 'en' ? '中文' : 'English' }}</span>
+      </button>
+
+      <button class="theme-btn nav-item" @click="toggleTheme" :title="isLight ? 'Switch to dark mode' : 'Switch to light mode'">
+        <span class="glyph theme-icon">{{ isLight ? '☀' : '☽' }}</span>
+        <span class="tip">{{ isLight ? t('nav_dark') : t('nav_light') }}</span>
+      </button>
+    </template>
   </nav>
 </template>
 
@@ -45,10 +57,14 @@ const items = [
   flex-direction: column;
   align-items: center;
   background: var(--bg);
-  padding-top: 18px;
+  padding-top: 8px;
   padding-bottom: 12px;
   gap: 4px;
   height: 100%;
+}
+
+.navrail.collapsed {
+  padding: 8px 0;
 }
 
 .spacer { flex: 1; }
@@ -69,8 +85,30 @@ const items = [
   font-family: var(--mono);
   font-size: 14px;
   color: var(--accent);
+  margin-top: 6px;
   margin-bottom: 20px;
   letter-spacing: 0.02em;
+}
+
+.rail-toggle {
+  width: 20px;
+  height: 24px;
+  min-width: 20px;
+  padding: 0;
+  border-color: transparent;
+  color: var(--text-faint);
+}
+
+.rail-toggle:hover {
+  border-color: var(--rule-hi);
+  color: var(--accent);
+}
+
+.toggle-mark {
+  display: block;
+  font-size: 16px;
+  line-height: 1;
+  letter-spacing: 0;
 }
 
 .nav-item {

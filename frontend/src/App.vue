@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import NavRail    from './components/NavRail.vue'
 import StatusRail from './components/StatusRail.vue'
-import { provide, reactive } from 'vue'
+import { provide, reactive, ref } from 'vue'
 import type { StatusState } from './types'
 
 const status = reactive<StatusState>({
@@ -20,24 +20,47 @@ const status = reactive<StatusState>({
 })
 
 provide('status', status)
+
+const navCollapsed = ref(false)
+const statusCollapsed = ref(false)
 </script>
 
 <template>
-  <div class="shell">
-    <NavRail />
+  <div
+    class="shell"
+    :class="{
+      'nav-collapsed': navCollapsed,
+      'status-collapsed': statusCollapsed,
+    }">
+    <NavRail
+      :collapsed="navCollapsed"
+      @toggle="navCollapsed = !navCollapsed"
+    />
     <main class="main">
       <router-view />
     </main>
-    <StatusRail :status="status" />
+    <StatusRail
+      :status="status"
+      :collapsed="statusCollapsed"
+      @toggle="statusCollapsed = !statusCollapsed"
+    />
   </div>
 </template>
 
 <style scoped>
 .shell {
   display: grid;
-  grid-template-columns: var(--nav-w) 1fr var(--rail-w);
+  grid-template-columns: var(--nav-current-w, var(--nav-w)) 1fr var(--rail-current-w, var(--rail-w));
   height: 100vh;
   overflow: hidden;
+}
+
+.shell.nav-collapsed {
+  --nav-current-w: 28px;
+}
+
+.shell.status-collapsed {
+  --rail-current-w: 28px;
 }
 
 .main {
