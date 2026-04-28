@@ -132,6 +132,7 @@ function onVariantSelect(val: string) {
 }
 
 const transitionOn = ref(false)
+const pointsCollapsed = ref(false)
 const transitionFrom = ref<string>('mandelbrot')
 const transitionTo   = ref<string>('burning_ship')
 const AXIS_TRANSITION_VARIANTS = VARIANTS.slice(0, 10)
@@ -679,7 +680,7 @@ async function pollVideoExport(initial: VideoExportResponse) {
     </div>
 
     <!-- ── Main stage: dual-pane or single ──────────────────────────────── -->
-    <div class="stage">
+    <div class="stage" :class="{ 'points-collapsed': pointsCollapsed }">
 
       <!-- Single-pane mode (no Julia) -->
       <template v-if="!juliaOn">
@@ -694,8 +695,14 @@ async function pollVideoExport(initial: VideoExportResponse) {
           @viewport-change="onViewportChange"
           @rendered="onRendered"
         />
-        <aside class="points">
-          <SpecialPointList @import-point="onImportPoint" />
+        <aside :class="['points', { collapsed: pointsCollapsed }]">
+          <button
+            class="points-toggle"
+            :title="pointsCollapsed ? '展开根列表' : '折叠根列表'"
+            @click="pointsCollapsed = !pointsCollapsed">
+            <span>{{ pointsCollapsed ? '‹' : '›' }}</span>
+          </button>
+          <SpecialPointList v-if="!pointsCollapsed" @import-point="onImportPoint" />
         </aside>
       </template>
 
@@ -943,15 +950,56 @@ async function pollVideoExport(initial: VideoExportResponse) {
   grid-template-columns: 1fr 320px;
 }
 
+.stage.points-collapsed {
+  grid-template-columns: 1fr 28px;
+}
+
 /* single-pane: canvas takes full grid, points panel on right */
 .stage > .map-canvas-wrap,
 .stage > canvas { grid-column: 1; }
 
 .points {
+  position: relative;
   border-left: 1px solid var(--rule);
-  padding: 12px 14px;
+  padding: 12px 14px 12px 18px;
   background: var(--bg-raised);
   overflow-y: auto;
+  min-width: 0;
+}
+
+.points.collapsed {
+  padding: 8px 0;
+  overflow: hidden;
+}
+
+.points-toggle {
+  position: absolute;
+  top: 8px;
+  left: 3px;
+  width: 20px;
+  min-width: 20px;
+  height: 24px;
+  padding: 0;
+  z-index: 2;
+  border-color: transparent;
+  color: var(--text-faint);
+}
+
+.points-toggle:hover {
+  border-color: var(--rule-hi);
+  color: var(--accent);
+}
+
+.points-toggle span {
+  display: block;
+  font-size: 16px;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.points.collapsed .points-toggle {
+  position: static;
+  margin: 0 auto;
 }
 
 /* ── Dual pane ── */
