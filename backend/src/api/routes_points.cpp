@@ -121,6 +121,8 @@ Json searchResponseToJson(const compute::SpecialPointSearchResponse& r) {
     return Json{
         {"status", r.status},
         {"sampled", r.sampled},
+        {"foundAny", r.accepted_count > 0},
+        {"noPoint", r.status == "completed" && r.accepted_count == 0},
         {"acceptedCount", r.accepted_count},
         {"seedCount", r.seed_count},
         {"newtonSuccessCount", r.newton_success_count},
@@ -181,6 +183,8 @@ compute::SpecialPointSearchRequest parseSearchRequest(const Json& j) {
     req.kind = parseKind(j);
     req.period_min = j.value("periodMin", 1);
     req.period_max = j.value("periodMax", 8);
+    req.preperiod_min = j.value("preperiodMin", 1);
+    req.preperiod_max = j.value("preperiodMax", 4);
     req.seed_budget = j.value("seedBudget", 2000);
     req.max_newton_iter = j.value("maxNewtonIter", 60);
     req.newton_eps = j.value("newtonEps", 1e-13);
@@ -247,11 +251,16 @@ void validateEnumRequest(const compute::SpecialPointEnumRequest& req) {
 }
 
 void validateSearchRequest(const compute::SpecialPointSearchRequest& req) {
-    if (req.kind != compute::SpecialPointKind::HyperbolicCenter) {
-        throw HttpError(400, Json{{"error", "special point search currently supports kind=center only"}}.dump());
-    }
-    if (req.period_min < 1 || req.period_max < req.period_min || req.period_max > 10) {
-        throw HttpError(400, Json{{"error", "invalid center period range"}, {"limit", "1..10"}}.dump());
+    if (req.kind == compute::SpecialPointKind::HyperbolicCenter) {
+        if (req.period_min < 1 || req.period_max < req.period_min || req.period_max > 10) {
+            throw HttpError(400, Json{{"error", "invalid center period range"}, {"limit", "1..10"}}.dump());
+        }
+    } else {
+        if (req.preperiod_min < 1 || req.preperiod_max < req.preperiod_min || req.preperiod_max > 6 ||
+            req.period_min < 1 || req.period_max < req.period_min || req.period_max > 6 ||
+            req.preperiod_max + req.period_max > 10) {
+            throw HttpError(400, Json{{"error", "invalid Misiurewicz search range"}, {"limit", "preperiod 1..6, period 1..6, preperiod+period <= 10"}}.dump());
+        }
     }
     if (req.seed_budget < 1 || req.seed_budget > 20000) {
         throw HttpError(400, Json{{"error", "invalid seedBudget"}, {"limit", "1..20000"}}.dump());
@@ -430,7 +439,7 @@ std::string specialPointsSearchRoute(const std::filesystem::path& repoRoot, JobR
             runner.setProgress(run.id, progress.dump());
         };
         try {
-            compute::SpecialPointSearchResponse resp = compute::search_hyperbolic_centers(
+            compute::SpecialPointSearchResponse resp = compute::search_special_points(
                 req,
                 [&](int period, int periodIndex, int periodCount, int accepted, int seeds) {
                     Json progress = {
@@ -516,6 +525,8 @@ std::string specialPointsResultsRoute(const std::filesystem::path&, JobRunner& r
                 {"runId", runId},
                 {"status", run.status},
                 {"sampled", true},
+                {"foundAny", false},
+                {"noPoint", false},
                 {"acceptedCount", progress.value("acceptedCount", 0)},
                 {"seedCount", progress.value("seedCount", 0)},
                 {"newtonSuccessCount", 0},

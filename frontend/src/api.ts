@@ -144,9 +144,11 @@ export interface SpecialPointEnumRequest {
 }
 
 export interface SpecialPointSearchRequest {
-  kind?: 'center'
+  kind?: SpecialPointKind
   periodMin?: number
   periodMax?: number
+  preperiodMin?: number
+  preperiodMax?: number
   seedBudget?: number
   maxNewtonIter?: number
   includeVariantCompatibility?: boolean
@@ -208,6 +210,8 @@ export interface SpecialPointSearchResponse {
   runId: string
   status: string
   sampled: boolean
+  foundAny?: boolean
+  noPoint?: boolean
   acceptedCount: number
   seedCount: number
   newtonSuccessCount: number

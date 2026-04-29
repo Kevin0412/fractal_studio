@@ -137,6 +137,7 @@ const pointsCollapsed = ref(false)
 const specialPointResults = ref<SpecialPointEnumResult[]>([])
 const hoveredSpecialPointId = ref('')
 const selectedSpecialPointId = ref('')
+const specialPointVariantHint = ref('')
 const transitionFrom = ref<string>('mandelbrot')
 const transitionTo   = ref<string>('burning_ship')
 const AXIS_TRANSITION_VARIANTS = VARIANTS.slice(0, 10)
@@ -172,6 +173,83 @@ const thetaDeg = computed({
 })
 const transitionThetaMilliDeg = computed(() => normalizeThetaMilliDeg(thetaMilliDeg.value))
 const activeTransitionThetaMilliDeg = computed(() => transitionOn.value ? transitionThetaMilliDeg.value : null)
+
+const SPECIAL_POINT_VARIANT_BY_ID: Record<string, string> = {
+  mandelbrot: 'Mandelbrot',
+  tricorn: 'Tri',
+  burning_ship: 'Boat',
+  celtic: 'Duck',
+  heart: 'Bell',
+  buffalo: 'Fish',
+  perp_buffalo: 'Vase',
+  celtic_ship: 'Bird',
+  mandelceltic: 'Mask',
+  perp_ship: 'Ship',
+}
+
+const SPECIAL_POINT_VARIANT_ID_BY_NAME: Record<string, string> = Object.fromEntries(
+  Object.entries(SPECIAL_POINT_VARIANT_BY_ID).map(([id, name]) => [name, id])
+)
+
+function specialPointBackendVariantName(id = variant.value): string {
+  return SPECIAL_POINT_VARIANT_BY_ID[id] ?? ''
+}
+
+function specialPointVariantLabel(backendName: string): string {
+  const id = SPECIAL_POINT_VARIANT_ID_BY_NAME[backendName]
+  return id ? ((VARIANT_LABELS as any)[id]?.[lang.value] ?? backendName) : backendName
+}
+
+function specialPointVariantNames(p: SpecialPointEnumResult): string[] {
+  const names = new Set<string>(['Mandelbrot'])
+  for (const v of p.compatibleVariants || []) names.add(v)
+  for (const v of p.variants || []) if (v.exists) names.add(v.variant_name)
+  return [...names]
+}
+
+function specialPointExistsInVariant(p: SpecialPointEnumResult, backendName: string): boolean {
+  if (backendName === 'Mandelbrot') return true
+  if (!backendName) return false
+  if (p.compatibleVariants?.includes(backendName)) return true
+  return !!p.variants?.some(v => v.variant_name === backendName && v.exists)
+}
+
+function specialPointMatchesCurrentVariant(p: SpecialPointEnumResult): boolean {
+  const backendName = specialPointBackendVariantName()
+  if (backendName === 'Mandelbrot') return true
+  return specialPointExistsInVariant(p, backendName)
+}
+
+function updateSpecialPointVariantHint(p: SpecialPointEnumResult | null) {
+  if (!p) {
+    specialPointVariantHint.value = ''
+    return
+  }
+  const currentBackend = specialPointBackendVariantName()
+  const compatible = specialPointVariantNames(p)
+    .filter(name => name !== 'Mandelbrot')
+    .map(specialPointVariantLabel)
+  if (currentBackend === 'Mandelbrot' && compatible.length) {
+    specialPointVariantHint.value = `Also visible in variants: ${compatible.join(', ')}`
+  } else if (currentBackend && currentBackend !== 'Mandelbrot' && specialPointExistsInVariant(p, currentBackend)) {
+    specialPointVariantHint.value = `Retained Mandelbrot special point for ${specialPointVariantLabel(currentBackend)}`
+  } else {
+    specialPointVariantHint.value = ''
+  }
+}
+
+function mergeSpecialPointCache(points: SpecialPointEnumResult[]) {
+  if (!points.length) return
+  const byId = new Map<string, SpecialPointEnumResult>()
+  for (const p of specialPointResults.value) byId.set(p.id, p)
+  for (const p of points) {
+    const existing = byId.get(p.id)
+    if (!existing || p.residual < existing.residual) byId.set(p.id, p)
+  }
+  specialPointResults.value = [...byId.values()].sort((a, b) =>
+    a.period - b.period || a.preperiod - b.preperiod || a.re - b.re || a.im - b.im
+  )
+}
 
 // ── Julia mode ────────────────────────────────────────────────────────────────
 const juliaOn  = ref(false)
@@ -287,13 +365,19 @@ function pointInCurrentView(p: SpecialPointEnumResult) {
     && p.im >= centerIm.value - halfH && p.im <= centerIm.value + halfH
 }
 
-const visibleSpecialPoints = computed(() => specialPointResults.value.filter(pointInCurrentView))
+const visibleSpecialPoints = computed(() =>
+  specialPointResults.value.filter(p => pointInCurrentView(p) && specialPointMatchesCurrentVariant(p))
+)
 
 function onSpecialPointResults(points: SpecialPointEnumResult[]) {
-  specialPointResults.value = points
+  mergeSpecialPointCache(points)
   hoveredSpecialPointId.value = ''
-  if (selectedSpecialPointId.value && !points.some(p => p.id === selectedSpecialPointId.value)) {
+  const selected = specialPointResults.value.find(p => p.id === selectedSpecialPointId.value) ?? null
+  if (selectedSpecialPointId.value && !selected) {
     selectedSpecialPointId.value = ''
+    updateSpecialPointVariantHint(null)
+  } else {
+    updateSpecialPointVariantHint(selected)
   }
 }
 
@@ -303,6 +387,7 @@ function onSpecialPointHover(id: string) {
 
 function onSpecialPointSelect(p: SpecialPointEnumResult) {
   selectedSpecialPointId.value = p.id
+  updateSpecialPointVariantHint(p)
   onImportPoint(p)
 }
 
@@ -311,6 +396,11 @@ function onUseSpecialPointAsJulia(p: SpecialPointEnumResult) {
   juliaRe.value = p.re
   juliaIm.value = p.im
 }
+
+watch(variant, () => {
+  const selected = specialPointResults.value.find(p => p.id === selectedSpecialPointId.value) ?? null
+  updateSpecialPointVariantHint(selected)
+})
 
 const pngPresetKey = ref('fhd')
 const videoPresetKey = ref('fhd')
@@ -757,6 +847,7 @@ async function pollVideoExport(initial: VideoExportResponse) {
             :viewport="specialPointViewport"
             :hovered-id="hoveredSpecialPointId"
             :selected-id="selectedSpecialPointId"
+            :variant-hint="specialPointVariantHint"
             @import-point="onImportPoint"
             @hover-point="onSpecialPointHover"
             @select-point="onSpecialPointSelect"

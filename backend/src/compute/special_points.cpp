@@ -3,6 +3,7 @@
 #include "variants.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <complex>
 #include <iomanip>
@@ -22,6 +23,14 @@ struct Task {
     int preperiod;
     int period;
     int expected;
+};
+
+struct SeedSolveOutcome {
+    int seed_count = 0;
+    int newton_success_count = 0;
+    int rejected_count = 0;
+    std::vector<SpecialPointResult> accepted;
+    std::vector<SpecialPointResult> rejected_debug;
 };
 
 bool finite(Z z) {
@@ -221,6 +230,94 @@ void add_or_replace_root(std::vector<SpecialPointResult>& roots, const SpecialPo
     roots.push_back(root);
 }
 
+SeedSolveOutcome solve_enum_seed(Z seed, const Task& task, const SpecialPointEnumRequest& req) {
+    SeedSolveOutcome out;
+    if (std::norm(seed) > 4.0) return out;
+    out.seed_count = 1;
+
+    SpecialPointResult root = task.kind == SpecialPointKind::HyperbolicCenter
+        ? newton_solve_center(seed, task.period, req)
+        : newton_solve_misiurewicz(seed, task.preperiod, task.period, req);
+
+    if (root.converged) ++out.newton_success_count;
+    if (!root.accepted) {
+        ++out.rejected_count;
+        if (req.include_rejected_debug) out.rejected_debug.push_back(root);
+        return out;
+    }
+
+    root = polish_result(root, req);
+    if (!root.accepted) {
+        ++out.rejected_count;
+        if (req.include_rejected_debug) out.rejected_debug.push_back(root);
+        return out;
+    }
+
+    root.visible = point_in_viewport(req.viewport, Z(root.re, root.im));
+    if (!req.visible_only || root.visible) out.accepted.push_back(root);
+
+    if (std::abs(root.im) > req.root_merge_eps) {
+        const Z conj_seed(root.re, -root.im);
+        SpecialPointResult conj_root = task.kind == SpecialPointKind::HyperbolicCenter
+            ? newton_solve_center(conj_seed, task.period, req)
+            : newton_solve_misiurewicz(conj_seed, task.preperiod, task.period, req);
+        if (conj_root.accepted) {
+            conj_root = polish_result(conj_root, req);
+            conj_root.visible = point_in_viewport(req.viewport, Z(conj_root.re, conj_root.im));
+            if (!req.visible_only || conj_root.visible) out.accepted.push_back(conj_root);
+        }
+    }
+    return out;
+}
+
+void merge_enum_outcome(SpecialPointEnumResponse& resp, const SeedSolveOutcome& outcome, const SpecialPointEnumRequest& req) {
+    resp.seed_count += outcome.seed_count;
+    resp.newton_success_count += outcome.newton_success_count;
+    resp.rejected_count += outcome.rejected_count;
+    for (const auto& root : outcome.accepted) {
+        add_or_replace_root(resp.points, root, req.root_merge_eps);
+    }
+    if (req.include_rejected_debug) {
+        for (const auto& rejected : outcome.rejected_debug) {
+            if (resp.rejected_debug.size() >= 256) break;
+            resp.rejected_debug.push_back(rejected);
+        }
+    }
+}
+
+SeedSolveOutcome solve_search_seed(
+    Z seed,
+    const Task& task,
+    const SpecialPointEnumRequest& opt,
+    const SpecialPointSearchRequest& req
+) {
+    SeedSolveOutcome out;
+    if (std::norm(seed) > 4.0) return out;
+    out.seed_count = 1;
+
+    SpecialPointResult root = task.kind == SpecialPointKind::HyperbolicCenter
+        ? newton_solve_center(seed, task.period, opt)
+        : newton_solve_misiurewicz(seed, task.preperiod, task.period, opt);
+    if (root.converged) ++out.newton_success_count;
+    if (!root.accepted) {
+        ++out.rejected_count;
+        return out;
+    }
+
+    root.visible = point_in_viewport(req.viewport, Z(root.re, root.im));
+    if (!req.visible_only || root.visible) out.accepted.push_back(root);
+    return out;
+}
+
+void merge_search_outcome(SpecialPointSearchResponse& resp, const SeedSolveOutcome& outcome, double merge_eps) {
+    resp.seed_count += outcome.seed_count;
+    resp.newton_success_count += outcome.newton_success_count;
+    resp.rejected_count += outcome.rejected_count;
+    for (const auto& root : outcome.accepted) {
+        add_or_replace_root(resp.points, root, merge_eps);
+    }
+}
+
 std::vector<Task> build_tasks(const SpecialPointEnumRequest& req) {
     std::vector<Task> tasks;
     if (req.kind == SpecialPointKind::HyperbolicCenter) {
@@ -239,9 +336,13 @@ std::vector<Task> build_tasks(const SpecialPointEnumRequest& req) {
 
 SpecialPointEnumRequest options_from_search(const SpecialPointSearchRequest& req) {
     SpecialPointEnumRequest out;
-    out.kind = SpecialPointKind::HyperbolicCenter;
+    out.kind = req.kind;
     out.period_min = req.period_min;
     out.period_max = req.period_max;
+    out.preperiod_min = req.preperiod_min;
+    out.preperiod_max = req.preperiod_max;
+    out.misiurewicz_period_min = req.period_min;
+    out.misiurewicz_period_max = req.period_max;
     out.max_newton_iter = req.max_newton_iter;
     out.newton_eps = req.newton_eps;
     out.classify_eps = req.classify_eps;
@@ -520,58 +621,13 @@ SpecialPointEnumResponse enumerate_special_points(
             1000003ULL * static_cast<unsigned long long>(task.period)
             + 9176ULL * static_cast<unsigned long long>(task.preperiod + 1);
 
-        auto handle_seed = [&](Z seed) {
-            if (std::norm(seed) > 4.0) return;
-            ++resp.seed_count;
-
-            SpecialPointResult root = task.kind == SpecialPointKind::HyperbolicCenter
-                ? newton_solve_center(seed, task.period, req)
-                : newton_solve_misiurewicz(seed, task.preperiod, task.period, req);
-
-            if (root.converged) ++resp.newton_success_count;
-            if (!root.accepted) {
-                ++resp.rejected_count;
-                if (req.include_rejected_debug && resp.rejected_debug.size() < 256) {
-                    resp.rejected_debug.push_back(root);
-                }
-                return;
-            }
-
-            root = polish_result(root, req);
-            if (!root.accepted) {
-                ++resp.rejected_count;
-                if (req.include_rejected_debug && resp.rejected_debug.size() < 256) {
-                    resp.rejected_debug.push_back(root);
-                }
-                return;
-            }
-
-            root.visible = point_in_viewport(req.viewport, Z(root.re, root.im));
-            if (req.visible_only && !root.visible) return;
-            add_or_replace_root(resp.points, root, req.root_merge_eps);
-
-            if (std::abs(root.im) > req.root_merge_eps) {
-                const Z conj_seed(root.re, -root.im);
-                SpecialPointResult conj_root = task.kind == SpecialPointKind::HyperbolicCenter
-                    ? newton_solve_center(conj_seed, task.period, req)
-                    : newton_solve_misiurewicz(conj_seed, task.preperiod, task.period, req);
-                if (conj_root.accepted) {
-                    conj_root = polish_result(conj_root, req);
-                    conj_root.visible = point_in_viewport(req.viewport, Z(conj_root.re, conj_root.im));
-                    if (!req.visible_only || conj_root.visible) {
-                        add_or_replace_root(resp.points, conj_root, req.root_merge_eps);
-                    }
-                }
-            }
-        };
-
         const Z anchors[] = {
             {0.0, 0.0}, {-1.0, 0.0}, {-2.0, 0.0}, {1.0, 0.0}, {0.25, 0.0},
             {0.0, 1.0}, {0.0, -1.0}, {-0.75, 0.75}, {-0.75, -0.75},
         };
         for (Z seed : anchors) {
             if (static_cast<int>(resp.points.size()) - accepted_before_task >= task.expected) break;
-            handle_seed(seed);
+            merge_enum_outcome(resp, solve_enum_seed(seed, task, req), req);
         }
 
         for (int batch = 0; batch < req.max_seed_batches; ++batch) {
@@ -584,13 +640,23 @@ SpecialPointEnumResponse enumerate_special_points(
                 return resp;
             }
 
+            std::vector<Z> seeds;
+            seeds.reserve(static_cast<size_t>(req.seeds_per_batch));
             for (int i = 0; i < req.seeds_per_batch; ++i) {
-                if (static_cast<int>(resp.points.size()) - accepted_before_task >= task.expected) break;
                 const unsigned long long seed_index = task_seed_offset
                     + static_cast<unsigned long long>(batch) * static_cast<unsigned long long>(req.seeds_per_batch)
                     + static_cast<unsigned long long>(i);
-                const Z seed = seed_for(seed_index);
-                handle_seed(seed);
+                seeds.push_back(seed_for(seed_index));
+            }
+
+            std::vector<SeedSolveOutcome> outcomes(seeds.size());
+            #pragma omp parallel for schedule(dynamic, 16)
+            for (int i = 0; i < static_cast<int>(seeds.size()); ++i) {
+                outcomes[static_cast<size_t>(i)] = solve_enum_seed(seeds[static_cast<size_t>(i)], task, req);
+            }
+
+            for (const auto& outcome : outcomes) {
+                merge_enum_outcome(resp, outcome, req);
             }
         }
     }
@@ -612,13 +678,10 @@ SpecialPointEnumResponse enumerate_special_points(
     return resp;
 }
 
-SpecialPointSearchResponse search_hyperbolic_centers(
+SpecialPointSearchResponse search_special_points(
     const SpecialPointSearchRequest& req,
     const SpecialPointSearchProgressCallback& progress
 ) {
-    if (req.kind != SpecialPointKind::HyperbolicCenter) {
-        throw std::runtime_error("viewport search currently supports hyperbolic centers only");
-    }
     if (!req.viewport.enabled) {
         throw std::runtime_error("viewport is required for special point search");
     }
@@ -626,8 +689,20 @@ SpecialPointSearchResponse search_hyperbolic_centers(
     SpecialPointSearchResponse resp;
     resp.status = "searching";
 
-    const int period_count = std::max(1, req.period_max - req.period_min + 1);
-    const int seeds_per_period = std::max(1, req.seed_budget / period_count);
+    std::vector<Task> tasks;
+    if (req.kind == SpecialPointKind::HyperbolicCenter) {
+        for (int p = req.period_min; p <= req.period_max; ++p) {
+            tasks.push_back({req.kind, 0, p, 0});
+        }
+    } else {
+        for (int m = req.preperiod_min; m <= req.preperiod_max; ++m) {
+            for (int p = req.period_min; p <= req.period_max; ++p) {
+                tasks.push_back({req.kind, m, p, 0});
+            }
+        }
+    }
+    const int task_count = std::max(1, static_cast<int>(tasks.size()));
+    const int seeds_per_task = std::max(1, req.seed_budget / task_count);
     const double merge_eps = std::max(req.root_merge_eps, req.viewport.scale * 1e-9);
     const SpecialPointEnumRequest opt = options_from_search(req);
 
@@ -641,51 +716,119 @@ SpecialPointSearchResponse search_hyperbolic_centers(
         {-0.12256116687665362, -0.7448617666197442},
     };
 
-    auto handle_root = [&](SpecialPointResult root) {
-        if (root.converged) ++resp.newton_success_count;
-        if (!root.accepted) {
-            ++resp.rejected_count;
-            return;
-        }
-        root.visible = point_in_viewport(req.viewport, Z(root.re, root.im));
-        if (req.visible_only && !root.visible) return;
-        add_or_replace_root(resp.points, root, merge_eps);
-    };
+    std::atomic<bool> cancel_requested{false};
+    std::atomic<bool> misiurewicz_found{false};
+    std::atomic<int> progress_seed_count{0};
+    std::atomic<int> progress_accepted_count{0};
+    std::vector<SpecialPointSearchResponse> locals(tasks.size());
 
-    int period_index = 0;
-    for (int period = req.period_min; period <= req.period_max; ++period) {
-        ++period_index;
-        if (progress && !progress(period, period_index, period_count,
-                                  static_cast<int>(resp.points.size()), resp.seed_count)) {
-            resp.status = "cancelled";
-            resp.accepted_count = static_cast<int>(resp.points.size());
-            return resp;
+    #pragma omp parallel for schedule(dynamic, 1)
+    for (int task_i = 0; task_i < static_cast<int>(tasks.size()); ++task_i) {
+        if (cancel_requested.load(std::memory_order_relaxed)) continue;
+        if (req.kind == SpecialPointKind::Misiurewicz &&
+            misiurewicz_found.load(std::memory_order_relaxed)) {
+            continue;
         }
+
+        const Task& task = tasks[static_cast<size_t>(task_i)];
+        bool proceed = true;
+        if (progress) {
+            #pragma omp critical(special_point_search_progress)
+            {
+                proceed = progress(task.period, task_i + 1, task_count, 0, 0);
+            }
+        }
+        if (!proceed) {
+            cancel_requested.store(true, std::memory_order_relaxed);
+            continue;
+        }
+
+        SpecialPointSearchResponse local;
+        local.status = "searching";
+        auto merge_local = [&](const SeedSolveOutcome& outcome) {
+            merge_search_outcome(local, outcome, merge_eps);
+            if (req.kind == SpecialPointKind::Misiurewicz && !local.points.empty()) {
+                misiurewicz_found.store(true, std::memory_order_relaxed);
+            }
+        };
 
         for (Z seed : anchors) {
-            if (std::norm(seed) > 4.0) continue;
+            if (cancel_requested.load(std::memory_order_relaxed)) break;
+            if (req.kind == SpecialPointKind::Misiurewicz &&
+                misiurewicz_found.load(std::memory_order_relaxed) && local.points.empty()) {
+                break;
+            }
             if (!point_in_viewport(req.viewport, seed)) continue;
-            ++resp.seed_count;
-            handle_root(newton_solve_center(seed, period, opt));
+            merge_local(solve_search_seed(seed, task, opt, req));
+            if (req.kind == SpecialPointKind::Misiurewicz && !local.points.empty()) break;
         }
 
-        for (int i = 0; i < seeds_per_period; ++i) {
-            const Z seed = viewport_seed(req.viewport, static_cast<unsigned long long>(i), period);
-            if (std::norm(seed) > 4.0) continue;
-            ++resp.seed_count;
-            handle_root(newton_solve_center(seed, period, opt));
+        for (int i = 0; i < seeds_per_task; ++i) {
+            if (cancel_requested.load(std::memory_order_relaxed)) break;
+            if (req.kind == SpecialPointKind::Misiurewicz &&
+                misiurewicz_found.load(std::memory_order_relaxed) && local.points.empty()) {
+                break;
+            }
+            const unsigned long long seed_index =
+                static_cast<unsigned long long>(i)
+                + 1000003ULL * static_cast<unsigned long long>(task_i + 1);
+            const Z seed = viewport_seed(req.viewport, seed_index, task.period);
+            merge_local(solve_search_seed(seed, task, opt, req));
+            if (req.kind == SpecialPointKind::Misiurewicz && !local.points.empty()) break;
+        }
+
+        local.accepted_count = static_cast<int>(local.points.size());
+        locals[static_cast<size_t>(task_i)] = std::move(local);
+
+        const int accepted_now = progress_accepted_count.fetch_add(
+            locals[static_cast<size_t>(task_i)].accepted_count,
+            std::memory_order_relaxed) + locals[static_cast<size_t>(task_i)].accepted_count;
+        const int seed_now = progress_seed_count.fetch_add(
+            locals[static_cast<size_t>(task_i)].seed_count,
+            std::memory_order_relaxed) + locals[static_cast<size_t>(task_i)].seed_count;
+        if (progress && !cancel_requested.load(std::memory_order_relaxed)) {
+            bool proceed_after_task = true;
+            #pragma omp critical(special_point_search_progress)
+            {
+                proceed_after_task = progress(task.period, task_i + 1, task_count, accepted_now, seed_now);
+            }
+            if (!proceed_after_task) cancel_requested.store(true, std::memory_order_relaxed);
         }
     }
 
+    if (cancel_requested.load(std::memory_order_relaxed)) {
+        resp.status = "cancelled";
+        return resp;
+    }
+
+    for (const auto& local : locals) {
+        resp.seed_count += local.seed_count;
+        resp.newton_success_count += local.newton_success_count;
+        resp.rejected_count += local.rejected_count;
+        for (const auto& root : local.points) {
+            add_or_replace_root(resp.points, root, merge_eps);
+        }
+    }
     std::sort(resp.points.begin(), resp.points.end(), [](const auto& a, const auto& b) {
         if (a.period != b.period) return a.period < b.period;
         if (a.re != b.re) return a.re < b.re;
         return a.im < b.im;
     });
+    if (req.kind == SpecialPointKind::Misiurewicz && resp.points.size() > 1) {
+        resp.points.resize(1);
+    }
 
     resp.accepted_count = static_cast<int>(resp.points.size());
     resp.status = "completed";
-    resp.warning = "sampled viewport discovery; not guaranteed exhaustive";
+    if (resp.accepted_count == 0) {
+        resp.warning = req.kind == SpecialPointKind::Misiurewicz
+            ? "no matching visible Misiurewicz point found within the sampled viewport budget"
+            : "no visible hyperbolic center found within the sampled viewport budget";
+    } else {
+        resp.warning = req.kind == SpecialPointKind::Misiurewicz
+            ? "sampled Misiurewicz discovery; stops after the first visible matching point"
+            : "sampled viewport discovery; not guaranteed exhaustive";
+    }
     return resp;
 }
 

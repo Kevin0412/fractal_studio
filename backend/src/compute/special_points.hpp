@@ -101,6 +101,8 @@ struct SpecialPointSearchRequest {
     SpecialPointKind kind = SpecialPointKind::HyperbolicCenter;
     int period_min = 1;
     int period_max = 8;
+    int preperiod_min = 1;
+    int preperiod_max = 4;
     int seed_budget = 2000;
     int max_newton_iter = 60;
     double newton_eps = 1e-13;
@@ -183,7 +185,7 @@ SpecialPointEnumResponse enumerate_special_points(
     const SpecialPointEnumRequest& req,
     const SpecialPointProgressCallback& progress = {});
 
-SpecialPointSearchResponse search_hyperbolic_centers(
+SpecialPointSearchResponse search_special_points(
     const SpecialPointSearchRequest& req,
     const SpecialPointSearchProgressCallback& progress = {});
 

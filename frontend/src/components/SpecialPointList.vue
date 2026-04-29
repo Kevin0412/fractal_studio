@@ -13,6 +13,7 @@ const props = defineProps<{
   viewport?: SpecialPointViewport
   hoveredId?: string
   selectedId?: string
+  variantHint?: string
 }>()
 
 type PanelMode = 'search' | 'enumerate'
@@ -104,11 +105,17 @@ const expectedInfo = computed(() => {
 
 const searchInfo = computed(() => {
   if (!props.viewport) return { ok: false, text: 'viewport required' }
-  if (periodMin.value < 1 || periodMax.value < periodMin.value || periodMax.value > 10) {
-    return { ok: false, text: 'period range must be 1..10' }
+  const maxPeriod = kind.value === 'misiurewicz' ? 6 : 10
+  if (periodMin.value < 1 || periodMax.value < periodMin.value || periodMax.value > maxPeriod) {
+    return { ok: false, text: `period range must be 1..${maxPeriod}` }
+  }
+  if (kind.value === 'misiurewicz' &&
+      (preperiodMin.value < 1 || preperiodMax.value < preperiodMin.value || preperiodMax.value > 6 ||
+       preperiodMax.value + periodMax.value > 10)) {
+    return { ok: false, text: 'preperiod 1..6, period 1..6, sum <= 10' }
   }
   if (seedBudget.value < 1 || seedBudget.value > 20000) return { ok: false, text: 'seed budget must be 1..20000' }
-  return { ok: true, text: `sampled search · ${seedBudget.value} seeds` }
+  return { ok: true, text: kind.value === 'misiurewicz' ? `sampled one-hit search · ${seedBudget.value} seeds` : `sampled search · ${seedBudget.value} seeds` }
 })
 const activeInfo = computed(() => panelMode.value === 'search' ? searchInfo.value : expectedInfo.value)
 const points = computed(() => result.value?.points ?? [])
@@ -141,6 +148,23 @@ const enumIncompleteText = computed(() => {
   if (!result.value || !('expectedCount' in result.value) || !enumIncomplete.value) return ''
   return `incomplete: ${result.value.acceptedCount}/${result.value.expectedCount} roots`
 })
+const searchNoPoint = computed(() =>
+  panelMode.value === 'search' &&
+  !!result.value &&
+  'noPoint' in result.value &&
+  !!result.value.noPoint
+)
+const emptyText = computed(() => {
+  if (running.value) return 'Searching current viewport...'
+  if (searchNoPoint.value) {
+    return kind.value === 'misiurewicz'
+      ? 'No matching visible Misiurewicz point found in this sampled search.'
+      : 'No visible hyperbolic center found in this sampled search.'
+  }
+  return panelMode.value === 'search'
+    ? 'No visible special points found yet.'
+    : 'No enumeration results yet.'
+})
 
 function delay(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -170,9 +194,11 @@ async function searchViewport(manual = false) {
   emit('results-updated', [])
   try {
     const started = await api.specialPointsSearch({
-      kind: 'center',
+      kind: kind.value,
       periodMin: periodMin.value,
       periodMax: periodMax.value,
+      preperiodMin: preperiodMin.value,
+      preperiodMax: preperiodMax.value,
       seedBudget: seedBudget.value,
       includeVariantCompatibility: includeVariantExistence.value,
       visibleOnly: visibleOnly.value,
@@ -201,7 +227,10 @@ async function searchViewport(manual = false) {
       }
       result.value = resp
       emit('results-updated', resp.points)
-      message.value = `${manual ? 'search' : 'auto search'}: ${resp.acceptedCount} visible centers · ${resp.seedCount} seeds`
+      const label = kind.value === 'misiurewicz' ? 'visible Misiurewicz points' : 'visible centers'
+      message.value = resp.noPoint
+        ? `${manual ? 'search' : 'auto search'}: no ${label} found · ${resp.seedCount} seeds`
+        : `${manual ? 'search' : 'auto search'}: ${resp.acceptedCount} ${label} · ${resp.seedCount} seeds`
       return
     }
   } catch (e: any) {
@@ -267,7 +296,6 @@ function selectPoint(p: SpecialPointEnumResult) {
 
 watch(panelMode, (mode) => {
   if (mode === 'search') {
-    kind.value = 'center'
     visibleOnly.value = true
   }
 })
@@ -279,6 +307,9 @@ watch(
     viewport: props.viewport ? `${props.viewport.centerRe}:${props.viewport.centerIm}:${props.viewport.scale}:${props.viewport.width}:${props.viewport.height}` : '',
     periodMin: periodMin.value,
     periodMax: periodMax.value,
+    preperiodMin: preperiodMin.value,
+    preperiodMax: preperiodMax.value,
+    kind: kind.value,
     seedBudget: seedBudget.value,
     variants: includeVariantExistence.value,
     visibleOnly: visibleOnly.value,
@@ -317,12 +348,12 @@ defineExpose({ enumerate, refresh: runActive, points })
         <option value="enumerate">Full enumerate</option>
       </select>
       <label>mode</label>
-      <select v-model="kind" :disabled="panelMode === 'search'">
+      <select v-model="kind">
         <option value="center">Hyperbolic centers</option>
         <option value="misiurewicz">Misiurewicz points</option>
       </select>
-      <label v-if="panelMode === 'enumerate' && kind === 'misiurewicz'">preperiod</label>
-      <div v-if="panelMode === 'enumerate' && kind === 'misiurewicz'" class="pair">
+      <label v-if="kind === 'misiurewicz'">preperiod</label>
+      <div v-if="kind === 'misiurewicz'" class="pair">
         <input type="number" v-model.number="preperiodMin" min="1" max="6" />
         <input type="number" v-model.number="preperiodMax" min="1" max="6" />
       </div>
@@ -349,6 +380,7 @@ defineExpose({ enumerate, refresh: runActive, points })
 
     <div class="status mono" :class="{ bad: !activeInfo.ok }">{{ activeInfo.text }}</div>
     <div v-if="message" class="status mono">{{ message }}</div>
+    <div v-if="props.variantHint" class="status hint mono">{{ props.variantHint }}</div>
     <div v-if="enumIncompleteText" class="status warn mono">{{ enumIncompleteText }}</div>
     <div v-if="panelMode === 'search' && result?.warning" class="status warn mono">{{ result.warning }}</div>
 
@@ -390,7 +422,7 @@ defineExpose({ enumerate, refresh: runActive, points })
         </div>
       </section>
     </div>
-    <div v-else class="empty mono">{{ panelMode === 'search' ? 'No visible special points found yet.' : 'No enumeration results yet.' }}</div>
+    <div v-else class="empty mono" :class="{ warn: searchNoPoint }">{{ emptyText }}</div>
   </div>
 </template>
 
@@ -415,6 +447,7 @@ defineExpose({ enumerate, refresh: runActive, points })
 .opts input { width: auto; margin-right: 4px; }
 .status { color: var(--text-dim); font-size: 10px; }
 .status.bad { color: var(--bad); }
+.status.hint { color: var(--accent); }
 .status.warn { color: #d5ad45; }
 .filters { display: flex; flex-wrap: wrap; gap: 5px; }
 .filters button,
@@ -453,5 +486,6 @@ defineExpose({ enumerate, refresh: runActive, points })
 .actions { display: flex; gap: 5px; margin-top: 6px; }
 .actions button { padding: 2px 5px; font-size: 9px; }
 .empty { color: var(--text-faint); font-size: 10px; padding: 8px 0; }
+.empty.warn { color: #d5ad45; }
 .num { font-variant-numeric: tabular-nums; }
 </style>

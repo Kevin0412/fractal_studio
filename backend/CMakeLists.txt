@@ -145,6 +145,9 @@ target_include_directories(special_points_smoke PRIVATE
 target_compile_options(special_points_smoke PRIVATE
     -Wall -Wextra -Wno-unused-parameter -O3
 )
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(special_points_smoke PRIVATE OpenMP::OpenMP_CXX)
+endif()
 add_test(NAME special_points_smoke COMMAND special_points_smoke)
 
 # AVX-512 kernel: compile with AVX-512F + IFMA52 intrinsics enabled when the

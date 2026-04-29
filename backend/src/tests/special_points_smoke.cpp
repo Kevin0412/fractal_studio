@@ -102,7 +102,7 @@ void expect_local_center_search() {
     require(!degenerate.accepted, "period-1 center accepted as period 2 in local Newton");
     require(degenerate.actual.period == 1, "degenerate local Newton actual period not detected");
 
-    const auto resp = fsd::compute::search_hyperbolic_centers(req);
+    const auto resp = fsd::compute::search_special_points(req);
     require(resp.status == "completed", "viewport center search did not complete");
     require(resp.accepted_count >= 1, "viewport center search found no centers");
     bool found_period_2 = false;
@@ -114,6 +114,22 @@ void expect_local_center_search() {
         }
     }
     require(found_period_2, "viewport search did not find the period-2 center");
+
+    SpecialPointSearchRequest misi_req = req;
+    misi_req.kind = SpecialPointKind::Misiurewicz;
+    misi_req.preperiod_min = 2;
+    misi_req.preperiod_max = 2;
+    misi_req.period_min = 1;
+    misi_req.period_max = 1;
+    misi_req.viewport.center_re = -2.0;
+    misi_req.viewport.center_im = 0.0;
+    misi_req.viewport.scale = 0.2;
+    const auto misi_resp = fsd::compute::search_special_points(misi_req);
+    require(misi_resp.status == "completed", "viewport Misiurewicz search did not complete");
+    require(misi_resp.accepted_count == 1, "viewport Misiurewicz search should stop after one point");
+    require(misi_resp.points.front().actual.is_misiurewicz, "viewport Misiurewicz point did not classify as Misiurewicz");
+    require(misi_resp.points.front().actual.preperiod == 2 && misi_resp.points.front().actual.period == 1,
+            "viewport Misiurewicz point classified with wrong preperiod/period");
 }
 
 } // namespace
