@@ -37,7 +37,6 @@ const preperiodMax = ref(3)
 const includeVariantExistence = ref(true)
 const includeRejectedDebug = ref(false)
 const visibleOnly = ref(true)
-const seedBudget = ref(2000)
 const seedsPerBatch = ref(2048)
 const maxSeedBatches = ref(80)
 const running = ref(false)
@@ -47,6 +46,13 @@ const variantFilter = ref('')
 const currentRunId = ref('')
 let searchSeq = 0
 let searchTimer: ReturnType<typeof setTimeout> | null = null
+
+const LOCAL_CENTER_MAX_PERIOD = 16384
+const LOCAL_CENTER_MAX_ATTEMPTS = 8192
+const LOCAL_MISI_MAX_PREPERIOD = 4096
+const LOCAL_MISI_MAX_PERIOD = 4096
+const LOCAL_MISI_MAX_SUM = 8192
+const LOCAL_MISI_MAX_PAIRS = 16384
 
 watch(kind, (next) => {
   if (next === 'misiurewicz') {
@@ -105,19 +111,57 @@ const expectedInfo = computed(() => {
 
 const searchInfo = computed(() => {
   if (!props.viewport) return { ok: false, text: 'viewport required' }
-  const maxPeriod = kind.value === 'misiurewicz' ? 6 : 10
+  const maxPeriod = kind.value === 'misiurewicz' ? LOCAL_MISI_MAX_PERIOD : LOCAL_CENTER_MAX_PERIOD
   if (periodMin.value < 1 || periodMax.value < periodMin.value || periodMax.value > maxPeriod) {
     return { ok: false, text: `period range must be 1..${maxPeriod}` }
   }
-  if (kind.value === 'misiurewicz' &&
-      (preperiodMin.value < 1 || preperiodMax.value < preperiodMin.value || preperiodMax.value > 6 ||
-       preperiodMax.value + periodMax.value > 10)) {
-    return { ok: false, text: 'preperiod 1..6, period 1..6, sum <= 10' }
+  if (kind.value === 'center') {
+    const attempts = periodMax.value - periodMin.value + 1
+    if (attempts > LOCAL_CENTER_MAX_ATTEMPTS) return { ok: false, text: `local center search exceeds ${LOCAL_CENTER_MAX_ATTEMPTS} periods` }
   }
-  if (seedBudget.value < 1 || seedBudget.value > 20000) return { ok: false, text: 'seed budget must be 1..20000' }
-  return { ok: true, text: kind.value === 'misiurewicz' ? `sampled one-hit search · ${seedBudget.value} seeds` : `sampled search · ${seedBudget.value} seeds` }
+  if (kind.value === 'misiurewicz' &&
+      (preperiodMin.value < 1 || preperiodMax.value < preperiodMin.value || preperiodMax.value > LOCAL_MISI_MAX_PREPERIOD ||
+       preperiodMax.value + periodMax.value > LOCAL_MISI_MAX_SUM)) {
+    return { ok: false, text: `preperiod 1..${LOCAL_MISI_MAX_PREPERIOD}, period 1..${LOCAL_MISI_MAX_PERIOD}, sum <= ${LOCAL_MISI_MAX_SUM}` }
+  }
+  if (kind.value === 'misiurewicz') {
+    const tasks = (preperiodMax.value - preperiodMin.value + 1) * (periodMax.value - periodMin.value + 1)
+    if (tasks > LOCAL_MISI_MAX_PAIRS) return { ok: false, text: `local Misiurewicz search exceeds ${LOCAL_MISI_MAX_PAIRS} pairs` }
+  }
+  const attempts = kind.value === 'misiurewicz'
+    ? (preperiodMax.value - preperiodMin.value + 1) * (periodMax.value - periodMin.value + 1)
+    : (periodMax.value - periodMin.value + 1)
+  return { ok: true, text: kind.value === 'misiurewicz' ? `local Newton · ${attempts} pairs · first match` : `local Newton · ${attempts} periods · first match` }
 })
 const activeInfo = computed(() => panelMode.value === 'search' ? searchInfo.value : expectedInfo.value)
+const workflowHelpTitle = computed(() => panelMode.value === 'search' ? 'How local solve scans' : 'How full enumerate works')
+const workflowHelp = computed(() => {
+  if (panelMode.value !== 'search') {
+    return [
+      'Full enumerate samples the global radius-2 disk and tries to find every expected root in the small requested range.',
+      'It is exhaustive only when complete=true and acceptedCount equals expectedCount.',
+    ]
+  }
+  if (kind.value === 'misiurewicz') {
+    return [
+      'Local solve uses the current map center as the only Newton initial value; it does not randomly scan the viewport.',
+      'Order: preperiod asc, then period asc. Example m=2..4, p=1..3 tries (2,1), (2,2), (2,3), (3,1)...',
+      'Unconverged tasks are retried with higher Newton iteration limits before moving on.',
+      `It stops at the first exact Misiurewicz match. If none match, it shows the classified candidate with the largest actual period. Limits: m/p <= ${LOCAL_MISI_MAX_PERIOD}, m+p <= ${LOCAL_MISI_MAX_SUM}, selected pairs <= ${LOCAL_MISI_MAX_PAIRS}.`,
+    ]
+  }
+  return [
+    'Local solve uses the current map center as the only Newton initial value; it does not randomly scan the viewport.',
+    'Order: periodMin to periodMax in ascending order. Example 100..200 tries 100, 101, 102...',
+    'Unconverged tasks are retried with higher Newton iteration limits before moving on.',
+    `It stops at the first exact center. If none match, it shows the classified candidate with the largest actual period. Limits: periodMax <= ${LOCAL_CENTER_MAX_PERIOD}, selected span <= ${LOCAL_CENTER_MAX_ATTEMPTS} periods.`,
+  ]
+})
+const periodInputMax = computed(() => {
+  if (panelMode.value === 'search') return kind.value === 'misiurewicz' ? LOCAL_MISI_MAX_PERIOD : LOCAL_CENTER_MAX_PERIOD
+  return kind.value === 'misiurewicz' ? 6 : 10
+})
+const preperiodInputMax = computed(() => panelMode.value === 'search' ? LOCAL_MISI_MAX_PREPERIOD : 6)
 const points = computed(() => result.value?.points ?? [])
 const visiblePoints = computed(() => {
   if (!variantFilter.value) return points.value
@@ -155,16 +199,28 @@ const searchNoPoint = computed(() =>
   !!result.value.noPoint
 )
 const emptyText = computed(() => {
-  if (running.value) return 'Searching current viewport...'
+  if (running.value) return panelMode.value === 'search' ? 'Solving from current center...' : 'Enumerating roots...'
   if (searchNoPoint.value) {
     return kind.value === 'misiurewicz'
-      ? 'No matching visible Misiurewicz point found in this sampled search.'
-      : 'No visible hyperbolic center found in this sampled search.'
+      ? 'No matching local Misiurewicz point found from the current center.'
+      : 'No matching local hyperbolic center found from the current center.'
   }
   return panelMode.value === 'search'
-    ? 'No visible special points found yet.'
+    ? 'No local solve results yet.'
     : 'No enumeration results yet.'
 })
+
+function isFallbackPoint(p: SpecialPointEnumResult) {
+  return !!p.fallback || !p.accepted
+}
+
+function actualPointLabel(p: SpecialPointEnumResult) {
+  const actual = p.actual
+  if (!actual?.found_repeat) return 'no repeat'
+  if (actual.is_center) return `center p${actual.period}`
+  if (actual.is_misiurewicz) return `m${actual.preperiod} p${actual.period}`
+  return `period ${actual.period}`
+}
 
 function delay(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -189,7 +245,7 @@ async function searchViewport(manual = false) {
   const seq = ++searchSeq
   cancelCurrentSearch()
   running.value = true
-  message.value = 'searching current view...'
+  message.value = 'solving from current center...'
   result.value = null
   emit('results-updated', [])
   try {
@@ -199,7 +255,6 @@ async function searchViewport(manual = false) {
       periodMax: periodMax.value,
       preperiodMin: preperiodMin.value,
       preperiodMax: preperiodMax.value,
-      seedBudget: seedBudget.value,
       includeVariantCompatibility: includeVariantExistence.value,
       visibleOnly: visibleOnly.value,
       viewport: props.viewport,
@@ -214,7 +269,7 @@ async function searchViewport(manual = false) {
       const resp = await api.specialPointsResults(started.runId) as SpecialPointSearchResponse
       if (seq !== searchSeq) return
       if (resp.status === 'running' || resp.status === 'queued') {
-        message.value = `searching... ${resp.acceptedCount || 0} found · ${resp.seedCount || 0} seeds`
+        message.value = `solving... ${resp.acceptedCount || 0} found · ${resp.seedCount || 0} attempts`
         continue
       }
       if (resp.status === 'cancelled') {
@@ -227,10 +282,13 @@ async function searchViewport(manual = false) {
       }
       result.value = resp
       emit('results-updated', resp.points)
-      const label = kind.value === 'misiurewicz' ? 'visible Misiurewicz points' : 'visible centers'
-      message.value = resp.noPoint
-        ? `${manual ? 'search' : 'auto search'}: no ${label} found · ${resp.seedCount} seeds`
-        : `${manual ? 'search' : 'auto search'}: ${resp.acceptedCount} ${label} · ${resp.seedCount} seeds`
+      const label = kind.value === 'misiurewicz' ? 'local Misiurewicz point' : 'local hyperbolic center'
+      const fallback = resp.points.find(p => isFallbackPoint(p))
+      message.value = fallback
+        ? `${manual ? 'solve' : 'auto solve'}: no exact ${label}; showing fallback ${actualPointLabel(fallback)} · ${resp.seedCount} attempts`
+        : resp.noPoint
+        ? `${manual ? 'solve' : 'auto solve'}: no ${label} found · ${resp.seedCount} attempts`
+        : `${manual ? 'solve' : 'auto solve'}: ${resp.acceptedCount} ${label} · ${resp.seedCount} attempts`
       return
     }
   } catch (e: any) {
@@ -310,7 +368,6 @@ watch(
     preperiodMin: preperiodMin.value,
     preperiodMax: preperiodMax.value,
     kind: kind.value,
-    seedBudget: seedBudget.value,
     variants: includeVariantExistence.value,
     visibleOnly: visibleOnly.value,
   }),
@@ -344,7 +401,7 @@ defineExpose({ enumerate, refresh: runActive, points })
     <div class="controls-grid">
       <label>workflow</label>
       <select v-model="panelMode">
-        <option value="search">Explore viewport</option>
+        <option value="search">Local solve at center</option>
         <option value="enumerate">Full enumerate</option>
       </select>
       <label>mode</label>
@@ -354,16 +411,14 @@ defineExpose({ enumerate, refresh: runActive, points })
       </select>
       <label v-if="kind === 'misiurewicz'">preperiod</label>
       <div v-if="kind === 'misiurewicz'" class="pair">
-        <input type="number" v-model.number="preperiodMin" min="1" max="6" />
-        <input type="number" v-model.number="preperiodMax" min="1" max="6" />
+        <input type="number" v-model.number="preperiodMin" min="1" :max="preperiodInputMax" />
+        <input type="number" v-model.number="preperiodMax" min="1" :max="preperiodInputMax" />
       </div>
       <label>period</label>
       <div class="pair">
-        <input type="number" v-model.number="periodMin" min="1" max="10" />
-        <input type="number" v-model.number="periodMax" min="1" max="10" />
+        <input type="number" v-model.number="periodMin" min="1" :max="periodInputMax" />
+        <input type="number" v-model.number="periodMax" min="1" :max="periodInputMax" />
       </div>
-      <label v-if="panelMode === 'search'">seeds</label>
-      <input v-if="panelMode === 'search'" type="number" v-model.number="seedBudget" min="1" max="20000" />
       <label v-if="panelMode === 'enumerate'">seeds</label>
       <div v-if="panelMode === 'enumerate'" class="pair">
         <input type="number" v-model.number="seedsPerBatch" min="1" max="10000" />
@@ -379,6 +434,10 @@ defineExpose({ enumerate, refresh: runActive, points })
     </div>
 
     <div class="status mono" :class="{ bad: !activeInfo.ok }">{{ activeInfo.text }}</div>
+    <details class="workflow-help">
+      <summary>{{ workflowHelpTitle }}</summary>
+      <div v-for="line in workflowHelp" :key="line" class="help-line">{{ line }}</div>
+    </details>
     <div v-if="message" class="status mono">{{ message }}</div>
     <div v-if="props.variantHint" class="status hint mono">{{ props.variantHint }}</div>
     <div v-if="enumIncompleteText" class="status warn mono">{{ enumIncompleteText }}</div>
@@ -396,7 +455,7 @@ defineExpose({ enumerate, refresh: runActive, points })
           v-for="p in pts"
           :key="p.id"
           class="point-row"
-          :class="{ hover: hoveredId === p.id, selected: selectedId === p.id }"
+          :class="{ hover: hoveredId === p.id, selected: selectedId === p.id, fallback: isFallbackPoint(p) }"
           @mouseenter="$emit('hover-point', p.id)"
           @mouseleave="$emit('hover-point', '')"
           @click="selectPoint(p)">
@@ -404,7 +463,10 @@ defineExpose({ enumerate, refresh: runActive, points })
             <span>{{ p.re.toFixed(10) }}</span>
             <span>{{ p.im.toFixed(10) }}</span>
           </div>
-          <div class="meta mono">res {{ p.residual.toExponential(1) }} · {{ p.newtonIterations }} it</div>
+          <div class="meta mono">
+            <span v-if="isFallbackPoint(p)" class="fallback-label">fallback · {{ actualPointLabel(p) }} · </span>
+            res {{ p.residual.toExponential(1) }} · {{ p.newtonIterations }} it
+          </div>
           <div v-if="(p.compatibleVariants?.length || p.variants?.length)" class="tags">
             <button
               v-for="v in (p.compatibleVariants?.length ? p.compatibleVariants : p.variants.filter(v => v.exists).map(v => v.variant_name))"
@@ -449,6 +511,18 @@ defineExpose({ enumerate, refresh: runActive, points })
 .status.bad { color: var(--bad); }
 .status.hint { color: var(--accent); }
 .status.warn { color: #d5ad45; }
+.workflow-help {
+  color: var(--text-faint);
+  font-size: 10px;
+  line-height: 1.35;
+}
+.workflow-help summary {
+  cursor: pointer;
+  color: var(--text-dim);
+  user-select: none;
+}
+.workflow-help[open] summary { margin-bottom: 4px; }
+.help-line + .help-line { margin-top: 3px; }
 .filters { display: flex; flex-wrap: wrap; gap: 5px; }
 .filters button,
 .tag {
@@ -474,6 +548,7 @@ defineExpose({ enumerate, refresh: runActive, points })
 .point-row.hover,
 .point-row:hover { border-color: var(--accent); background: var(--accent-weak); }
 .point-row.selected { border-color: var(--accent); box-shadow: inset 2px 0 0 var(--accent); }
+.point-row.fallback { border-style: dashed; border-color: #d5ad45; }
 .coord {
   display: grid;
   grid-template-columns: 1fr;
@@ -482,6 +557,7 @@ defineExpose({ enumerate, refresh: runActive, points })
   color: var(--text);
 }
 .meta { color: var(--text-faint); font-size: 9px; margin-top: 4px; }
+.fallback-label { color: #d5ad45; }
 .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
 .actions { display: flex; gap: 5px; margin-top: 6px; }
 .actions button { padding: 2px 5px; font-size: 9px; }

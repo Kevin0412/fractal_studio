@@ -17,6 +17,13 @@ namespace fsd {
 
 namespace {
 
+constexpr int kLocalCenterMaxPeriod = 16384;
+constexpr int kLocalCenterMaxAttempts = 8192;
+constexpr int kLocalMisiurewiczMaxPreperiod = 4096;
+constexpr int kLocalMisiurewiczMaxPeriod = 4096;
+constexpr int kLocalMisiurewiczMaxSum = 8192;
+constexpr int kLocalMisiurewiczMaxPairs = 16384;
+
 Json orbitToJson(const compute::OrbitClassification& o) {
     const std::string kind = o.is_center ? "center" : (o.is_misiurewicz ? "misiurewicz" : "unknown");
     return Json{
@@ -85,6 +92,7 @@ Json pointToJson(const compute::SpecialPointResult& p) {
         {"converged", p.converged},
         {"success", p.converged},
         {"accepted", p.accepted},
+        {"fallback", p.fallback},
         {"visible", p.visible},
         {"residual", p.residual},
         {"newtonIterations", p.newton_iterations},
@@ -121,9 +129,10 @@ Json searchResponseToJson(const compute::SpecialPointSearchResponse& r) {
     return Json{
         {"status", r.status},
         {"sampled", r.sampled},
-        {"foundAny", r.accepted_count > 0},
-        {"noPoint", r.status == "completed" && r.accepted_count == 0},
+        {"foundAny", !r.points.empty()},
+        {"noPoint", r.status == "completed" && r.points.empty()},
         {"acceptedCount", r.accepted_count},
+        {"fallbackCount", r.fallback_count},
         {"seedCount", r.seed_count},
         {"newtonSuccessCount", r.newton_success_count},
         {"rejectedCount", r.rejected_count},
@@ -252,18 +261,39 @@ void validateEnumRequest(const compute::SpecialPointEnumRequest& req) {
 
 void validateSearchRequest(const compute::SpecialPointSearchRequest& req) {
     if (req.kind == compute::SpecialPointKind::HyperbolicCenter) {
-        if (req.period_min < 1 || req.period_max < req.period_min || req.period_max > 10) {
-            throw HttpError(400, Json{{"error", "invalid center period range"}, {"limit", "1..10"}}.dump());
+        if (req.period_min < 1 || req.period_max < req.period_min || req.period_max > kLocalCenterMaxPeriod) {
+            throw HttpError(400, Json{
+                {"error", "invalid center period range"},
+                {"limit", std::string("1..") + std::to_string(kLocalCenterMaxPeriod)},
+            }.dump());
+        }
+        const int centerAttempts = req.period_max - req.period_min + 1;
+        if (centerAttempts > kLocalCenterMaxAttempts) {
+            throw HttpError(400, Json{
+                {"error", "local center search range too large"},
+                {"limit", kLocalCenterMaxAttempts},
+                {"suggestion", "narrow periodMin/periodMax for this local solve"},
+            }.dump());
         }
     } else {
-        if (req.preperiod_min < 1 || req.preperiod_max < req.preperiod_min || req.preperiod_max > 6 ||
-            req.period_min < 1 || req.period_max < req.period_min || req.period_max > 6 ||
-            req.preperiod_max + req.period_max > 10) {
-            throw HttpError(400, Json{{"error", "invalid Misiurewicz search range"}, {"limit", "preperiod 1..6, period 1..6, preperiod+period <= 10"}}.dump());
+        if (req.preperiod_min < 1 || req.preperiod_max < req.preperiod_min || req.preperiod_max > kLocalMisiurewiczMaxPreperiod ||
+            req.period_min < 1 || req.period_max < req.period_min || req.period_max > kLocalMisiurewiczMaxPeriod ||
+            req.preperiod_max + req.period_max > kLocalMisiurewiczMaxSum) {
+            throw HttpError(400, Json{
+                {"error", "invalid Misiurewicz search range"},
+                {"limit", "preperiod 1..4096, period 1..4096, preperiod+period <= 8192"},
+            }.dump());
         }
-    }
-    if (req.seed_budget < 1 || req.seed_budget > 20000) {
-        throw HttpError(400, Json{{"error", "invalid seedBudget"}, {"limit", "1..20000"}}.dump());
+        const int64_t taskCount =
+            static_cast<int64_t>(req.preperiod_max - req.preperiod_min + 1) *
+            static_cast<int64_t>(req.period_max - req.period_min + 1);
+        if (taskCount > kLocalMisiurewiczMaxPairs) {
+            throw HttpError(400, Json{
+                {"error", "local Misiurewicz search range too large"},
+                {"limit", kLocalMisiurewiczMaxPairs},
+                {"suggestion", "narrow preperiod/period range for this local solve"},
+            }.dump());
+        }
     }
     if (req.max_newton_iter < 1 || req.max_newton_iter > 80) {
         throw HttpError(400, Json{{"error", "invalid maxNewtonIter"}, {"limit", "1..80"}}.dump());
@@ -493,13 +523,14 @@ std::string specialPointsSearchRoute(const std::filesystem::path& repoRoot, JobR
     return Json{
         {"runId", run.id},
         {"status", "running"},
-        {"sampled", true},
+        {"sampled", false},
         {"acceptedCount", 0},
+        {"fallbackCount", 0},
         {"seedCount", 0},
         {"newtonSuccessCount", 0},
         {"rejectedCount", 0},
         {"points", Json::array()},
-        {"warning", "search running"},
+        {"warning", "local Newton solve running"},
     }.dump();
 }
 
@@ -524,16 +555,17 @@ std::string specialPointsResultsRoute(const std::filesystem::path&, JobRunner& r
             return Json{
                 {"runId", runId},
                 {"status", run.status},
-                {"sampled", true},
+                {"sampled", false},
                 {"foundAny", false},
                 {"noPoint", false},
                 {"acceptedCount", progress.value("acceptedCount", 0)},
+                {"fallbackCount", 0},
                 {"seedCount", progress.value("seedCount", 0)},
                 {"newtonSuccessCount", 0},
                 {"rejectedCount", 0},
                 {"points", Json::array()},
                 {"progress", progress},
-                {"warning", "search running"},
+                {"warning", "local Newton solve running"},
             }.dump();
         }
     }

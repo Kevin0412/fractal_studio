@@ -288,6 +288,11 @@ function markerStyle(p: SpecialPointEnumResult) {
   }
 }
 
+function markerTitle(p: SpecialPointEnumResult) {
+  const prefix = (p.fallback || !p.accepted) ? 'fallback ' : ''
+  return `${prefix}${p.kind} p${p.period} ${p.re.toPrecision(8)} ${p.im.toPrecision(8)}i`
+}
+
 function onMouseDown(e: MouseEvent) {
   dragging  = true
   dragMoved = false
@@ -344,9 +349,9 @@ function onMouseUp(e: MouseEvent) {
         v-for="p in specialPoints"
         :key="p.id"
         class="marker"
-        :class="{ hover: hoveredSpecialPointId === p.id, selected: selectedSpecialPointId === p.id, misi: p.kind === 'misiurewicz' }"
+        :class="{ hover: hoveredSpecialPointId === p.id, selected: selectedSpecialPointId === p.id, misi: p.kind === 'misiurewicz', fallback: p.fallback || !p.accepted }"
         :style="markerStyle(p)"
-        :title="`${p.kind} p${p.period} ${p.re.toPrecision(8)} ${p.im.toPrecision(8)}i`"
+        :title="markerTitle(p)"
         @mousedown.stop
         @mouseenter="$emit('hover-special-point', p.id)"
         @mouseleave="$emit('hover-special-point', '')"
@@ -465,6 +470,12 @@ function onMouseUp(e: MouseEvent) {
 .marker.misi {
   border-color: #92d4ff;
   background: rgba(80, 170, 255, 0.35);
+}
+
+.marker.fallback {
+  border-style: dashed;
+  border-color: #d5ad45;
+  background: rgba(213, 173, 69, 0.28);
 }
 
 .marker.hover,

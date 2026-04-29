@@ -115,6 +115,21 @@ void expect_local_center_search() {
     }
     require(found_period_2, "viewport search did not find the period-2 center");
 
+    SpecialPointSearchRequest fallback_req = req;
+    fallback_req.period_min = 2;
+    fallback_req.period_max = 2;
+    fallback_req.viewport.center_re = 0.0;
+    fallback_req.viewport.center_im = 0.0;
+    fallback_req.viewport.scale = 1.0;
+    const auto fallback_resp = fsd::compute::search_special_points(fallback_req);
+    require(fallback_resp.status == "completed", "fallback local center search did not complete");
+    require(fallback_resp.accepted_count == 0, "fallback local center search should not count exact matches");
+    require(fallback_resp.fallback_count == 1, "fallback local center search did not return fallback");
+    require(!fallback_resp.points.empty() && fallback_resp.points.front().fallback,
+            "fallback local center point not flagged");
+    require(fallback_resp.points.front().actual.is_center && fallback_resp.points.front().actual.period == 1,
+            "fallback local center did not report the largest classified candidate period");
+
     SpecialPointSearchRequest misi_req = req;
     misi_req.kind = SpecialPointKind::Misiurewicz;
     misi_req.preperiod_min = 2;

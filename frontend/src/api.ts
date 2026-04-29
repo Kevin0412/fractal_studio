@@ -196,6 +196,7 @@ export interface SpecialPointEnumResult {
   converged: boolean
   success?: boolean
   accepted: boolean
+  fallback?: boolean
   visible: boolean
   residual: number
   newtonIterations: number
@@ -213,6 +214,7 @@ export interface SpecialPointSearchResponse {
   foundAny?: boolean
   noPoint?: boolean
   acceptedCount: number
+  fallbackCount?: number
   seedCount: number
   newtonSuccessCount: number
   rejectedCount: number

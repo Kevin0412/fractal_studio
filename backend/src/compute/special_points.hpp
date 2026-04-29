@@ -76,6 +76,7 @@ struct SpecialPointResult {
     double im = 0.0;
     bool converged = false;
     bool accepted = false;
+    bool fallback = false;
     bool visible = true;
     double residual = 0.0;
     int newton_iterations = 0;
@@ -115,11 +116,12 @@ struct SpecialPointSearchRequest {
 
 struct SpecialPointSearchResponse {
     std::string status = "idle";
-    bool sampled = true;
+    bool sampled = false;
     int accepted_count = 0;
     int seed_count = 0;
     int newton_success_count = 0;
     int rejected_count = 0;
+    int fallback_count = 0;
     std::vector<SpecialPointResult> points;
     std::string warning;
 };
