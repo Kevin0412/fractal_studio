@@ -29,11 +29,9 @@ struct WarpGeom {
     float strip_row_base;
     float final_x_base;
     float final_y_base;
-    unsigned char valid_r;
-    unsigned char pad[3];
 };
 
-static_assert(sizeof(WarpGeom) == 20, "WarpGeom layout changed");
+static_assert(sizeof(WarpGeom) == 16, "WarpGeom layout changed");
 
 __device__ inline unsigned char float_to_u8(float v) {
     v = fminf(fmaxf(v, 0.0f), 1.0f);
@@ -65,10 +63,8 @@ __global__ void precompute_geom_kernel(WarpGeom* geom, int W, int H, int stripW)
     if (r2 > 1.0e-30f) {
         const float lnR = 0.5f * logf(r2);
         g.strip_row_base = (LN_FOUR_F - lnR) * stripScale;
-        g.valid_r = 1;
     } else {
-        g.strip_row_base = -1.0f;
-        g.valid_r = 0;
+        g.strip_row_base = -3.4028234663852886e38f;
     }
     geom[idx] = g;
 }
@@ -92,7 +88,7 @@ __global__ void warp_texture_kernel(
     const WarpGeom g = geom[idx];
     const float stripY = g.strip_row_base - kTopStripScale;
     float4 color;
-    if (g.valid_r && stripY >= 0.0f && stripY < static_cast<float>(stripH - 1)) {
+    if (stripY >= 0.0f && stripY < static_cast<float>(stripH - 1)) {
         const float stripU = (g.strip_x + 0.5f) / static_cast<float>(stripW);
         const float stripV = (stripY + 0.5f) / static_cast<float>(stripH);
         color = tex2D<float4>(stripTex, stripU, stripV);
@@ -157,6 +153,57 @@ void init_events(CudaVideoWarpContext& ctx) {
     ctx.kernel_stop_event = stop;
 }
 
+void init_async_streams(CudaVideoWarpContext& ctx) {
+    try {
+        for (int i = 0; i < 2; ++i) {
+            cudaStream_t stream = nullptr;
+            cudaEvent_t kernelStart = nullptr;
+            cudaEvent_t kernelStop = nullptr;
+            cudaEvent_t copyStart = nullptr;
+            cudaEvent_t copyStop = nullptr;
+
+            CUDA_WARP_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+            ctx.streams[i] = stream;
+
+            CUDA_WARP_CHECK(cudaEventCreate(&kernelStart));
+            ctx.async_kernel_start_events[i] = kernelStart;
+            CUDA_WARP_CHECK(cudaEventCreate(&kernelStop));
+            ctx.async_kernel_stop_events[i] = kernelStop;
+            CUDA_WARP_CHECK(cudaEventCreate(&copyStart));
+            ctx.async_copy_start_events[i] = copyStart;
+            CUDA_WARP_CHECK(cudaEventCreate(&copyStop));
+            ctx.async_copy_stop_events[i] = copyStop;
+        }
+    } catch (...) {
+        throw;
+    }
+}
+
+void launch_warp_kernel(
+    CudaVideoWarpContext& ctx,
+    double kTop,
+    double kTopEnd,
+    unsigned char* dOut,
+    cudaStream_t stream
+) {
+    const int total = ctx.width * ctx.height;
+    const int block = 256;
+    const int grid = (total + block - 1) / block;
+
+    const int s = ctx.strip_width - 1;
+    const float kTopStripScale = static_cast<float>(kTop * static_cast<double>(s) / 6.2831853071795864769);
+    const float finalScale = static_cast<float>(std::exp(kTop - kTopEnd));
+
+    warp_texture_kernel<<<grid, block, 0, stream>>>(
+        static_cast<cudaTextureObject_t>(ctx.strip_tex),
+        static_cast<cudaTextureObject_t>(ctx.final_tex),
+        static_cast<const WarpGeom*>(ctx.d_geom),
+        dOut,
+        ctx.width, ctx.height, ctx.strip_width, ctx.strip_height,
+        kTopStripScale, finalScale);
+    CUDA_WARP_CHECK(cudaGetLastError());
+}
+
 } // namespace
 
 bool cuda_video_warp_available() noexcept {
@@ -191,7 +238,9 @@ void cuda_video_warp_init(const cv::Mat& stripWrap, const cv::Mat& finalImg, Cud
         upload_bgra_array(finalBgra, ctx.final_array, ctx.final_tex, false, false);
         CUDA_WARP_CHECK(cudaMalloc(&ctx.d_geom, geomBytes));
         CUDA_WARP_CHECK(cudaMalloc(&ctx.d_out, frameBytes));
+        CUDA_WARP_CHECK(cudaMalloc(&ctx.d_out_alt, frameBytes));
         init_events(ctx);
+        init_async_streams(ctx);
 
         const int total = ctx.width * ctx.height;
         const int block = 256;
@@ -214,25 +263,10 @@ void cuda_video_warp_frame_timed(CudaVideoWarpContext& ctx, double kTop, double 
     if (frame.empty() || frame.rows != ctx.height || frame.cols != ctx.width || frame.type() != CV_8UC3 || !frame.isContinuous()) {
         frame.create(ctx.height, ctx.width, CV_8UC3);
     }
-    const int total = ctx.width * ctx.height;
-    const int block = 256;
-    const int grid = (total + block - 1) / block;
-
-    const int s = ctx.strip_width - 1;
-    const float kTopStripScale = static_cast<float>(kTop * static_cast<double>(s) / 6.2831853071795864769);
-    const float finalScale = static_cast<float>(std::exp(kTop - kTopEnd));
-
     cudaEvent_t kernelStart = static_cast<cudaEvent_t>(ctx.kernel_start_event);
     cudaEvent_t kernelStop = static_cast<cudaEvent_t>(ctx.kernel_stop_event);
     CUDA_WARP_CHECK(cudaEventRecord(kernelStart, 0));
-    warp_texture_kernel<<<grid, block>>>(
-        static_cast<cudaTextureObject_t>(ctx.strip_tex),
-        static_cast<cudaTextureObject_t>(ctx.final_tex),
-        static_cast<const WarpGeom*>(ctx.d_geom),
-        static_cast<unsigned char*>(ctx.d_out),
-        ctx.width, ctx.height, ctx.strip_width, ctx.strip_height,
-        kTopStripScale, finalScale);
-    CUDA_WARP_CHECK(cudaGetLastError());
+    launch_warp_kernel(ctx, kTop, kTopEnd, static_cast<unsigned char*>(ctx.d_out), 0);
     CUDA_WARP_CHECK(cudaEventRecord(kernelStop, 0));
     CUDA_WARP_CHECK(cudaEventSynchronize(kernelStop));
 
@@ -254,17 +288,80 @@ void cuda_video_warp_frame(CudaVideoWarpContext& ctx, double kTop, double kTopEn
     cuda_video_warp_frame_timed(ctx, kTop, kTopEnd, frame, nullptr);
 }
 
+void* cuda_video_warp_alloc_pinned(size_t bytes) {
+    void* ptr = nullptr;
+    CUDA_WARP_CHECK(cudaHostAlloc(&ptr, bytes, cudaHostAllocDefault));
+    return ptr;
+}
+
+void cuda_video_warp_free_pinned(void* ptr) noexcept {
+    if (ptr) cudaFreeHost(ptr);
+}
+
+void cuda_video_warp_frame_async(CudaVideoWarpContext& ctx, double kTop, double kTopEnd, int bufferIndex, void* hostPtr) {
+    if (!ctx.d_geom || !ctx.d_out || !ctx.d_out_alt || !ctx.strip_tex || !ctx.final_tex) {
+        throw std::runtime_error("CUDA video warp context not initialized");
+    }
+    if (bufferIndex < 0 || bufferIndex > 1 || !hostPtr) {
+        throw std::runtime_error("invalid CUDA video warp async buffer");
+    }
+    cudaStream_t stream = static_cast<cudaStream_t>(ctx.streams[bufferIndex]);
+    cudaEvent_t kernelStart = static_cast<cudaEvent_t>(ctx.async_kernel_start_events[bufferIndex]);
+    cudaEvent_t kernelStop = static_cast<cudaEvent_t>(ctx.async_kernel_stop_events[bufferIndex]);
+    cudaEvent_t copyStart = static_cast<cudaEvent_t>(ctx.async_copy_start_events[bufferIndex]);
+    cudaEvent_t copyStop = static_cast<cudaEvent_t>(ctx.async_copy_stop_events[bufferIndex]);
+    if (!stream || !kernelStart || !kernelStop || !copyStart || !copyStop) {
+        throw std::runtime_error("CUDA video warp async resources not initialized");
+    }
+
+    unsigned char* dOut = static_cast<unsigned char*>(bufferIndex == 0 ? ctx.d_out : ctx.d_out_alt);
+    CUDA_WARP_CHECK(cudaEventRecord(kernelStart, stream));
+    launch_warp_kernel(ctx, kTop, kTopEnd, dOut, stream);
+    CUDA_WARP_CHECK(cudaEventRecord(kernelStop, stream));
+    CUDA_WARP_CHECK(cudaEventRecord(copyStart, stream));
+    const size_t bytes = static_cast<size_t>(ctx.width) * ctx.height * 3u;
+    CUDA_WARP_CHECK(cudaMemcpyAsync(hostPtr, dOut, bytes, cudaMemcpyDeviceToHost, stream));
+    CUDA_WARP_CHECK(cudaEventRecord(copyStop, stream));
+}
+
+void cuda_video_warp_wait_frame(CudaVideoWarpContext& ctx, int bufferIndex, CudaVideoWarpTiming* timing) {
+    if (bufferIndex < 0 || bufferIndex > 1) {
+        throw std::runtime_error("invalid CUDA video warp async buffer");
+    }
+    cudaEvent_t kernelStart = static_cast<cudaEvent_t>(ctx.async_kernel_start_events[bufferIndex]);
+    cudaEvent_t kernelStop = static_cast<cudaEvent_t>(ctx.async_kernel_stop_events[bufferIndex]);
+    cudaEvent_t copyStart = static_cast<cudaEvent_t>(ctx.async_copy_start_events[bufferIndex]);
+    cudaEvent_t copyStop = static_cast<cudaEvent_t>(ctx.async_copy_stop_events[bufferIndex]);
+    CUDA_WARP_CHECK(cudaEventSynchronize(copyStop));
+    if (timing) {
+        float kernelMs = 0.0f;
+        float copyMs = 0.0f;
+        CUDA_WARP_CHECK(cudaEventElapsedTime(&kernelMs, kernelStart, kernelStop));
+        CUDA_WARP_CHECK(cudaEventElapsedTime(&copyMs, copyStart, copyStop));
+        timing->kernel_ms = static_cast<double>(kernelMs);
+        timing->copy_ms = static_cast<double>(copyMs);
+    }
+}
+
 void cuda_video_warp_release(CudaVideoWarpContext& ctx) noexcept {
     if (ctx.d_strip) cudaFree(ctx.d_strip);
     if (ctx.d_final) cudaFree(ctx.d_final);
     if (ctx.d_geom) cudaFree(ctx.d_geom);
     if (ctx.d_out) cudaFree(ctx.d_out);
+    if (ctx.d_out_alt) cudaFree(ctx.d_out_alt);
     if (ctx.strip_tex) cudaDestroyTextureObject(static_cast<cudaTextureObject_t>(ctx.strip_tex));
     if (ctx.final_tex) cudaDestroyTextureObject(static_cast<cudaTextureObject_t>(ctx.final_tex));
     if (ctx.strip_array) cudaFreeArray(static_cast<cudaArray_t>(ctx.strip_array));
     if (ctx.final_array) cudaFreeArray(static_cast<cudaArray_t>(ctx.final_array));
     if (ctx.kernel_start_event) cudaEventDestroy(static_cast<cudaEvent_t>(ctx.kernel_start_event));
     if (ctx.kernel_stop_event) cudaEventDestroy(static_cast<cudaEvent_t>(ctx.kernel_stop_event));
+    for (int i = 0; i < 2; ++i) {
+        if (ctx.async_kernel_start_events[i]) cudaEventDestroy(static_cast<cudaEvent_t>(ctx.async_kernel_start_events[i]));
+        if (ctx.async_kernel_stop_events[i]) cudaEventDestroy(static_cast<cudaEvent_t>(ctx.async_kernel_stop_events[i]));
+        if (ctx.async_copy_start_events[i]) cudaEventDestroy(static_cast<cudaEvent_t>(ctx.async_copy_start_events[i]));
+        if (ctx.async_copy_stop_events[i]) cudaEventDestroy(static_cast<cudaEvent_t>(ctx.async_copy_stop_events[i]));
+        if (ctx.streams[i]) cudaStreamDestroy(static_cast<cudaStream_t>(ctx.streams[i]));
+    }
     ctx = CudaVideoWarpContext{};
 }
 

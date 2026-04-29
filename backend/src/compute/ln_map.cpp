@@ -164,6 +164,35 @@ fsd_cuda::CudaLnMapParams make_cuda_params(const LnMapParams& p) {
     cp.colormap_id = static_cast<int>(p.colormap);
     return cp;
 }
+
+int cuda_progress_chunk_rows(const LnMapParams& p) {
+    const int h = std::max(1, p.height_t);
+    const bool low_end = runtime_capabilities().cuda_low_end;
+    const int target_updates = low_end ? 48 : 64;
+    const int min_rows = low_end ? 8 : 16;
+    const int max_rows = low_end ? 64 : 256;
+    return std::clamp((h + target_updates - 1) / target_updates, min_rows, max_rows);
+}
+
+LnMapStats render_ln_map_cuda_with_progress(
+    const LnMapParams& p,
+    cv::Mat& out,
+    const LnMapProgress& on_row_done
+) {
+    ensure_ln_out(p, out);
+    const fsd_cuda::CudaLnMapParams cp = make_cuda_params(p);
+    const int chunk_rows = cuda_progress_chunk_rows(p);
+
+    double elapsed_ms = 0.0;
+    for (int row0 = 0; row0 < p.height_t; row0 += chunk_rows) {
+        const int rows = std::min(chunk_rows, p.height_t - row0);
+        const auto stats = fsd_cuda::cuda_render_ln_map_rows(cp, out, row0, rows);
+        elapsed_ms += stats.elapsed_ms;
+        if (on_row_done) on_row_done(row0 + rows);
+    }
+
+    return {elapsed_ms, p.width_s * p.height_t, "cuda", "fp64"};
+}
 #endif
 
 bool should_try_cuda(const LnMapParams& p) {
@@ -369,8 +398,10 @@ LnMapStats render_ln_map(const LnMapParams& p, cv::Mat& out, const LnMapProgress
     if (should_try_cuda(p)) {
 #if USE_CUDA_LN_MAP
         try {
+            if (on_row_done) {
+                return render_ln_map_cuda_with_progress(p, out, on_row_done);
+            }
             const auto stats = fsd_cuda::cuda_render_ln_map(make_cuda_params(p), out);
-            if (on_row_done) on_row_done(p.height_t);
             return {stats.elapsed_ms, p.width_s * p.height_t, "cuda", "fp64"};
         } catch (...) {
             if (p.engine == "cuda") throw;

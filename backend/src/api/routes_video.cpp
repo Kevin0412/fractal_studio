@@ -567,7 +567,83 @@ static std::string generateZoomVideo(
     cv::Mat fmapY(H, W, CV_32FC1);
     std::vector<float> useStrip(static_cast<size_t>(W) * H, 0.0f);
 
+    auto renderCudaFramesAsync = [&](auto&& writeFrame, VideoWarpStats& stats) -> bool {
+#if USE_CUDA_VIDEO_WARP
+        if (!useCudaWarp) return false;
+        const size_t frameBytes = static_cast<size_t>(W) * static_cast<size_t>(H) * 3u;
+
+        struct PinnedFrames {
+            void* ptr[2] = {nullptr, nullptr};
+            ~PinnedFrames() {
+                fsd_cuda::cuda_video_warp_free_pinned(ptr[0]);
+                fsd_cuda::cuda_video_warp_free_pinned(ptr[1]);
+            }
+        } pinned;
+
+        try {
+            pinned.ptr[0] = fsd_cuda::cuda_video_warp_alloc_pinned(frameBytes);
+            pinned.ptr[1] = fsd_cuda::cuda_video_warp_alloc_pinned(frameBytes);
+        } catch (...) {
+            return false;
+        }
+
+        cv::Mat hostFrame[2] = {
+            cv::Mat(H, W, CV_8UC3, pinned.ptr[0]),
+            cv::Mat(H, W, CV_8UC3, pinned.ptr[1]),
+        };
+        bool pending[2] = {false, false};
+
+        auto scheduleFrame = [&](int f) {
+            if (should_cancel && should_cancel()) throw std::runtime_error("cancelled");
+            const double tNorm = static_cast<double>(f) / std::max(1, frameCount - 1);
+            const double kTop  = kTop_start - tNorm * depthOctaves * LN_TWO;
+            const int buffer = f & 1;
+            fsd_cuda::cuda_video_warp_frame_async(cudaWarp, kTop, kTop_end, buffer, pinned.ptr[buffer]);
+            pending[buffer] = true;
+        };
+
+        auto finishFrame = [&](int f) {
+            const int buffer = f & 1;
+            fsd_cuda::CudaVideoWarpTiming timing;
+            fsd_cuda::cuda_video_warp_wait_frame(cudaWarp, buffer, &timing);
+            pending[buffer] = false;
+            stats.warpTotalMs += timing.kernel_ms;
+            stats.copyTotalMs += timing.copy_ms;
+
+            const auto writeStart = std::chrono::steady_clock::now();
+            writeFrame(hostFrame[buffer]);
+            const auto writeEnd = std::chrono::steady_clock::now();
+            stats.writeTotalMs += std::chrono::duration<double, std::milli>(writeEnd - writeStart).count();
+            stats.rawVideoBytes += static_cast<uint64_t>(frameBytes);
+            if (should_cancel && should_cancel()) throw std::runtime_error("cancelled");
+            if (on_frame_done && (f + 1 == frameCount || ((f + 1) % 8) == 0)) on_frame_done(f + 1);
+        };
+
+        try {
+            scheduleFrame(0);
+            for (int f = 1; f < frameCount; ++f) {
+                scheduleFrame(f);
+                finishFrame(f - 1);
+            }
+            finishFrame(frameCount - 1);
+        } catch (...) {
+            for (int i = 0; i < 2; ++i) {
+                if (!pending[i]) continue;
+                try { fsd_cuda::cuda_video_warp_wait_frame(cudaWarp, i, nullptr); } catch (...) {}
+            }
+            throw;
+        }
+        return true;
+#else
+        (void)writeFrame;
+        (void)stats;
+        return false;
+#endif
+    };
+
     auto renderFrames = [&](auto&& writeFrame, VideoWarpStats& stats) {
+        if (renderCudaFramesAsync(writeFrame, stats)) return;
+
         for (int f = 0; f < frameCount; f++) {
             if (should_cancel && should_cancel()) throw std::runtime_error("cancelled");
             const double tNorm = static_cast<double>(f) / std::max(1, frameCount - 1);
@@ -634,6 +710,16 @@ static std::string generateZoomVideo(
                         throw std::runtime_error("ffmpeg pipe write failed");
                     }
                 }, attemptStats);
+            } catch (const std::exception& e) {
+                pclose(pipe);
+                std::error_code ec;
+                std::filesystem::remove(tmpMp4, ec);
+                std::filesystem::remove(tmpAvi, ec);
+                std::filesystem::remove(ffmpegErrTmp, ec);
+                if (std::string(e.what()) == "ffmpeg pipe write failed") {
+                    continue;
+                }
+                throw;
             } catch (...) {
                 pclose(pipe);
                 std::error_code ec;
