@@ -97,6 +97,31 @@ struct SpecialPointEnumResponse {
     std::string warning;
 };
 
+struct SpecialPointSearchRequest {
+    SpecialPointKind kind = SpecialPointKind::HyperbolicCenter;
+    int period_min = 1;
+    int period_max = 8;
+    int seed_budget = 2000;
+    int max_newton_iter = 60;
+    double newton_eps = 1e-13;
+    double classify_eps = 1e-10;
+    double root_merge_eps = 1e-10;
+    bool visible_only = true;
+    bool include_variant_compatibility = true;
+    SpecialPointViewport viewport;
+};
+
+struct SpecialPointSearchResponse {
+    std::string status = "idle";
+    bool sampled = true;
+    int accepted_count = 0;
+    int seed_count = 0;
+    int newton_success_count = 0;
+    int rejected_count = 0;
+    std::vector<SpecialPointResult> points;
+    std::string warning;
+};
+
 using SpecialPointProgressCallback = std::function<bool(
     int task_index,
     int task_count,
@@ -105,6 +130,13 @@ using SpecialPointProgressCallback = std::function<bool(
     int seed_count,
     int batch_index)>;
 
+using SpecialPointSearchProgressCallback = std::function<bool(
+    int period,
+    int period_index,
+    int period_count,
+    int accepted_count,
+    int seed_count)>;
+
 std::pair<std::complex<double>, std::complex<double>>
 eval_center_f_df(std::complex<double> c, int period);
 
@@ -112,6 +144,11 @@ std::pair<std::complex<double>, std::complex<double>>
 eval_misiurewicz_f_df(std::complex<double> c, int preperiod, int period);
 
 OrbitClassification classify_critical_orbit_mandelbrot(
+    std::complex<double> c,
+    int max_iter,
+    double eps);
+
+OrbitClassification classify_critical_orbit(
     std::complex<double> c,
     int max_iter,
     double eps);
@@ -128,6 +165,11 @@ SpecialPointResult newton_solve_center(
     int period,
     const SpecialPointEnumRequest& req);
 
+SpecialPointResult find_hyperbolic_center_near(
+    std::complex<double> initial,
+    int period,
+    const SpecialPointSearchRequest& req);
+
 SpecialPointResult newton_solve_misiurewicz(
     std::complex<double> initial,
     int preperiod,
@@ -140,6 +182,10 @@ int expected_misiurewicz_count(int preperiod, int period);
 SpecialPointEnumResponse enumerate_special_points(
     const SpecialPointEnumRequest& req,
     const SpecialPointProgressCallback& progress = {});
+
+SpecialPointSearchResponse search_hyperbolic_centers(
+    const SpecialPointSearchRequest& req,
+    const SpecialPointSearchProgressCallback& progress = {});
 
 bool point_in_viewport(const SpecialPointViewport& viewport, std::complex<double> c);
 std::string special_point_kind_name(SpecialPointKind kind);

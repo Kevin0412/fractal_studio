@@ -1,12 +1,22 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { api, type SpecialPointEnumResult, type SpecialPointEnumResponse, type SpecialPointKind, type SpecialPointViewport } from '../api'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import {
+  api,
+  type SpecialPointEnumResult,
+  type SpecialPointEnumResponse,
+  type SpecialPointKind,
+  type SpecialPointSearchResponse,
+  type SpecialPointViewport,
+} from '../api'
 
 const props = defineProps<{
   viewport?: SpecialPointViewport
   hoveredId?: string
   selectedId?: string
 }>()
+
+type PanelMode = 'search' | 'enumerate'
+type SpecialPointPanelResponse = SpecialPointEnumResponse | SpecialPointSearchResponse
 
 const emit = defineEmits<{
   (e: 'import-point', p: SpecialPointEnumResult): void
@@ -16,6 +26,8 @@ const emit = defineEmits<{
   (e: 'use-julia', p: SpecialPointEnumResult): void
 }>()
 
+const panelMode = ref<PanelMode>(props.viewport ? 'search' : 'enumerate')
+const autoSearch = ref(!!props.viewport)
 const kind = ref<SpecialPointKind>('center')
 const periodMin = ref(1)
 const periodMax = ref(8)
@@ -23,13 +35,17 @@ const preperiodMin = ref(1)
 const preperiodMax = ref(3)
 const includeVariantExistence = ref(true)
 const includeRejectedDebug = ref(false)
-const visibleOnly = ref(false)
+const visibleOnly = ref(true)
+const seedBudget = ref(2000)
 const seedsPerBatch = ref(2048)
 const maxSeedBatches = ref(80)
 const running = ref(false)
 const message = ref('')
-const result = ref<SpecialPointEnumResponse | null>(null)
+const result = ref<SpecialPointPanelResponse | null>(null)
 const variantFilter = ref('')
+const currentRunId = ref('')
+let searchSeq = 0
+let searchTimer: ReturnType<typeof setTimeout> | null = null
 
 watch(kind, (next) => {
   if (next === 'misiurewicz') {
@@ -86,25 +102,117 @@ const expectedInfo = computed(() => {
   return { ok: true, total, text: `${total} expected` }
 })
 
+const searchInfo = computed(() => {
+  if (!props.viewport) return { ok: false, text: 'viewport required' }
+  if (periodMin.value < 1 || periodMax.value < periodMin.value || periodMax.value > 10) {
+    return { ok: false, text: 'period range must be 1..10' }
+  }
+  if (seedBudget.value < 1 || seedBudget.value > 20000) return { ok: false, text: 'seed budget must be 1..20000' }
+  return { ok: true, text: `sampled search · ${seedBudget.value} seeds` }
+})
+const activeInfo = computed(() => panelMode.value === 'search' ? searchInfo.value : expectedInfo.value)
 const points = computed(() => result.value?.points ?? [])
 const visiblePoints = computed(() => {
   if (!variantFilter.value) return points.value
-  return points.value.filter(p => p.variants?.some(v => v.variant_name === variantFilter.value && v.exists))
+  return points.value.filter(p => {
+    if (p.compatibleVariants?.includes(variantFilter.value)) return true
+    return p.variants?.some(v => v.variant_name === variantFilter.value && v.exists)
+  })
 })
 const variants = computed(() => {
   const names = new Set<string>()
-  for (const p of points.value) for (const v of p.variants || []) if (v.exists) names.add(v.variant_name)
+  for (const p of points.value) {
+    for (const v of p.compatibleVariants || []) names.add(v)
+    for (const v of p.variants || []) if (v.exists) names.add(v.variant_name)
+  }
   return [...names]
 })
 const grouped = computed(() => {
   const groups = new Map<string, SpecialPointEnumResult[]>()
   for (const p of visiblePoints.value) {
-    const key = kind.value === 'center' ? `period ${p.period}` : `m${p.preperiod} p${p.period}`
+    const key = p.kind === 'center' ? `period ${p.period}` : `m${p.preperiod} p${p.period}`
     if (!groups.has(key)) groups.set(key, [])
     groups.get(key)!.push(p)
   }
   return [...groups.entries()]
 })
+const enumIncomplete = computed(() => !!result.value && 'complete' in result.value && !result.value.complete)
+const enumIncompleteText = computed(() => {
+  if (!result.value || !('expectedCount' in result.value) || !enumIncomplete.value) return ''
+  return `incomplete: ${result.value.acceptedCount}/${result.value.expectedCount} roots`
+})
+
+function delay(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function cancelCurrentSearch() {
+  if (!currentRunId.value) return
+  api.cancelRun(currentRunId.value).catch(() => {})
+  currentRunId.value = ''
+}
+
+function cancelRunningSearch() {
+  searchSeq += 1
+  if (searchTimer) clearTimeout(searchTimer)
+  cancelCurrentSearch()
+  running.value = false
+  message.value = 'cancelled'
+}
+
+async function searchViewport(manual = false) {
+  if (!searchInfo.value.ok || !props.viewport) return
+  const seq = ++searchSeq
+  cancelCurrentSearch()
+  running.value = true
+  message.value = 'searching current view...'
+  result.value = null
+  emit('results-updated', [])
+  try {
+    const started = await api.specialPointsSearch({
+      kind: 'center',
+      periodMin: periodMin.value,
+      periodMax: periodMax.value,
+      seedBudget: seedBudget.value,
+      includeVariantCompatibility: includeVariantExistence.value,
+      visibleOnly: visibleOnly.value,
+      viewport: props.viewport,
+    })
+    if (seq !== searchSeq) return
+    currentRunId.value = started.runId
+    message.value = `${started.runId} · searching...`
+
+    for (;;) {
+      await delay(260)
+      if (seq !== searchSeq) return
+      const resp = await api.specialPointsResults(started.runId) as SpecialPointSearchResponse
+      if (seq !== searchSeq) return
+      if (resp.status === 'running' || resp.status === 'queued') {
+        message.value = `searching... ${resp.acceptedCount || 0} found · ${resp.seedCount || 0} seeds`
+        continue
+      }
+      if (resp.status === 'cancelled') {
+        message.value = 'cancelled'
+        return
+      }
+      if (resp.status === 'failed') {
+        message.value = 'failed'
+        return
+      }
+      result.value = resp
+      emit('results-updated', resp.points)
+      message.value = `${manual ? 'search' : 'auto search'}: ${resp.acceptedCount} visible centers · ${resp.seedCount} seeds`
+      return
+    }
+  } catch (e: any) {
+    if (seq === searchSeq) message.value = 'failed: ' + (e?.data?.error || e?.message || e)
+  } finally {
+    if (seq === searchSeq) {
+      running.value = false
+      currentRunId.value = ''
+    }
+  }
+}
 
 async function enumerate() {
   if (!expectedInfo.value.ok) return
@@ -136,6 +244,11 @@ async function enumerate() {
   }
 }
 
+function runActive() {
+  if (panelMode.value === 'search') searchViewport(true)
+  else enumerate()
+}
+
 function copyPoint(p: SpecialPointEnumResult) {
   navigator.clipboard?.writeText(`${p.re}, ${p.im}`)
 }
@@ -152,26 +265,64 @@ function selectPoint(p: SpecialPointEnumResult) {
   emit('import-point', p)
 }
 
-defineExpose({ enumerate, refresh: enumerate, points })
+watch(panelMode, (mode) => {
+  if (mode === 'search') {
+    kind.value = 'center'
+    visibleOnly.value = true
+  }
+})
+
+watch(
+  () => ({
+    mode: panelMode.value,
+    auto: autoSearch.value,
+    viewport: props.viewport ? `${props.viewport.centerRe}:${props.viewport.centerIm}:${props.viewport.scale}:${props.viewport.width}:${props.viewport.height}` : '',
+    periodMin: periodMin.value,
+    periodMax: periodMax.value,
+    seedBudget: seedBudget.value,
+    variants: includeVariantExistence.value,
+    visibleOnly: visibleOnly.value,
+  }),
+  () => {
+    if (panelMode.value !== 'search' || !autoSearch.value || !props.viewport) return
+    if (searchTimer) clearTimeout(searchTimer)
+    searchTimer = setTimeout(() => searchViewport(false), 450)
+  },
+  { immediate: true }
+)
+
+onBeforeUnmount(() => {
+  searchSeq += 1
+  if (searchTimer) clearTimeout(searchTimer)
+  cancelCurrentSearch()
+})
+
+defineExpose({ enumerate, refresh: runActive, points })
 </script>
 
 <template>
   <div class="sp-panel">
     <div class="head">
       <span class="panel-title">Special Points</span>
-      <button class="primary" @click="enumerate" :disabled="running || !expectedInfo.ok">
-        {{ running ? 'running' : 'enumerate' }}
+      <button class="primary" @click="runActive" :disabled="running || !activeInfo.ok">
+        {{ running ? 'running' : (panelMode === 'search' ? 'search' : 'enumerate') }}
       </button>
+      <button v-if="running && panelMode === 'search'" @click="cancelRunningSearch">cancel</button>
     </div>
 
     <div class="controls-grid">
+      <label>workflow</label>
+      <select v-model="panelMode">
+        <option value="search">Explore viewport</option>
+        <option value="enumerate">Full enumerate</option>
+      </select>
       <label>mode</label>
-      <select v-model="kind">
+      <select v-model="kind" :disabled="panelMode === 'search'">
         <option value="center">Hyperbolic centers</option>
         <option value="misiurewicz">Misiurewicz points</option>
       </select>
-      <label v-if="kind === 'misiurewicz'">preperiod</label>
-      <div v-if="kind === 'misiurewicz'" class="pair">
+      <label v-if="panelMode === 'enumerate' && kind === 'misiurewicz'">preperiod</label>
+      <div v-if="panelMode === 'enumerate' && kind === 'misiurewicz'" class="pair">
         <input type="number" v-model.number="preperiodMin" min="1" max="6" />
         <input type="number" v-model.number="preperiodMax" min="1" max="6" />
       </div>
@@ -180,24 +331,26 @@ defineExpose({ enumerate, refresh: enumerate, points })
         <input type="number" v-model.number="periodMin" min="1" max="10" />
         <input type="number" v-model.number="periodMax" min="1" max="10" />
       </div>
-      <label>seeds</label>
-      <div class="pair">
+      <label v-if="panelMode === 'search'">seeds</label>
+      <input v-if="panelMode === 'search'" type="number" v-model.number="seedBudget" min="1" max="20000" />
+      <label v-if="panelMode === 'enumerate'">seeds</label>
+      <div v-if="panelMode === 'enumerate'" class="pair">
         <input type="number" v-model.number="seedsPerBatch" min="1" max="10000" />
         <input type="number" v-model.number="maxSeedBatches" min="1" max="200" />
       </div>
     </div>
 
     <div class="opts">
+      <label v-if="panelMode === 'search'"><input type="checkbox" v-model="autoSearch" /> auto</label>
       <label><input type="checkbox" v-model="includeVariantExistence" /> variants</label>
       <label><input type="checkbox" v-model="visibleOnly" /> visible only</label>
-      <label><input type="checkbox" v-model="includeRejectedDebug" /> rejected</label>
+      <label v-if="panelMode === 'enumerate'"><input type="checkbox" v-model="includeRejectedDebug" /> rejected</label>
     </div>
 
-    <div class="status mono" :class="{ bad: !expectedInfo.ok }">{{ expectedInfo.text }}</div>
+    <div class="status mono" :class="{ bad: !activeInfo.ok }">{{ activeInfo.text }}</div>
     <div v-if="message" class="status mono">{{ message }}</div>
-    <div v-if="result && !result.complete" class="status warn mono">
-      incomplete: {{ result.acceptedCount }}/{{ result.expectedCount }} roots
-    </div>
+    <div v-if="enumIncompleteText" class="status warn mono">{{ enumIncompleteText }}</div>
+    <div v-if="panelMode === 'search' && result?.warning" class="status warn mono">{{ result.warning }}</div>
 
     <div v-if="variants.length" class="filters">
       <button :class="{ active: !variantFilter }" @click="variantFilter = ''">all</button>
@@ -220,13 +373,13 @@ defineExpose({ enumerate, refresh: enumerate, points })
             <span>{{ p.im.toFixed(10) }}</span>
           </div>
           <div class="meta mono">res {{ p.residual.toExponential(1) }} · {{ p.newtonIterations }} it</div>
-          <div v-if="p.variants?.length" class="tags">
+          <div v-if="(p.compatibleVariants?.length || p.variants?.length)" class="tags">
             <button
-              v-for="v in p.variants.filter(v => v.exists)"
-              :key="v.variant_name"
+              v-for="v in (p.compatibleVariants?.length ? p.compatibleVariants : p.variants.filter(v => v.exists).map(v => v.variant_name))"
+              :key="v"
               class="tag"
-              @click.stop="variantFilter = v.variant_name">
-              {{ v.variant_name }}
+              @click.stop="variantFilter = v">
+              {{ v }}
             </button>
           </div>
           <div class="actions">
@@ -237,7 +390,7 @@ defineExpose({ enumerate, refresh: enumerate, points })
         </div>
       </section>
     </div>
-    <div v-else class="empty mono">No enumeration results yet.</div>
+    <div v-else class="empty mono">{{ panelMode === 'search' ? 'No visible special points found yet.' : 'No enumeration results yet.' }}</div>
   </div>
 </template>
 

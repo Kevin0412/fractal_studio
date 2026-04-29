@@ -10,6 +10,7 @@ namespace {
 
 using fsd::compute::SpecialPointEnumRequest;
 using fsd::compute::SpecialPointKind;
+using fsd::compute::SpecialPointSearchRequest;
 
 void require(bool ok, const std::string& message) {
     if (!ok) throw std::runtime_error(message);
@@ -64,6 +65,57 @@ void expect_misiurewicz_2_1() {
             "misiurewicz m=2 p=1 root is not c=-2: " + std::to_string(p.re) + ", " + std::to_string(p.im));
 }
 
+SpecialPointSearchRequest base_search_request() {
+    SpecialPointSearchRequest req;
+    req.period_min = 1;
+    req.period_max = 4;
+    req.seed_budget = 1200;
+    req.max_newton_iter = 80;
+    req.newton_eps = 1e-13;
+    req.classify_eps = 1e-10;
+    req.root_merge_eps = 1e-10;
+    req.include_variant_compatibility = true;
+    req.visible_only = true;
+    req.viewport.enabled = true;
+    req.viewport.center_re = -1.0;
+    req.viewport.center_im = 0.0;
+    req.viewport.scale = 0.8;
+    req.viewport.width = 1200;
+    req.viewport.height = 800;
+    return req;
+}
+
+void expect_local_center_search() {
+    SpecialPointSearchRequest req = base_search_request();
+    const auto near_period_2 = fsd::compute::find_hyperbolic_center_near({-0.85, 0.05}, 2, req);
+    require(near_period_2.converged, "local Newton period-2 center did not converge");
+    require(near_period_2.accepted, "local Newton period-2 center was not accepted");
+    require(near_period_2.actual.is_center && near_period_2.actual.period == 2, "local Newton classified wrong period");
+    require(std::abs(near_period_2.re + 1.0) < 1e-8 && std::abs(near_period_2.im) < 1e-8,
+            "local Newton did not converge to c=-1");
+    require(!near_period_2.variants.empty(), "local Newton missing variant compatibility");
+    require(near_period_2.variants.front().variant_name == "Mandelbrot" && near_period_2.variants.front().exists,
+            "Mandelbrot compatibility missing for local center");
+
+    const auto degenerate = fsd::compute::find_hyperbolic_center_near({0.0, 0.0}, 2, req);
+    require(degenerate.converged, "degenerate local Newton did not converge");
+    require(!degenerate.accepted, "period-1 center accepted as period 2 in local Newton");
+    require(degenerate.actual.period == 1, "degenerate local Newton actual period not detected");
+
+    const auto resp = fsd::compute::search_hyperbolic_centers(req);
+    require(resp.status == "completed", "viewport center search did not complete");
+    require(resp.accepted_count >= 1, "viewport center search found no centers");
+    bool found_period_2 = false;
+    for (const auto& p : resp.points) {
+        require(p.visible, "viewport search returned non-visible point");
+        require(p.accepted && p.actual.is_center, "viewport search returned non-center point");
+        if (p.period == 2 && std::abs(p.re + 1.0) < 1e-8 && std::abs(p.im) < 1e-8) {
+            found_period_2 = true;
+        }
+    }
+    require(found_period_2, "viewport search did not find the period-2 center");
+}
+
 } // namespace
 
 int main() {
@@ -96,6 +148,7 @@ int main() {
         expect_center_period(3, 3);
         expect_center_period(4, 6);
         expect_misiurewicz_2_1();
+        expect_local_center_search();
     } catch (const std::exception& e) {
         std::cerr << "special_points_smoke failed: " << e.what() << '\n';
         return 1;

@@ -87,6 +87,9 @@ std::string HttpServer::handleRequest(const std::string& request) const {
     if (method == "POST" && path == "/api/special-points/auto") return makeHttpResponse(200, specialPointsAutoRoute(repoRoot_, body));
     if (method == "POST" && path == "/api/special-points/seed") return makeHttpResponse(200, specialPointsSeedRoute(repoRoot_, body));
     if (method == "POST" && path == "/api/special-points/enumerate") return makeHttpResponse(200, specialPointsEnumerateRoute(repoRoot_, runner_, body));
+    if (method == "POST" && path == "/api/special-points/search") return makeHttpResponse(200, specialPointsSearchRoute(repoRoot_, runner_, body));
+    if (method == "GET"  && path == "/api/special-points/results") return makeHttpResponse(200, specialPointsResultsRoute(repoRoot_, runner_, query));
+    if (method == "POST" && path == "/api/special-points/snap") return makeHttpResponse(200, specialPointsSnapRoute(body));
     if (method == "GET"  && path == "/api/special-points")      return makeHttpResponse(200, specialPointsListRoute(repoRoot_, query));
 
     // Benchmark

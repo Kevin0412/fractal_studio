@@ -6,15 +6,21 @@
 #include "../compute/newton/mandelbrot_sp.hpp"
 #include "../compute/special_points.hpp"
 
+#include <cmath>
 #include <complex>
+#include <fstream>
+#include <iterator>
 #include <stdexcept>
+#include <thread>
 
 namespace fsd {
 
 namespace {
 
 Json orbitToJson(const compute::OrbitClassification& o) {
+    const std::string kind = o.is_center ? "center" : (o.is_misiurewicz ? "misiurewicz" : "unknown");
     return Json{
+        {"kind", kind},
         {"found_repeat", o.found_repeat},
         {"is_center", o.is_center},
         {"is_misiurewicz", o.is_misiurewicz},
@@ -40,23 +46,52 @@ Json variantsToJson(const std::vector<compute::VariantExistence>& variants) {
     return arr;
 }
 
+Json compatibleVariantsToJson(const std::vector<compute::VariantExistence>& variants) {
+    Json arr = Json::array();
+    for (const auto& v : variants) {
+        if (v.exists && v.same_orbit_as_mandelbrot) arr.push_back(v.variant_name);
+    }
+    return arr;
+}
+
+Json variantCompatibilityToJson(const std::vector<compute::VariantExistence>& variants) {
+    Json obj = Json::object();
+    for (const auto& v : variants) {
+        obj[v.variant_name] = {
+            {"compatible", v.exists && v.same_orbit_as_mandelbrot},
+            {"exists", v.exists},
+            {"sameOrbitAsMandelbrot", v.same_orbit_as_mandelbrot},
+            {"actualPreperiod", v.actual_preperiod},
+            {"actualPeriod", v.actual_period},
+            {"repeatError", v.repeat_error},
+            {"reason", v.reason},
+        };
+    }
+    return obj;
+}
+
 Json pointToJson(const compute::SpecialPointResult& p) {
     return Json{
         {"id", p.id},
         {"kind", compute::special_point_kind_name(p.kind)},
         {"preperiod", p.preperiod},
         {"period", p.period},
+        {"requestedPeriod", p.period},
+        {"actualPeriod", p.actual.period},
         {"re", p.re},
         {"im", p.im},
         {"real", p.re},
         {"imag", p.im},
         {"converged", p.converged},
+        {"success", p.converged},
         {"accepted", p.accepted},
         {"visible", p.visible},
         {"residual", p.residual},
         {"newtonIterations", p.newton_iterations},
         {"actual", orbitToJson(p.actual)},
         {"variants", variantsToJson(p.variants)},
+        {"compatibleVariants", compatibleVariantsToJson(p.variants)},
+        {"variantCompatibility", variantCompatibilityToJson(p.variants)},
         {"reason", p.reason},
     };
 }
@@ -80,6 +115,21 @@ Json enumResponseToJson(const compute::SpecialPointEnumResponse& r) {
     };
 }
 
+Json searchResponseToJson(const compute::SpecialPointSearchResponse& r) {
+    Json points = Json::array();
+    for (const auto& p : r.points) points.push_back(pointToJson(p));
+    return Json{
+        {"status", r.status},
+        {"sampled", r.sampled},
+        {"acceptedCount", r.accepted_count},
+        {"seedCount", r.seed_count},
+        {"newtonSuccessCount", r.newton_success_count},
+        {"rejectedCount", r.rejected_count},
+        {"points", points},
+        {"warning", r.warning},
+    };
+}
+
 compute::SpecialPointKind parseKind(const Json& j) {
     const std::string raw = j.value("kind", std::string("center"));
     if (raw == "center" || raw == "hyperbolic" || raw == "hyperbolic_center") {
@@ -87,6 +137,20 @@ compute::SpecialPointKind parseKind(const Json& j) {
     }
     if (raw == "misiurewicz") return compute::SpecialPointKind::Misiurewicz;
     throw HttpError(400, Json{{"error", "invalid special point kind"}}.dump());
+}
+
+compute::SpecialPointViewport parseViewport(const Json& j) {
+    compute::SpecialPointViewport viewport;
+    if (j.contains("viewport") && j["viewport"].is_object()) {
+        const Json& v = j["viewport"];
+        viewport.enabled = true;
+        viewport.center_re = v.value("centerRe", -0.75);
+        viewport.center_im = v.value("centerIm", 0.0);
+        viewport.scale = v.value("scale", 3.0);
+        viewport.width = v.value("width", 1200);
+        viewport.height = v.value("height", 800);
+    }
+    return viewport;
 }
 
 compute::SpecialPointEnumRequest parseEnumRequest(const Json& j) {
@@ -108,15 +172,23 @@ compute::SpecialPointEnumRequest parseEnumRequest(const Json& j) {
     req.include_rejected_debug = j.value("includeRejectedDebug", false);
     req.visible_only = j.value("visibleOnly", false);
 
-    if (j.contains("viewport") && j["viewport"].is_object()) {
-        const Json& v = j["viewport"];
-        req.viewport.enabled = true;
-        req.viewport.center_re = v.value("centerRe", -0.75);
-        req.viewport.center_im = v.value("centerIm", 0.0);
-        req.viewport.scale = v.value("scale", 3.0);
-        req.viewport.width = v.value("width", 1200);
-        req.viewport.height = v.value("height", 800);
-    }
+    req.viewport = parseViewport(j);
+    return req;
+}
+
+compute::SpecialPointSearchRequest parseSearchRequest(const Json& j) {
+    compute::SpecialPointSearchRequest req;
+    req.kind = parseKind(j);
+    req.period_min = j.value("periodMin", 1);
+    req.period_max = j.value("periodMax", 8);
+    req.seed_budget = j.value("seedBudget", 2000);
+    req.max_newton_iter = j.value("maxNewtonIter", 60);
+    req.newton_eps = j.value("newtonEps", 1e-13);
+    req.classify_eps = j.value("classifyEps", 1e-10);
+    req.root_merge_eps = j.value("rootMergeEps", 1e-10);
+    req.visible_only = j.value("visibleOnly", true);
+    req.include_variant_compatibility = j.value("includeVariantCompatibility", true);
+    req.viewport = parseViewport(j);
     return req;
 }
 
@@ -172,6 +244,34 @@ void validateEnumRequest(const compute::SpecialPointEnumRequest& req) {
             {"suggestion", "reduce period/preperiod range"},
         }.dump());
     }
+}
+
+void validateSearchRequest(const compute::SpecialPointSearchRequest& req) {
+    if (req.kind != compute::SpecialPointKind::HyperbolicCenter) {
+        throw HttpError(400, Json{{"error", "special point search currently supports kind=center only"}}.dump());
+    }
+    if (req.period_min < 1 || req.period_max < req.period_min || req.period_max > 10) {
+        throw HttpError(400, Json{{"error", "invalid center period range"}, {"limit", "1..10"}}.dump());
+    }
+    if (req.seed_budget < 1 || req.seed_budget > 20000) {
+        throw HttpError(400, Json{{"error", "invalid seedBudget"}, {"limit", "1..20000"}}.dump());
+    }
+    if (req.max_newton_iter < 1 || req.max_newton_iter > 80) {
+        throw HttpError(400, Json{{"error", "invalid maxNewtonIter"}, {"limit", "1..80"}}.dump());
+    }
+    if (!req.viewport.enabled || req.viewport.width < 1 || req.viewport.height < 1 ||
+        !std::isfinite(req.viewport.center_re) || !std::isfinite(req.viewport.center_im) ||
+        !std::isfinite(req.viewport.scale) || req.viewport.scale <= 0.0) {
+        throw HttpError(400, Json{{"error", "valid viewport required"}}.dump());
+    }
+}
+
+std::string readRunJsonFile(JobRunner& runner, const std::string& runId, const std::string& fileName) {
+    const std::string outDir = runner.resolveOutputDir(runId);
+    if (outDir.empty()) throw HttpError(404, Json{{"error", "run not found"}}.dump());
+    std::ifstream is(std::filesystem::path(outDir) / fileName);
+    if (!is) throw HttpError(404, Json{{"error", "special point results not found"}}.dump());
+    return std::string(std::istreambuf_iterator<char>(is), std::istreambuf_iterator<char>());
 }
 
 void persistPoints(
@@ -288,6 +388,165 @@ std::string specialPointsEnumerateRoute(const std::filesystem::path& repoRoot, J
         }
         throw;
     }
+}
+
+std::string specialPointsSearchRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body) {
+    (void)repoRoot;
+    const Json j = parseJsonBody(body);
+    compute::SpecialPointSearchRequest req = parseSearchRequest(j);
+    validateSearchRequest(req);
+
+    auto run = runner.createRun("special-points-search", body);
+    runner.setStatus(run.id, "running");
+    runner.setCancelable(run.id, true);
+
+    auto setProgress = [&](const std::string& stage, int period, int accepted, int seeds) {
+        Json progress = {
+            {"taskType", "special_points_search"},
+            {"stage", stage},
+            {"period", period},
+            {"acceptedCount", accepted},
+            {"seedCount", seeds},
+            {"elapsedMs", runner.runElapsedMs(run.id)},
+            {"cancelable", true},
+        };
+        runner.setProgress(run.id, progress.dump());
+    };
+
+    setProgress("searching", req.period_min, 0, 0);
+
+    std::thread([run, req, j, &runner]() {
+        auto setThreadProgress = [&](const std::string& stage, int period, int accepted, int seeds, const std::string& error = "") {
+            Json progress = {
+                {"taskType", "special_points_search"},
+                {"stage", stage},
+                {"period", period},
+                {"acceptedCount", accepted},
+                {"seedCount", seeds},
+                {"elapsedMs", runner.runElapsedMs(run.id)},
+                {"cancelable", true},
+            };
+            if (!error.empty()) progress["errorMessage"] = error;
+            runner.setProgress(run.id, progress.dump());
+        };
+        try {
+            compute::SpecialPointSearchResponse resp = compute::search_hyperbolic_centers(
+                req,
+                [&](int period, int periodIndex, int periodCount, int accepted, int seeds) {
+                    Json progress = {
+                        {"taskType", "special_points_search"},
+                        {"stage", "searching"},
+                        {"period", period},
+                        {"periodIndex", periodIndex},
+                        {"periodCount", periodCount},
+                        {"acceptedCount", accepted},
+                        {"seedCount", seeds},
+                        {"elapsedMs", runner.runElapsedMs(run.id)},
+                        {"cancelable", true},
+                    };
+                    runner.setProgress(run.id, progress.dump());
+                    return !runner.isCancelRequested(run.id);
+                });
+
+            if (runner.isCancelRequested(run.id) || resp.status == "cancelled") {
+                setThreadProgress("cancelled", req.period_min, resp.accepted_count, resp.seed_count);
+                runner.setStatus(run.id, "cancelled");
+                return;
+            }
+
+            Json responseJson = searchResponseToJson(resp);
+            responseJson["runId"] = run.id;
+
+            Json artifact = {
+                {"version", 1},
+                {"timestamp", nowIso8601()},
+                {"request", j},
+                {"response", responseJson},
+                {"points", responseJson["points"]},
+            };
+            const std::filesystem::path outPath = std::filesystem::path(run.outputDir) / "special_points_search.json";
+            atomicWriteText(outPath, artifact.dump(2));
+            runner.addArtifact(run.id, Artifact{"special-points-search", outPath.string(), "report"});
+
+            setThreadProgress(resp.status, req.period_max, resp.accepted_count, resp.seed_count);
+            runner.setStatus(run.id, "completed");
+        } catch (const std::exception& e) {
+            if (runner.isCancelRequested(run.id)) {
+                setThreadProgress("cancelled", req.period_min, 0, 0);
+                runner.setStatus(run.id, "cancelled");
+            } else {
+                setThreadProgress("failed", req.period_min, 0, 0, e.what());
+                runner.setStatus(run.id, "failed");
+            }
+        }
+    }).detach();
+
+    return Json{
+        {"runId", run.id},
+        {"status", "running"},
+        {"sampled", true},
+        {"acceptedCount", 0},
+        {"seedCount", 0},
+        {"newtonSuccessCount", 0},
+        {"rejectedCount", 0},
+        {"points", Json::array()},
+        {"warning", "search running"},
+    }.dump();
+}
+
+std::string specialPointsResultsRoute(const std::filesystem::path&, JobRunner& runner, const std::string& query) {
+    const std::string runId = getQueryParam(query, "runId");
+    if (runId.empty()) throw HttpError(400, Json{{"error", "runId required"}}.dump());
+    try {
+        const Json artifact = Json::parse(readRunJsonFile(runner, runId, "special_points_search.json"));
+        Json response = artifact.value("response", Json::object());
+        response["runId"] = runId;
+        return response.dump();
+    } catch (const HttpError&) {
+        try {
+            const Json artifact = Json::parse(readRunJsonFile(runner, runId, "special_points.json"));
+            Json response = artifact.value("response", Json::object());
+            response["runId"] = runId;
+            return response.dump();
+        } catch (const HttpError&) {
+            Json progress = Json::object();
+            try { progress = Json::parse(runner.getProgress(runId)); } catch (...) {}
+            RunRecord run = runner.getRun(runId);
+            return Json{
+                {"runId", runId},
+                {"status", run.status},
+                {"sampled", true},
+                {"acceptedCount", progress.value("acceptedCount", 0)},
+                {"seedCount", progress.value("seedCount", 0)},
+                {"newtonSuccessCount", 0},
+                {"rejectedCount", 0},
+                {"points", Json::array()},
+                {"progress", progress},
+                {"warning", "search running"},
+            }.dump();
+        }
+    }
+}
+
+std::string specialPointsSnapRoute(const std::string& body) {
+    const Json j = parseJsonBody(body);
+    compute::SpecialPointSearchRequest req;
+    req.kind = compute::SpecialPointKind::HyperbolicCenter;
+    req.period_min = j.value("period", j.value("requestedPeriod", 1));
+    req.period_max = req.period_min;
+    req.max_newton_iter = j.value("maxNewtonIter", 60);
+    req.newton_eps = j.value("newtonEps", 1e-13);
+    req.classify_eps = j.value("classifyEps", 1e-10);
+    req.root_merge_eps = j.value("rootMergeEps", 1e-10);
+    req.include_variant_compatibility = j.value("includeVariantCompatibility", true);
+
+    if (req.period_min < 1 || req.period_min > 10) {
+        throw HttpError(400, Json{{"error", "invalid period"}, {"limit", "1..10"}}.dump());
+    }
+    const double re = j.value("re", j.value("real", 0.0));
+    const double im = j.value("im", j.value("imag", 0.0));
+    compute::SpecialPointResult point = compute::find_hyperbolic_center_near({re, im}, req.period_min, req);
+    return Json{{"point", pointToJson(point)}}.dump();
 }
 
 std::string specialPointsAutoRoute(const std::filesystem::path& repoRoot, const std::string& body) {

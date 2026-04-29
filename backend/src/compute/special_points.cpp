@@ -237,6 +237,32 @@ std::vector<Task> build_tasks(const SpecialPointEnumRequest& req) {
     return tasks;
 }
 
+SpecialPointEnumRequest options_from_search(const SpecialPointSearchRequest& req) {
+    SpecialPointEnumRequest out;
+    out.kind = SpecialPointKind::HyperbolicCenter;
+    out.period_min = req.period_min;
+    out.period_max = req.period_max;
+    out.max_newton_iter = req.max_newton_iter;
+    out.newton_eps = req.newton_eps;
+    out.classify_eps = req.classify_eps;
+    out.root_merge_eps = req.root_merge_eps;
+    out.include_variant_existence = req.include_variant_compatibility;
+    out.visible_only = req.visible_only;
+    out.viewport = req.viewport;
+    return out;
+}
+
+Z viewport_seed(const SpecialPointViewport& viewport, unsigned long long index, int period) {
+    const double aspect = static_cast<double>(std::max(1, viewport.width)) / static_cast<double>(std::max(1, viewport.height));
+    const double half_h = viewport.scale * 0.5;
+    const double half_w = half_h * aspect;
+    const double left = viewport.center_re - half_w;
+    const double bottom = viewport.center_im - half_h;
+    const double u = halton(index + 1 + static_cast<unsigned long long>(period) * 1009ULL, 2);
+    const double v = halton(index + 1 + static_cast<unsigned long long>(period) * 9176ULL, 3);
+    return {left + u * (2.0 * half_w), bottom + v * (2.0 * half_h)};
+}
+
 } // namespace
 
 std::string special_point_kind_name(SpecialPointKind kind) {
@@ -274,6 +300,10 @@ OrbitClassification classify_critical_orbit_mandelbrot(Z c, int max_iter, double
     return classify_orbit_with_step(c, max_iter, eps, [](Z z, Z cc) {
         return z * z + cc;
     });
+}
+
+OrbitClassification classify_critical_orbit(Z c, int max_iter, double eps) {
+    return classify_critical_orbit_mandelbrot(c, max_iter, eps);
 }
 
 std::vector<VariantExistence> classify_variant_existence(
@@ -375,6 +405,11 @@ SpecialPointResult newton_solve_center(Z initial, int period, const SpecialPoint
         out.variants = classify_variant_existence(c, out.kind, 0, period, req.classify_eps);
     }
     return out;
+}
+
+SpecialPointResult find_hyperbolic_center_near(Z initial, int period, const SpecialPointSearchRequest& req) {
+    SpecialPointEnumRequest opt = options_from_search(req);
+    return newton_solve_center(initial, period, opt);
 }
 
 SpecialPointResult newton_solve_misiurewicz(Z initial, int preperiod, int period, const SpecialPointEnumRequest& req) {
@@ -574,6 +609,83 @@ SpecialPointEnumResponse enumerate_special_points(
         resp.warning = "not all expected roots were found within the seed budget";
         if (req.visible_only) resp.warning = "visibleOnly filters results; complete is only true for unfiltered enumeration";
     }
+    return resp;
+}
+
+SpecialPointSearchResponse search_hyperbolic_centers(
+    const SpecialPointSearchRequest& req,
+    const SpecialPointSearchProgressCallback& progress
+) {
+    if (req.kind != SpecialPointKind::HyperbolicCenter) {
+        throw std::runtime_error("viewport search currently supports hyperbolic centers only");
+    }
+    if (!req.viewport.enabled) {
+        throw std::runtime_error("viewport is required for special point search");
+    }
+
+    SpecialPointSearchResponse resp;
+    resp.status = "searching";
+
+    const int period_count = std::max(1, req.period_max - req.period_min + 1);
+    const int seeds_per_period = std::max(1, req.seed_budget / period_count);
+    const double merge_eps = std::max(req.root_merge_eps, req.viewport.scale * 1e-9);
+    const SpecialPointEnumRequest opt = options_from_search(req);
+
+    const Z anchors[] = {
+        {req.viewport.center_re, req.viewport.center_im},
+        {req.viewport.center_re + req.viewport.scale * 0.025, req.viewport.center_im},
+        {req.viewport.center_re - req.viewport.scale * 0.025, req.viewport.center_im},
+        {req.viewport.center_re, req.viewport.center_im + req.viewport.scale * 0.025},
+        {req.viewport.center_re, req.viewport.center_im - req.viewport.scale * 0.025},
+        {0.0, 0.0}, {-1.0, 0.0}, {-0.12256116687665362, 0.7448617666197442},
+        {-0.12256116687665362, -0.7448617666197442},
+    };
+
+    auto handle_root = [&](SpecialPointResult root) {
+        if (root.converged) ++resp.newton_success_count;
+        if (!root.accepted) {
+            ++resp.rejected_count;
+            return;
+        }
+        root.visible = point_in_viewport(req.viewport, Z(root.re, root.im));
+        if (req.visible_only && !root.visible) return;
+        add_or_replace_root(resp.points, root, merge_eps);
+    };
+
+    int period_index = 0;
+    for (int period = req.period_min; period <= req.period_max; ++period) {
+        ++period_index;
+        if (progress && !progress(period, period_index, period_count,
+                                  static_cast<int>(resp.points.size()), resp.seed_count)) {
+            resp.status = "cancelled";
+            resp.accepted_count = static_cast<int>(resp.points.size());
+            return resp;
+        }
+
+        for (Z seed : anchors) {
+            if (std::norm(seed) > 4.0) continue;
+            if (!point_in_viewport(req.viewport, seed)) continue;
+            ++resp.seed_count;
+            handle_root(newton_solve_center(seed, period, opt));
+        }
+
+        for (int i = 0; i < seeds_per_period; ++i) {
+            const Z seed = viewport_seed(req.viewport, static_cast<unsigned long long>(i), period);
+            if (std::norm(seed) > 4.0) continue;
+            ++resp.seed_count;
+            handle_root(newton_solve_center(seed, period, opt));
+        }
+    }
+
+    std::sort(resp.points.begin(), resp.points.end(), [](const auto& a, const auto& b) {
+        if (a.period != b.period) return a.period < b.period;
+        if (a.re != b.re) return a.re < b.re;
+        return a.im < b.im;
+    });
+
+    resp.accepted_count = static_cast<int>(resp.points.size());
+    resp.status = "completed";
+    resp.warning = "sampled viewport discovery; not guaranteed exhaustive";
     return resp;
 }
 

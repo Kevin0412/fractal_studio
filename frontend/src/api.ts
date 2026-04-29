@@ -143,7 +143,27 @@ export interface SpecialPointEnumRequest {
   viewport?: SpecialPointViewport
 }
 
+export interface SpecialPointSearchRequest {
+  kind?: 'center'
+  periodMin?: number
+  periodMax?: number
+  seedBudget?: number
+  maxNewtonIter?: number
+  includeVariantCompatibility?: boolean
+  visibleOnly?: boolean
+  viewport: SpecialPointViewport
+}
+
+export interface SpecialPointSnapRequest {
+  period: number
+  re: number
+  im: number
+  maxNewtonIter?: number
+  includeVariantCompatibility?: boolean
+}
+
 export interface OrbitClassification {
+  kind?: string
   found_repeat: boolean
   is_center: boolean
   is_misiurewicz: boolean
@@ -172,13 +192,30 @@ export interface SpecialPointEnumResult {
   real?: number
   imag?: number
   converged: boolean
+  success?: boolean
   accepted: boolean
   visible: boolean
   residual: number
   newtonIterations: number
   actual: OrbitClassification
   variants: VariantExistence[]
+  compatibleVariants?: string[]
+  variantCompatibility?: Record<string, any>
   reason: string
+}
+
+export interface SpecialPointSearchResponse {
+  runId: string
+  status: string
+  sampled: boolean
+  acceptedCount: number
+  seedCount: number
+  newtonSuccessCount: number
+  rejectedCount: number
+  points: SpecialPointEnumResult[]
+  warning?: string
+  reportArtifactId?: string
+  reportDownloadUrl?: string
 }
 
 export interface SpecialPointEnumResponse {
@@ -650,6 +687,15 @@ export const api = {
 
   specialPointsEnumerate: (req: SpecialPointEnumRequest) =>
     postJson<SpecialPointEnumResponse>('/api/special-points/enumerate', req),
+
+  specialPointsSearch: (req: SpecialPointSearchRequest, signal?: AbortSignal) =>
+    postJson<SpecialPointSearchResponse>('/api/special-points/search', req, signal),
+
+  specialPointsResults: (runId: string) =>
+    getJson<SpecialPointSearchResponse>(`/api/special-points/results?runId=${encodeURIComponent(runId)}`),
+
+  specialPointsSnap: (req: SpecialPointSnapRequest) =>
+    postJson<{ point: SpecialPointEnumResult }>('/api/special-points/snap', req),
 
   hsMesh:  (req: HsMeshRequest)  => postJson<MeshResponse>('/api/hs/mesh', req),
   hsField: (req: HsFieldRequest) => postJson<HsFieldResponse>('/api/hs/field', req),
