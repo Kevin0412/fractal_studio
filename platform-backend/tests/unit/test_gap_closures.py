@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import io
+
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
+import qrcode
+from starlette.datastructures import Headers, UploadFile
 
 from app.core.config import Settings
+from app.finance.manual_payout_service import ManualPayoutService
 from app.studio.models import FractalSpec
 
 
@@ -28,3 +34,25 @@ def test_julia_recipe_requires_complete_complex_constant() -> None:
 
 def test_non_julia_recipe_keeps_optional_julia_constant_absent() -> None:
     assert FractalSpec.model_validate({"version": 1, "julia": False}).julia_re is None
+
+
+@pytest.mark.asyncio
+async def test_payout_qr_must_contain_a_decodable_qr_code() -> None:
+    service = ManualPayoutService(
+        storage=object(),  # type: ignore[arg-type]
+        settings=Settings(database_url="postgresql+asyncpg://unused", session_secret="x" * 32),
+    )
+    image = qrcode.make("https://payout.example.test/creator")
+    encoded = io.BytesIO()
+    image.save(encoded, format="PNG")
+    valid = UploadFile(file=io.BytesIO(encoded.getvalue()), headers=Headers({"content-type": "image/png"}))
+    evidence = await service.validate_qr_upload(valid)
+    assert evidence.media_type == "image/png" and evidence.sanitized_bytes
+
+    from PIL import Image
+
+    blank = io.BytesIO()
+    Image.new("RGB", (64, 64), "white").save(blank, format="PNG")
+    invalid = UploadFile(file=io.BytesIO(blank.getvalue()), headers=Headers({"content-type": "image/png"}))
+    with pytest.raises(HTTPException, match="invalid_qr_image"):
+        await service.validate_qr_upload(invalid)

@@ -43,12 +43,12 @@ services:
       dockerfile: backend/Dockerfile
     environment:
       FSD_STARTUP_BENCHMARK: "off"
-      FSD_COMPUTE_SERVICE_KEY: development-compute-key
+      FSD_COMPUTE_SERVICE_KEY: ${FSD_COMPUTE_SERVICE_KEY:?set FSD_COMPUTE_SERVICE_KEY}
       FSD_RENDERER_VERSION: compose-dev
-      FSD_ENABLE_LEGACY_API: "1"
+      FSD_ENABLE_LEGACY_API: "0"
       FSD_ENABLE_LEGACY_FORMULA_COMPILER: "0"
     ports:
-      - "18080:18080"
+      - "${COMPUTE_PORT:-18080}:18080"
     volumes:
       - compute-runtime:/workspace/fractal_studio/runtime
     healthcheck:
@@ -68,7 +68,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://fractal:fractal@postgres:5432/fractal_platform
       REDIS_URL: redis://redis:6379/0
       COMPUTE_BASE_URL: http://compute:18080
-      COMPUTE_SERVICE_KEY: development-compute-key
+      COMPUTE_SERVICE_KEY: ${FSD_COMPUTE_SERVICE_KEY:?set FSD_COMPUTE_SERVICE_KEY}
       COMPUTE_NODE_ID: compose-compute-1
       FOUNDATION_ROUTES_ENABLED: "1"
     depends_on:
@@ -106,4 +106,3 @@ volumes:
   platform-postgres:
   platform-minio:
   compute-runtime:
-

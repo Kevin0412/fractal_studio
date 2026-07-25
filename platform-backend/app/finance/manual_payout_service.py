@@ -60,14 +60,14 @@ class ManualPayoutService:
         try:
             value = Decimal(raw.strip())
         except (AttributeError, InvalidOperation) as error:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid_payout_amount") from error
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="invalid_payout_amount") from error
         if not value.is_finite() or value <= 0 or value.as_tuple().exponent < -2:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid_payout_amount")
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="invalid_payout_amount")
         return value.quantize(_CENT)
 
     async def validate_qr_upload(self, upload: UploadFile) -> QrEvidence:
         if upload.content_type not in {"image/png", "image/jpeg"}:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid_qr_image")
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="invalid_qr_image")
         digest = hashlib.sha256()
         pieces: list[bytes] = []
         size = 0
@@ -79,7 +79,7 @@ class ManualPayoutService:
             pieces.append(chunk)
         raw = b"".join(pieces)
         if not raw:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid_qr_image")
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="invalid_qr_image")
         try:
             with Image.open(io.BytesIO(raw)) as probe:
                 probe.verify()
@@ -94,10 +94,10 @@ class ManualPayoutService:
                 output = io.BytesIO()
                 normalized.save(output, format="PNG", optimize=True)
         except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid_qr_image") from None
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="invalid_qr_image") from None
         sanitized = output.getvalue()
         if not sanitized or len(sanitized) > _MAX_QR_BYTES:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid_qr_image")
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="invalid_qr_image")
         return QrEvidence(streamed_sha256=digest.hexdigest(), sanitized_bytes=sanitized, media_type="image/png")
 
     async def create_request(
