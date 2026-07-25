@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     alipay_stub_mode: bool = False
     alipay_stub_public_key_url: str = ""
     alipay_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+    payout_qr_ttl_seconds: int = Field(default=600, ge=60, le=900)
+    payout_qr_rejected_retention_days: int = Field(default=30, ge=1, le=3650)
+    payout_qr_paid_retention_days: int = Field(default=90, ge=1, le=3650)
 
     @property
     def trusted_origins(self) -> set[str]:

@@ -53,6 +53,14 @@ class ObjectStorage:
             **self._put_args(object_key=object_key, media_type=media_type),
         )
 
+    async def upload_private_qr(self, *, object_key: str, body: bytes, media_type: str) -> None:
+        """Store sanitized payout evidence only in encrypted private storage."""
+        if not object_key.startswith("private/payout-qr/"):
+            raise ValueError("invalid_private_qr_key")
+        if media_type not in {"image/png", "image/jpeg"}:
+            raise ValueError("invalid_private_qr_media_type")
+        await self.upload_bytes(object_key=object_key, body=body, media_type=media_type)
+
     async def download_file(self, *, object_key: str, destination: Path) -> None:
         client = self._client()
         await asyncio.to_thread(
