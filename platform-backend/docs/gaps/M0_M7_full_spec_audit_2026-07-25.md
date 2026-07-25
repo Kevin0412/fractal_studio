@@ -17,20 +17,32 @@ ledger и ручные выплаты. Это **не release-ready MVP**: отс
 **частичное** — основная логика есть, но остался gap; **не доказано** — в этом
 репозитории нет требуемого runtime/production evidence.
 
+## Закрытие аудита (2026-07-25)
+
+Все G-01..G-10 закрыты коммитами `3bd80e9` и `2bbf958`, дополненными текущим
+изолированным Compose gate. Историческая таблица ниже сохранена как исходное
+доказательство, а не как перечень открытых работ.
+
+| Gap | Финальное доказательство закрытия |
+|---|---|
+| G-01 | `scripts/compute-production-contract.sh` поднимает реальный C++ Compute с service key и выключенным legacy API; `tests/e2e/test_compute_production_contract.py` проверяет auth, replay, conflict, manifest и private artifact. `scripts/e2e-real-compute.sh` дополнительно проводит Platform render→ingest через реальный C++ процесс. |
+| G-02 | `scripts/e2e.sh` создаёт чистый профиль `e2e`, bootstrap-ит только допустимые identities и запускает black-box suite. Happy path, recovery, access boundaries и contract matrix прошли: `4 passed`. |
+| G-03..G-10 | Lease heartbeat, payout dead-letter recovery, лимит Alipay, lifecycle idempotency, public error namespace, QR decode, redacted logging и `explore.limit=48` реализованы и покрыты unit/HTTP checks. |
+
 | Область | Статус | Краткое основание |
 |---|---|---|
-| M0 foundation/schema/dev | частичное | Compose и миграции есть; отсутствует изолированный release-E2E стенд. |
-| M1 auth/access | частичное | Opaque sessions, RBAC, CSRF, rate limits и audit есть; lifecycle idempotency TTL не работает. |
-| M2 studio/render | частичное | Canonical recipes, quota, mapper и worker есть; реальный Compute v1 не доказан. |
+| M0 foundation/schema/dev | полное | Compose, миграции и изолированный release-E2E стенд есть. |
+| M1 auth/access | полное | Opaque sessions, RBAC, CSRF, rate limits, audit и lifecycle idempotency есть. |
+| M2 studio/render | полное | Canonical recipes, quota, mapper, worker и real Compute v1 evidence есть. |
 | M3 assets/media | полное условно | Ingest с checksum, private master, derivatives, entitlement download и cleanup реализованы; зависит от Compute и общего outbox gap. |
-| M4 marketplace | частичное | Listings, immutable versions, search/favorites реализованы; `explore.limit` нарушает публичный контракт. |
-| M5 commerce | частичное | Checkout, signed webhook, reconciliation, reversal и entitlement есть; нет configured maximum суммы Alipay и error-code контракт расходится. |
-| M6 finance/payout | частичное | Ledger/projection и ручная выплата есть; QR cleanup может навсегда остаться dead, требование QR scan не доказано. |
-| M7 outbox/worker | частичное | `SKIP LOCKED`, retry/dead-letter и domain handlers есть; lease не продлевается во время долгой работы. |
-| T14 release E2E | отсутствует | Есть независимые opt-in модульные E2E, нет единого black-box release suite/Compose profile/script. |
-| T15 Compute production | не доказано | Есть Platform client и test stub, нет C++ deployment/contract evidence в данном checkout. |
+| M4 marketplace | полное | Listings, immutable versions, search/favorites и `explore.limit=48` реализованы. |
+| M5 commerce | полное | Checkout, signed webhook, reconciliation, reversal, entitlement, max Alipay amount и stable errors есть. |
+| M6 finance/payout | полное | Ledger/projection, ручная выплата, QR scan и dead-letter cleanup recovery есть. |
+| M7 outbox/worker | полное | `SKIP LOCKED`, retry/dead-letter, handlers и lease heartbeat есть. |
+| T14 release E2E | полное | Изолированный black-box Compose profile, bootstrap и один runner есть. |
+| T15 Compute production | полное | Реальный C++ deployment, direct contract и Platform render/ingest E2E есть. |
 
-## Подтверждённые gaps
+## Исходные gaps (закрыты)
 
 | ID / критичность | Расхождение и доказательство | Риск | Минимальное закрытие |
 |---|---|---|---|

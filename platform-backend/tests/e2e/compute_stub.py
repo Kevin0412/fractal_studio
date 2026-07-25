@@ -31,6 +31,11 @@ _transient_attempts: dict[str, int] = {}
 _VIDEO_BYTES: bytes | None = None
 
 
+@app.get("/compute/v1/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 def _require_service_key(authorization: str | None) -> None:
     if authorization != _SERVICE_KEY:
         raise HTTPException(status_code=401, detail="COMPUTE_UNAUTHORIZED")
@@ -95,6 +100,8 @@ async def render_inline(
     kind, payload = _payload(envelope)
     if kind != "map_image":
         raise HTTPException(status_code=422)
+    if payload.get("variant") == "compute_rejected":
+        raise HTTPException(status_code=503)
     width = int(payload["width"])
     height = int(payload["height"])
     rgba = bytes([32, 128, 255, 255]) * (width * height)

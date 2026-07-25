@@ -118,7 +118,11 @@ async def settle_checkout(
     async with httpx.AsyncClient(base_url=alipay_stub_url(), timeout=15, trust_env=False) as stub:
         notice = await stub.post(
             "/test/notifications",
-            json={"outTradeNo": payment["paymentAttempt"]["outTradeNo"], "tradeStatus": trade_status},
+            json={
+                "outTradeNo": payment["paymentAttempt"]["outTradeNo"],
+                "tradeStatus": trade_status,
+                "totalAmount": payment["order"]["amount"],
+            },
         )
         assert notice.status_code == 200, notice.text
     webhook = await buyer.post(

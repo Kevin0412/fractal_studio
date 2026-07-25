@@ -3,9 +3,12 @@ FROM debian:bookworm-slim AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake libopencv-dev libsqlite3-dev libssl-dev libomp-dev \
     libmpfr-dev libgmp-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY backend /src/backend
-RUN cmake -S backend -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j2
+RUN cmake -S backend -B build -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build build --target fractal_studio_backend -j2
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
