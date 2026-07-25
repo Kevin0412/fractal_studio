@@ -122,7 +122,7 @@ async def explore(
     max_price: Decimal | None = Query(default=None, alias="maxPrice", ge=Decimal("0.01")),
     sort: Literal["newest", "price_asc", "price_desc", "relevance"] = "newest",
     cursor: str | None = Query(default=None, max_length=2048),
-    limit: int = Query(default=24, ge=1, le=100),
+    limit: int = Query(default=24, ge=1, le=48),
 ) -> dict[str, object]:
     if sort == "relevance" and not (q and q.strip()):
         sort = "newest"

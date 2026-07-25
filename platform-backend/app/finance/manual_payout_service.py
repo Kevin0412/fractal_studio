@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 from fastapi import HTTPException, UploadFile, status
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy.exc import IntegrityError
+import zxingcpp
 
 from app.assets.cleanup_service import queue_object_cleanup
 from app.auth.models import AccessPrincipal
@@ -88,6 +89,8 @@ class ManualPayoutService:
                 if source.format != expected_format or source.width * source.height > _MAX_QR_PIXELS:
                     raise ValueError
                 normalized = source.convert("RGBA" if "A" in source.getbands() else "RGB")
+                if not zxingcpp.read_barcodes(normalized):
+                    raise ValueError
                 output = io.BytesIO()
                 normalized.save(output, format="PNG", optimize=True)
         except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):

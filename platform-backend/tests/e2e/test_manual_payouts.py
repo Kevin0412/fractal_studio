@@ -9,7 +9,7 @@ import uuid
 
 import httpx
 import pytest
-from PIL import Image
+import qrcode
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -25,7 +25,9 @@ pytestmark = pytest.mark.skipif(
 
 
 def _qr_bytes(color: tuple[int, int, int], image_format: str = "PNG") -> bytes:
-    image = Image.new("RGB", (64, 64), color)
+    image = qrcode.make(f"https://qr.example.test/{color[0]}-{color[1]}-{color[2]}")
+    if image_format == "JPEG":
+        image = image.convert("RGB")
     output = io.BytesIO()
     image.save(output, format=image_format)
     return output.getvalue()

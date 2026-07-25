@@ -133,6 +133,20 @@ async def mark_done(connection: AsyncConnection, *, event_id: UUID, worker_id: s
     return result.rowcount == 1
 
 
+async def renew_lease(
+    connection: AsyncConnection, *, event_id: UUID, worker_id: str, lease_seconds: int
+) -> bool:
+    """Keep an active handler exclusively owned while it performs bounded external work."""
+    result = await connection.execute(
+        text(
+            "UPDATE outbox_events SET lease_until = now() + (:lease_seconds * interval '1 second') "
+            "WHERE id = :event_id AND status = 'leased' AND lease_owner = :worker_id"
+        ),
+        {"event_id": event_id, "worker_id": worker_id, "lease_seconds": lease_seconds},
+    )
+    return result.rowcount == 1
+
+
 async def reschedule_or_dead_letter(
     connection: AsyncConnection,
     *,

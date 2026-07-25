@@ -93,6 +93,7 @@ services:
       ALIPAY_STUB_PUBLIC_KEY_URL: ${ALIPAY_STUB_PUBLIC_KEY_URL:-}
       ALIPAY_TIMEOUT_SECONDS: ${ALIPAY_TIMEOUT_SECONDS:-10}
       ALIPAY_GATEWAY_URL: ${ALIPAY_GATEWAY_URL:-https://openapi.alipay.com/gateway.do}
+      ALIPAY_MAX_TOTAL_AMOUNT: ${ALIPAY_MAX_TOTAL_AMOUNT:-1000000.00}
       OUTBOX_POLL_INTERVAL_SECONDS: ${OUTBOX_POLL_INTERVAL_SECONDS:-1}
       OUTBOX_LEASE_SECONDS: ${OUTBOX_LEASE_SECONDS:-30}
       OUTBOX_MAX_ATTEMPTS: ${OUTBOX_MAX_ATTEMPTS:-10}
@@ -112,6 +113,7 @@ services:
       PAYOUT_QR_TTL_SECONDS: ${PAYOUT_QR_TTL_SECONDS:-600}
       PAYOUT_QR_REJECTED_RETENTION_DAYS: ${PAYOUT_QR_REJECTED_RETENTION_DAYS:-30}
       PAYOUT_QR_PAID_RETENTION_DAYS: ${PAYOUT_QR_PAID_RETENTION_DAYS:-90}
+      PAYOUT_QR_CLEANUP_RETRY_DELAY_SECONDS: ${PAYOUT_QR_CLEANUP_RETRY_DELAY_SECONDS:-300}
       PREVIEW_MAX_PIXELS: ${PREVIEW_MAX_PIXELS:-1048576}
       PREVIEW_MAX_WIDTH: ${PREVIEW_MAX_WIDTH:-1024}
       PREVIEW_MAX_HEIGHT: ${PREVIEW_MAX_HEIGHT:-1024}
@@ -170,6 +172,48 @@ services:
       redis:
         condition: service_healthy
     stop_grace_period: 15s
+
+  compute-stub:
+    profiles: ["e2e"]
+    build:
+      context: .
+    command: ["uv", "run", "--no-sync", "uvicorn", "tests.e2e.fixtures.compute_stub:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "${E2E_COMPUTE_STUB_PORT:-28081}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from urllib.request import urlopen; assert urlopen('http://127.0.0.1:8000/compute/v1/health').status == 200\""]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  alipay-stub:
+    profiles: ["e2e"]
+    build:
+      context: .
+    command: ["uv", "run", "--no-sync", "uvicorn", "tests.e2e.fixtures.alipay_stub:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "${E2E_ALIPAY_STUB_PORT:-28082}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from urllib.request import urlopen; assert urlopen('http://127.0.0.1:8000/test/public-key').status == 200\""]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  e2e-fixtures:
+    profiles: ["e2e"]
+    build:
+      context: .
+    command: ["uv", "run", "--no-sync", "python", "scripts/e2e_bootstrap.py"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://fractal:fractal_dev_password@postgres:5432/fractal_platform}
+      E2E_API_URL: http://api:8000
+      E2E_FINANCE_EMAIL: ${E2E_FINANCE_EMAIL:-finance-operator@e2e.invalid}
+      E2E_FINANCE_PASSWORD: ${E2E_FINANCE_PASSWORD:-e2e-finance-password-01}
+      E2E_DISABLED_EMAIL: ${E2E_DISABLED_EMAIL:-disabled-user@e2e.invalid}
+      E2E_DISABLED_PASSWORD: ${E2E_DISABLED_PASSWORD:-e2e-disabled-password-01}
+    depends_on:
+      api:
+        condition: service_started
 
 volumes:
   postgres_data:

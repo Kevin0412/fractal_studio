@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 import signal
@@ -103,6 +104,7 @@ class OutboxWorker:
 
     async def _dispatch_claimed(self, event: OutboxEvent) -> None:
         token = request_id_var.set(event.causation_request_id or f"outbox:{event.id}")
+        heartbeat = asyncio.create_task(self._renew_lease_until_cancelled(event))
         try:
             await self._handlers.dispatch(event)
         except RescheduleOutboxEvent as deferred:
@@ -135,7 +137,30 @@ class OutboxWorker:
                 event_type=event.event_type,
             )
         finally:
+            heartbeat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat
             request_id_var.reset(token)
+
+    async def _renew_lease_until_cancelled(self, event: OutboxEvent) -> None:
+        interval = max(0.25, self._settings.outbox_lease_seconds / 3)
+        while True:
+            await asyncio.sleep(interval)
+            async with get_engine().begin() as connection:
+                renewed = await repository.renew_lease(
+                    connection,
+                    event_id=event.id,
+                    worker_id=self._worker_id,
+                    lease_seconds=self._settings.outbox_lease_seconds,
+                )
+            if not renewed:
+                worker_log(
+                    logging.WARNING,
+                    "outbox lease lost during handler execution",
+                    event_id=event.id,
+                    event_type=event.event_type,
+                )
+                return
 
     async def _fail(self, event: OutboxEvent, error_code: str) -> None:
         if not _ERROR_CODE.fullmatch(error_code):
@@ -182,6 +207,7 @@ async def run() -> None:
         except NotImplementedError:
             pass
     from app.studio.quota_expiry_scheduler import RenderQuotaExpiryScheduler
+    from app.core.idempotency_cleanup import IdempotencyExpiryScheduler
     from app.assets.cleanup_service import AssetCleanupScheduler
     from app.commerce.service import CommerceService
     from app.finance.cleanup_service import PayoutQrCleanupService
@@ -191,10 +217,17 @@ async def run() -> None:
     handlers = build_render_handler_registry()
     handlers.register("payment.reconcile.v1", commerce.reconcile_event)
     handlers.register_dead_letter("payment.reconcile.v1", commerce.on_reconcile_dead_letter)
-    handlers.register("payout.qr_cleanup.v1", PayoutQrCleanupService().cleanup_qr)
+    payout_cleanup = PayoutQrCleanupService()
+    handlers.register("payout.qr_cleanup.v1", payout_cleanup.cleanup_qr)
+    handlers.register_dead_letter("payout.qr_cleanup.v1", payout_cleanup.dead_letter)
     worker = OutboxWorker(
         handlers=handlers,
-        due_work_readers=(RenderQuotaExpiryScheduler(), AssetCleanupScheduler(), commerce),
+        due_work_readers=(
+            RenderQuotaExpiryScheduler(),
+            AssetCleanupScheduler(),
+            IdempotencyExpiryScheduler(),
+            commerce,
+        ),
     )
     worker_log(logging.INFO, "outbox worker started", worker_id=worker._worker_id)
     await worker.run(stop_event)

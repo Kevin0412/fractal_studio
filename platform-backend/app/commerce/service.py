@@ -57,7 +57,11 @@ class CheckoutService:
         offer = await self._listings.find_published_offer(listing_id=listing_id, licence_offer_id=licence_offer_id)
         if offer is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="published_offer_not_found")
-        if offer.currency != "CNY" or offer.price < _CENT:
+        if (
+            offer.currency != "CNY"
+            or offer.price < _CENT
+            or offer.price > get_settings().alipay_max_total_amount
+        ):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="published_offer_invalid")
         settings = get_settings()
         now = datetime.now(UTC)

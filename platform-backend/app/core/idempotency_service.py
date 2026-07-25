@@ -47,6 +47,9 @@ async def claim(
     now = datetime.now(UTC)
     digest = request_hash(body)
     record_id = uuid.uuid4()
+    lease_owner = str(uuid.uuid4())
+    expires_at = now + timedelta(hours=settings.idempotency_ttl_hours)
+    lease_until = now + timedelta(seconds=settings.idempotency_lease_seconds)
     claimed = await idempotency_repository.insert_claim(
         connection,
         record_id=record_id,
@@ -54,13 +57,25 @@ async def claim(
         scope=scope,
         key=key,
         request_hash=digest,
-        lease_owner=str(uuid.uuid4()),
-        expires_at=now + timedelta(hours=settings.idempotency_ttl_hours),
-        lease_until=now + timedelta(seconds=settings.idempotency_lease_seconds),
+        lease_owner=lease_owner,
+        expires_at=expires_at,
+        lease_until=lease_until,
     )
     if claimed:
         return IdempotencyClaim(record_id=record_id)
     existing = await idempotency_repository.lock(connection, user_id=user_id, scope=scope, key=key)
+    lease_expired = existing["lease_until"] is not None and existing["lease_until"] <= now
+    if existing["expires_at"] <= now or (existing["status"] == "processing" and lease_expired):
+        reclaimed = await idempotency_repository.reclaim(
+            connection,
+            record_id=existing["id"],
+            request_hash=digest,
+            lease_owner=lease_owner,
+            lease_until=lease_until,
+            expires_at=expires_at,
+        )
+        if reclaimed:
+            return IdempotencyClaim(record_id=existing["id"])
     if existing["request_hash"] != digest:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="idempotency_conflict")
     if existing["status"] == "completed":

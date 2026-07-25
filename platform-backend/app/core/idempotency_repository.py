@@ -48,12 +48,53 @@ async def lock(connection: AsyncConnection, *, user_id: uuid.UUID, scope: str, k
     result = await connection.execute(
         text(
             "SELECT id, request_hash, status::text, response_json, response_status, response_headers_json, "
-            "lease_until FROM idempotency_records WHERE user_id = :user_id AND scope = :scope "
+            "lease_until, expires_at FROM idempotency_records WHERE user_id = :user_id AND scope = :scope "
             "AND idempotency_key = :key FOR UPDATE"
         ),
         {"user_id": user_id, "scope": scope, "key": key},
     )
     return dict(result.mappings().one())
+
+
+async def reclaim(
+    connection: AsyncConnection,
+    *,
+    record_id: uuid.UUID,
+    request_hash: str,
+    lease_owner: str,
+    lease_until: datetime,
+    expires_at: datetime,
+) -> bool:
+    """Reuse a locked stale row; uniqueness remains stable without permanent key poisoning."""
+    result = await connection.execute(
+        text(
+            "UPDATE idempotency_records SET request_hash = :request_hash, status = 'processing', "
+            "response_json = NULL, response_status = NULL, response_headers_json = NULL, completed_at = NULL, "
+            "lease_owner = :lease_owner, lease_until = :lease_until, expires_at = :expires_at WHERE id = :id"
+        ),
+        {
+            "id": record_id,
+            "request_hash": request_hash,
+            "lease_owner": lease_owner,
+            "lease_until": lease_until,
+            "expires_at": expires_at,
+        },
+    )
+    return result.rowcount == 1
+
+
+async def delete_expired(connection: AsyncConnection, *, batch_size: int = 1_000) -> int:
+    """Bound cleanup work so completed idempotency records cannot grow forever."""
+    result = await connection.execute(
+        text(
+            "WITH expired AS ("
+            " SELECT id FROM idempotency_records WHERE expires_at <= now() "
+            " ORDER BY expires_at FOR UPDATE SKIP LOCKED LIMIT :batch_size"
+            ") DELETE FROM idempotency_records WHERE id IN (SELECT id FROM expired)"
+        ),
+        {"batch_size": batch_size},
+    )
+    return result.rowcount or 0
 
 
 async def complete(

@@ -1,5 +1,6 @@
 """Typed application configuration."""
 
+from decimal import Decimal
 from functools import lru_cache
 
 from pydantic import Field, model_validator
@@ -73,9 +74,11 @@ class Settings(BaseSettings):
     alipay_stub_mode: bool = False
     alipay_stub_public_key_url: str = ""
     alipay_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+    alipay_max_total_amount: Decimal = Field(default=Decimal("1_000_000.00"), ge=Decimal("0.01"))
     payout_qr_ttl_seconds: int = Field(default=600, ge=60, le=900)
     payout_qr_rejected_retention_days: int = Field(default=30, ge=1, le=3650)
     payout_qr_paid_retention_days: int = Field(default=90, ge=1, le=3650)
+    payout_qr_cleanup_retry_delay_seconds: int = Field(default=300, ge=30, le=86_400)
 
     @property
     def trusted_origins(self) -> set[str]:

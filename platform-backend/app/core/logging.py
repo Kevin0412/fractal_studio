@@ -49,9 +49,13 @@ def configure_logging(*, json_output: bool = False) -> None:
 
 
 def log_event(level: int, message: str, **fields: Any) -> None:
-    """Only stable message/metadata: callers must not pass raw request/provider payloads."""
-    safe_suffix = " ".join(f"{key}={value}" for key, value in sorted(fields.items()))
-    LOGGER.log(level, message if not safe_suffix else f"{message} {safe_suffix}")
+    """Emit only a stable message and mandatory correlation context.
+
+    Arbitrary metadata is intentionally not rendered: this boundary prevents a future
+    caller from leaking provider payloads, signed URLs, object keys or credentials.
+    """
+    del fields
+    LOGGER.log(level, message)
 
 
 def worker_log(level: int, message: str, **fields: Any) -> None:

@@ -88,13 +88,25 @@ async def assign_request_id(request: Request, call_next):
         idempotency_key_var.reset(idempotency_token)
 
 
-_DEFAULT_ERROR_CODE = {401: "unauthenticated", 403: "forbidden", 404: "not_found", 409: "invalid_state", 413: "payload_too_large", 422: "validation_error", 429: "quota_exceeded", 502: "compute_error", 503: "service_unavailable"}
+_DEFAULT_ERROR_CODE = {
+    401: "unauthenticated",
+    403: "forbidden",
+    404: "not_found",
+    409: "invalid_state",
+    413: "payload_too_large",
+    422: "validation_error",
+    429: "quota_exceeded",
+    502: "compute_error",
+    503: "payment_unavailable",
+}
 
 
 @app.exception_handler(HTTPException)
 async def platform_http_exception_handler(request: Request, error: HTTPException) -> JSONResponse:
     detail = error.detail if isinstance(error.detail, str) else None
-    code = detail or _DEFAULT_ERROR_CODE.get(error.status_code, "request_failed")
+    code = "idempotency_conflict" if detail == "idempotency_conflict" else _DEFAULT_ERROR_CODE.get(
+        error.status_code, "request_failed"
+    )
     if code == "idempotency_conflict":
         message = "idempotency key conflicts with a different request"
     else:

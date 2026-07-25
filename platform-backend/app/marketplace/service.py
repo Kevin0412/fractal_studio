@@ -15,6 +15,7 @@ from app.assets.ports import AssetPreview, AssetReader
 from app.assets.reader import AssetReadService
 from app.auth.models import AccessPrincipal
 from app.core import audit_writer, idempotency_service
+from app.core.config import get_settings
 from app.core.db import get_engine
 from app.core.request_context import request_id
 from app.marketplace import repository
@@ -74,6 +75,7 @@ class MarketplaceService:
     async def create_draft(
         self, *, principal: AccessPrincipal, payload: ListingCreateInput, idempotency_key: str, request: Request
     ) -> tuple[dict[str, object], int, dict[str, str]]:
+        self._validate_price(payload.price)
         owned = await self._assets.find_owned_asset(asset_id=payload.asset_id, owner_id=principal.user_id)
         if owned is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="asset_not_found")
@@ -111,6 +113,8 @@ class MarketplaceService:
         self, *, principal: AccessPrincipal, listing_id: UUID, payload: ListingUpdateInput,
         idempotency_key: str, request: Request,
     ) -> tuple[dict[str, object], int, dict[str, str]]:
+        if payload.price is not None:
+            self._validate_price(payload.price)
         licence = self._resolve_update_licence(payload.licence_offer)
         async with get_engine().begin() as connection:
             claim = await idempotency_service.claim(
@@ -290,6 +294,14 @@ class MarketplaceService:
         return offer.code, offer.terms_version, self._licences.resolve_immutable_terms(
             code=offer.code, terms_version=offer.terms_version
         )
+
+    @staticmethod
+    def _validate_price(price: Decimal) -> None:
+        if price > get_settings().alipay_max_total_amount:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="price_exceeds_alipay_maximum",
+            )
 
     @staticmethod
     def _snapshot(record: repository.ListingRecord, *, media_type: str) -> dict[str, object]:
