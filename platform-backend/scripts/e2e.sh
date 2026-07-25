@@ -57,4 +57,4 @@ curl --noproxy '*' -fsS "$E2E_API_URL/v1/explore?sort=newest&limit=24" >/dev/nul
 
 cd "$ROOT_DIR"
 uv run pytest -q \
-  ${E2E_TEST_FILES:-tests/e2e/test_mvp_happy_path.py tests/e2e/test_failure_recovery.py tests/e2e/test_security_boundaries.py tests/e2e/test_api_contract_matrix.py}
+  ${E2E_TEST_FILES:-tests/e2e/test_full_user_journey.py tests/e2e/test_mvp_happy_path.py tests/e2e/test_failure_recovery.py tests/e2e/test_security_boundaries.py tests/e2e/test_api_contract_matrix.py}
