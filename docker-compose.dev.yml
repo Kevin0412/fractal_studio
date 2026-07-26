@@ -139,10 +139,12 @@ services:
     environment:
       NEXT_PUBLIC_PLATFORM_API_URL: /platform
       PLATFORM_INTERNAL_URL: http://api:8000
+    command: ["/bin/sh", "/app/scripts/dev-frontend.sh"]
     ports: ["${FRONTEND_PORT:-3010}:3000"]
     volumes:
       - ./frontend:/app
       - frontend-node-modules:/app/node_modules
+      - frontend-next-cache:/app/.next
     depends_on:
       api:
         condition: service_started
@@ -153,3 +155,4 @@ volumes:
   platform-minio:
   compute-runtime:
   frontend-node-modules:
+  frontend-next-cache:

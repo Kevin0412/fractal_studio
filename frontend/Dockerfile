@@ -5,6 +5,7 @@ RUN corepack enable
 
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
+RUN sha256sum pnpm-lock.yaml | awk '{print $1}' > node_modules/.fractal-lock.sha256
 
 COPY frontend/ ./
 
