@@ -100,17 +100,18 @@ _DEFAULT_ERROR_CODE = {
     503: "payment_unavailable",
 }
 
+_PUBLIC_DETAIL_CODES = {
+    "email_already_registered",
+    "handle_already_registered",
+    "idempotency_conflict",
+}
+
 
 @app.exception_handler(HTTPException)
 async def platform_http_exception_handler(request: Request, error: HTTPException) -> JSONResponse:
     detail = error.detail if isinstance(error.detail, str) else None
-    code = "idempotency_conflict" if detail == "idempotency_conflict" else _DEFAULT_ERROR_CODE.get(
-        error.status_code, "request_failed"
-    )
-    if code == "idempotency_conflict":
-        message = "idempotency key conflicts with a different request"
-    else:
-        message = _DEFAULT_ERROR_CODE.get(error.status_code, "request failed").replace("_", " ")
+    code = detail if detail in _PUBLIC_DETAIL_CODES else _DEFAULT_ERROR_CODE.get(error.status_code, "request_failed")
+    message = code.replace("_", " ")
     return JSONResponse(status_code=error.status_code, content={"error": {"code": code, "message": message, "details": {}}})
 
 

@@ -3,9 +3,14 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { platform, type Asset } from "@/lib/api/platform";
+import { platform, PlatformApiError, type Asset } from "@/lib/api/platform";
 
-function errorText(error: unknown): string { return error instanceof Error ? error.message : "Request failed"; }
+function errorText(error: unknown): string {
+  if (error instanceof PlatformApiError && error.status === 403) {
+    return "Create a creator profile in Payouts before publishing a listing.";
+  }
+  return error instanceof Error ? error.message : "Request failed";
+}
 
 export default function AssetsPage() {
   const [assets, setAssets] = useState<Asset[]>([]);

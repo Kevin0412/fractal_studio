@@ -8,6 +8,7 @@ import { useAuth } from "@/providers/auth-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Link } from "@/i18n/navigation";
+import { PlatformApiError } from "@/lib/api/platform";
 import { UserPlus, Mail, Lock } from "lucide-react";
 
 const registerSchema = z
@@ -39,8 +40,12 @@ export function RegisterForm() {
     try {
       setServerError(null);
       await registerUser({ email: data.email, password: data.password });
-    } catch {
-      setServerError("Registration failed. Please try again.");
+    } catch (error) {
+      setServerError(
+        error instanceof PlatformApiError && error.code === "email_already_registered"
+          ? "This email already has an account. Sign in instead."
+          : "Registration failed. Please try again.",
+      );
     }
   };
 
