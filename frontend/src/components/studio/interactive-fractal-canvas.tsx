@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef } from "react";
-import { LoaderCircle, RotateCcw } from "lucide-react";
+import { Minus, Plus, LoaderCircle, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { FractalSpec } from "@/lib/api/platform";
 
@@ -13,9 +13,10 @@ type Props = {
   height: number;
   onChange: (patch: Partial<FractalSpec>) => void;
   onReset: () => void;
+  onZoom: (factor: number) => void;
 };
 
-export function InteractiveFractalCanvas({ spec, preview, previewing, width, height, onChange, onReset }: Props) {
+export function InteractiveFractalCanvas({ spec, preview, previewing, width, height, onChange, onReset, onZoom }: Props) {
   const element = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; re: number; im: number } | null>(null);
 
@@ -42,9 +43,13 @@ export function InteractiveFractalCanvas({ spec, preview, previewing, width, hei
     style={{ touchAction: "none", aspectRatio: `${width}/${height}` }}>
     {preview ? <img src={preview} alt="Fractal preview" draggable={false} className="h-full w-full select-none object-contain" /> : <div className="grid h-full min-h-[26rem] place-items-center text-sm text-muted-foreground">Generating first preview…</div>}
     <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/70 to-transparent p-3 text-xs text-white/70">
-      <span>Drag pan · wheel zoom</span><span>{Number(spec.scale ?? 0).toExponential(3)} · {spec.iterations} it.</span>
+      <span>Drag to move · scroll or buttons to zoom</span><span>{spec.iterations} detail</span>
     </div>
     {previewing && <div className="pointer-events-none absolute inset-0 grid place-items-center bg-black/25"><span className="flex items-center gap-2 rounded-full bg-black/70 px-3 py-1.5 text-sm"><LoaderCircle className="h-4 w-4 animate-spin" /> Rendering preview</span></div>}
-    <Button size="sm" variant="secondary" className="absolute right-3 top-3" onClick={onReset}><RotateCcw className="mr-1 h-3.5 w-3.5" />Reset</Button>
+    <div className="absolute right-3 top-3 flex overflow-hidden rounded-lg border border-white/15 bg-black/70 backdrop-blur">
+      <Button aria-label="Zoom out" size="sm" variant="ghost" className="rounded-none" onClick={() => onZoom(2)}><Minus className="h-4 w-4" /></Button>
+      <Button aria-label="Zoom in" size="sm" variant="ghost" className="rounded-none border-x border-white/15" onClick={() => onZoom(0.5)}><Plus className="h-4 w-4" /></Button>
+      <Button aria-label="Reset view" size="sm" variant="ghost" className="rounded-none" onClick={onReset}><RotateCcw className="h-4 w-4" /></Button>
+    </div>
   </div>;
 }

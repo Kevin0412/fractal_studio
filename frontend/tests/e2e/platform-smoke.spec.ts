@@ -21,14 +21,17 @@ test("browser registers through Platform and explores an interactive real Comput
   await page.getByPlaceholder("Confirm password").fill("browser-test-password");
   await page.getByRole("button", { name: "Create account" }).click();
   await page.waitForURL(/\/studio$/, { timeout: 30_000 });
-  await expect(page.locator("main").getByRole("heading", { name: "Fractal Studio" })).toBeVisible();
-  await expect(page.getByText("Drag pan · wheel zoom")).toBeVisible();
+  await expect(page.locator("main").getByRole("heading", { name: "Explore, don’t configure." })).toBeVisible();
+  await expect(page.getByText("Scroll or use + / − to zoom.")).toBeVisible();
   await expect(page.getByAltText("Fractal preview")).toBeVisible({ timeout: 30_000 });
 
-  await page.getByRole("button", { name: "Go", exact: true }).click();
-  await expect(page.getByText("Recent history")).toBeVisible();
-  await page.getByRole("button", { name: "Save view" }).click();
+  await page.getByLabel("Zoom in").click();
+  await page.getByRole("button", { name: "Try", exact: true }).click();
+  await expect(page.getByText("Recent explorations")).toBeVisible();
+  await page.getByRole("button", { name: "Save this view" }).click();
   await expect(page.getByText("View 1", { exact: false })).toBeVisible();
+  await page.getByText("Fine tuning", { exact: true }).click();
+  await page.getByText("Expert controls", { exact: true }).click();
   await page.getByLabel("Custom gradient").check();
   await expect(page.locator('input[type="color"]')).toHaveCount(3);
   await expect.poll(() => gradientPreviewResponses).toContain(200);
