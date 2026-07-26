@@ -16,5 +16,14 @@ test("browser registers through Platform and renders a real Compute preview", as
 
   await page.getByRole("button", { name: "Preview" }).click();
   await expect(page.getByAltText("Fractal preview")).toBeVisible({ timeout: 30_000 });
+
+  await page.route("**/platform/v1/me/assets?limit=48", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await route.continue();
+  });
+  await page.getByRole("link", { name: "Library" }).click();
+  await expect(page).toHaveURL(/\/assets$/);
+  await expect(page.getByRole("status")).toHaveText("Loading data…");
+
   expect(forbiddenApiRequests).toEqual([]);
 });

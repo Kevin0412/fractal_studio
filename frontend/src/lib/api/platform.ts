@@ -116,6 +116,17 @@ export class PlatformApiError extends Error {
 
 const baseUrl = process.env.NEXT_PUBLIC_PLATFORM_API_URL ?? "/platform";
 let csrf: string | null = null;
+export const PLATFORM_REQUEST_ACTIVITY_EVENT = "fractal-platform-request-activity";
+let activeRequestCount = 0;
+
+function reportRequestActivity(change: 1 | -1): void {
+  activeRequestCount = Math.max(0, activeRequestCount + change);
+  window.dispatchEvent(
+    new CustomEvent<{ active: number }>(PLATFORM_REQUEST_ACTIVITY_EVENT, {
+      detail: { active: activeRequestCount },
+    }),
+  );
+}
 
 function idempotencyKey(): string {
   return crypto.randomUUID();
@@ -145,24 +156,34 @@ async function request<T>(
   init: RequestInit = {},
   options: { csrf?: boolean; idempotency?: boolean; raw?: boolean } = {},
 ): Promise<T> {
-  const headers = new Headers(init.headers);
-  headers.set("Accept", "application/json");
-  const method = (init.method ?? "GET").toUpperCase();
-  if (init.body && !(init.body instanceof FormData)) headers.set("Content-Type", "application/json");
-  if (options.idempotency) headers.set("Idempotency-Key", idempotencyKey());
-  if (options.csrf) headers.set("X-CSRF-Token", await csrfToken());
-  const response = await fetch(`${baseUrl}${path}`, { ...init, method, headers, credentials: "include" });
-  if (!response.ok) throw await asError(response);
-  if (options.raw) return response as T;
-  if (response.status === 204) return undefined as T;
-  const body = (await response.json()) as { data: T };
-  return body.data;
+  reportRequestActivity(1);
+  try {
+    const headers = new Headers(init.headers);
+    headers.set("Accept", "application/json");
+    const method = (init.method ?? "GET").toUpperCase();
+    if (init.body && !(init.body instanceof FormData)) headers.set("Content-Type", "application/json");
+    if (options.idempotency) headers.set("Idempotency-Key", idempotencyKey());
+    if (options.csrf) headers.set("X-CSRF-Token", await csrfToken());
+    const response = await fetch(`${baseUrl}${path}`, { ...init, method, headers, credentials: "include" });
+    if (!response.ok) throw await asError(response);
+    if (options.raw) return response as T;
+    if (response.status === 204) return undefined as T;
+    const body = (await response.json()) as { data: T };
+    return body.data;
+  } finally {
+    reportRequestActivity(-1);
+  }
 }
 
 async function collection<T>(path: string): Promise<Page<T>> {
-  const response = await fetch(`${baseUrl}${path}`, { headers: { Accept: "application/json" }, credentials: "include" });
-  if (!response.ok) throw await asError(response);
-  return response.json() as Promise<Page<T>>;
+  reportRequestActivity(1);
+  try {
+    const response = await fetch(`${baseUrl}${path}`, { headers: { Accept: "application/json" }, credentials: "include" });
+    if (!response.ok) throw await asError(response);
+    return response.json() as Promise<Page<T>>;
+  } finally {
+    reportRequestActivity(-1);
+  }
 }
 
 function json(body: unknown): string {

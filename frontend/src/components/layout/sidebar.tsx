@@ -1,7 +1,7 @@
 "use client";
 import * as React from "react";
 import { cn } from "@/lib/utils/cn";
-import { usePathname, Link } from "@/i18n/navigation";
+import { usePathname, useRouter, Link } from "@/i18n/navigation";
 import {
   Wand2,
   Images,
@@ -11,6 +11,7 @@ import {
   List,
   Heart,
   ShieldCheck,
+  Loader2,
   type LucideIcon,
 } from "lucide-react";
 
@@ -33,6 +34,16 @@ const navItems: NavItem[] = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+  const [pendingHref, setPendingHref] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    setPendingHref(null);
+  }, [pathname]);
+
+  const prefetch = (href: string) => {
+    void router.prefetch(href);
+  };
 
   return (
     <aside
@@ -71,7 +82,7 @@ export function Sidebar() {
       </div>
 
       {/* Navigation — soft hover, no harsh highlights */}
-      <nav className="flex-1 space-y-0.5 p-3">
+      <nav className="flex-1 space-y-0.5 p-3" aria-label="Workspace navigation">
         {navItems.map((item) => {
           const isActive = pathname.startsWith(item.href);
           const Icon = item.icon;
@@ -79,6 +90,12 @@ export function Sidebar() {
             <Link
               key={item.href}
               href={item.href}
+              prefetch
+              onMouseEnter={() => prefetch(item.href)}
+              onFocus={() => prefetch(item.href)}
+              onClick={() => setPendingHref(item.href)}
+              aria-current={isActive ? "page" : undefined}
+              aria-busy={pendingHref === item.href}
               className={cn(
                 "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-all duration-200",
                 isActive
@@ -101,6 +118,7 @@ export function Sidebar() {
                 )}
               />
               <span className="font-normal tracking-wide">{item.label}</span>
+              {pendingHref === item.href && <Loader2 className="ml-auto h-3.5 w-3.5 animate-spin text-primary" />}
             </Link>
           );
         })}
