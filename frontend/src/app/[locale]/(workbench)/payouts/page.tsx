@@ -1,8 +1,11 @@
 "use client";
 
 import { ChangeEvent, useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { toast } from "@/components/ui/toaster";
+import { authKeys } from "@/lib/hooks/use-auth";
 import { platform, type PayoutRequest } from "@/lib/api/platform";
 
 function text(error: unknown): string {
@@ -10,6 +13,7 @@ function text(error: unknown): string {
 }
 
 export default function PayoutsPage() {
+  const queryClient = useQueryClient();
   const [rows, setRows] = useState<PayoutRequest[]>([]);
   const [amount, setAmount] = useState("10.00");
   const [file, setFile] = useState<File | null>(null);
@@ -40,7 +44,13 @@ export default function PayoutsPage() {
     setSavingProfile(true);
     setError(null);
     try {
-      await platform.auth.creatorProfile(normalizedHandle, normalizedDisplayName);
+      const user = await platform.auth.creatorProfile(normalizedHandle, normalizedDisplayName);
+      queryClient.setQueryData(authKeys.me, user);
+      toast({
+        title: "Creator profile created",
+        description: `You can now publish listings as @${user.creatorProfile?.handle ?? normalizedHandle}.`,
+        variant: "success",
+      });
     } catch (reason) {
       setError(text(reason));
     } finally {
