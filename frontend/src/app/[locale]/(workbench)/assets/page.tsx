@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { toast } from "@/components/ui/toaster";
+import { useRouter } from "@/i18n/navigation";
 import { platform, PlatformApiError, type Asset } from "@/lib/api/platform";
 
 function errorText(error: unknown): string {
@@ -13,6 +15,7 @@ function errorText(error: unknown): string {
 }
 
 export default function AssetsPage() {
+  const router = useRouter();
   const [assets, setAssets] = useState<Asset[]>([]);
   const [listingAsset, setListingAsset] = useState<string | null>(null);
   const [title, setTitle] = useState("");
@@ -30,8 +33,13 @@ export default function AssetsPage() {
   const createListing = async () => {
     if (!listingAsset) return;
     try {
-      await platform.marketplace.create({ assetId: listingAsset, title, description: "", tags: ["fractal"], price, licenceOffer: { code: "personal", termsVersion: "v1" } });
-      setListingAsset(null); setTitle("");
+      const listing = await platform.marketplace.create({ assetId: listingAsset, title, description: "", tags: ["fractal"], price, licenceOffer: { code: "personal", termsVersion: "v1" } });
+      toast({
+        title: "Draft listing created",
+        description: `Publish “${listing.title}” in My listings to make it visible in Marketplace.`,
+        variant: "success",
+      });
+      router.push("/listings");
     } catch (reason) { setError(errorText(reason)); }
   };
 
@@ -49,6 +57,6 @@ export default function AssetsPage() {
         <Button size="sm" variant="outline" onClick={() => void platform.assets.remove(asset.id).then(refresh).catch((reason: unknown) => setError(errorText(reason)))}>Delete</Button>
       </div>
     </article>)}</div>
-    {listingAsset && <section className="max-w-lg rounded-xl border border-primary/30 p-4"><h2 className="mb-3 text-lg font-medium">Create draft listing</h2><Input placeholder="Title" value={title} onChange={(event) => setTitle(event.target.value)} /><Input className="mt-2" placeholder="CNY price" value={price} onChange={(event) => setPrice(event.target.value)} /><div className="mt-3 flex gap-2"><Button onClick={() => void createListing()} disabled={!title}>Create draft</Button><Button variant="outline" onClick={() => setListingAsset(null)}>Cancel</Button></div></section>}
+    {listingAsset && <section className="max-w-lg rounded-xl border border-primary/30 p-4"><h2 className="mb-3 text-lg font-medium">Create draft listing</h2><p className="mb-3 text-sm text-muted-foreground">Drafts are private until you publish them from My listings.</p><Input placeholder="Title" value={title} onChange={(event) => setTitle(event.target.value)} /><Input className="mt-2" placeholder="CNY price" value={price} onChange={(event) => setPrice(event.target.value)} /><div className="mt-3 flex gap-2"><Button onClick={() => void createListing()} disabled={!title}>Create draft</Button><Button variant="outline" onClick={() => setListingAsset(null)}>Cancel</Button></div></section>}
   </div>;
 }
