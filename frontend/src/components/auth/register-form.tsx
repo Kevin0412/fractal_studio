@@ -13,7 +13,7 @@ import { UserPlus, Mail, Lock } from "lucide-react";
 const registerSchema = z
   .object({
     email: z.string().email("Invalid email"),
-    password: z.string().min(6, "Password must be at least 6 characters"),
+  password: z.string().min(12, "Password must be at least 12 characters"),
     confirmPassword: z.string(),
   })
   .refine((data) => data.password === data.confirmPassword, {

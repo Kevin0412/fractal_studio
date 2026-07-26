@@ -45,8 +45,10 @@ class RecipeInput(BaseModel):
 
 
 class PreviewInput(RecipeInput):
-    width: int = Field(ge=1)
-    height: int = Field(ge=1)
+    # C++ map renderer owns the native lower bound. Keep it at the public
+    # boundary so a valid Platform request never becomes a Compute 5xx.
+    width: int = Field(ge=64)
+    height: int = Field(ge=64)
 
 
 class RecipeView(BaseModel):
@@ -76,8 +78,8 @@ class ImageOutputSpec(BaseModel):
 
     kind: Literal["image"]
     format: Literal["png"]
-    width: int = Field(ge=1, le=4096)
-    height: int = Field(ge=1, le=4096)
+    width: int = Field(ge=64, le=4096)
+    height: int = Field(ge=64, le=4096)
 
 
 class VideoOutputSpec(BaseModel):
@@ -85,8 +87,8 @@ class VideoOutputSpec(BaseModel):
 
     kind: Literal["video"]
     format: Literal["mp4"]
-    width: int = Field(ge=1, le=1920)
-    height: int = Field(ge=1, le=1080)
+    width: int = Field(ge=128, le=1920)
+    height: int = Field(ge=128, le=1080)
     duration_seconds: Annotated[float, Field(gt=0, le=30)] = Field(alias="durationSeconds")
     fps: int = Field(ge=1, le=60)
 

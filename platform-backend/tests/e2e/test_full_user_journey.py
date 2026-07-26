@@ -68,7 +68,7 @@ async def test_creator_buyer_refund_and_payout_complete_journey() -> None:
         # Seller creates a visible, immutable work from a bounded preview and durable render.
         await register(creator, label="full-creator")
         await become_creator(creator, label="fullcreator")
-        preview = await creator.post("/v1/studio/preview", json={"canonicalSpec": CANONICAL_SPEC, "width": 32, "height": 32})
+        preview = await creator.post("/v1/studio/preview", json={"canonicalSpec": CANONICAL_SPEC, "width": 64, "height": 64})
         assert preview.status_code == 200 and preview.headers["content-type"].startswith("image/png")
         asset_id = await create_ready_asset(creator, label="full-journey")
         hidden = await creator.patch(

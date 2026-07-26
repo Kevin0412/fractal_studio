@@ -42,7 +42,7 @@ def _map_2d(canonical_spec: dict[str, object], *, width: int, height: int) -> di
         "engine": _compute_engine(canonical_spec["engine"]),
         "scalarType": _compute_scalar(canonical_spec["scalarType"]),
     }
-    for optional in ("juliaRe", "juliaIm"):
+    for optional in ("juliaRe", "juliaIm", "colorMap"):
         if optional in canonical_spec:
             result[optional] = canonical_spec[optional]
     return result

@@ -10,6 +10,28 @@ servers:
 security:
   - ComputeServiceKey: []
 paths:
+  /compute/v1/health:
+    get:
+      operationId: health
+      security: []
+      responses:
+        '200':
+          description: Unauthenticated private-network liveness response
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [schemaVersion, status, service, rendererVersion]
+  /compute/v1/capabilities:
+    get:
+      operationId: capabilities
+      responses:
+        '200':
+          description: Authenticated renderer capabilities
+          content:
+            application/json:
+              schema: { type: object }
+        '401': { $ref: '#/components/responses/Problem' }
   /compute/v1/previews:
     post:
       operationId: renderMapPreview
@@ -122,11 +144,10 @@ components:
   schemas:
     ComputeEnvelope:
       type: object
-      additionalProperties: false
       required: [schemaVersion, kind, payload]
       properties:
         schemaVersion: { type: integer, const: 1 }
-        kind: { type: string, minLength: 1, maxLength: 80 }
+        kind: { type: string, enum: [map_image, zoom_video, hs_mesh, transition_mesh] }
         payload: { type: object }
     PreviewRequest:
       allOf:
@@ -134,17 +155,116 @@ components:
         - type: object
           properties:
             kind: { const: map_image }
+            payload: { $ref: '#/components/schemas/MapPayload' }
     CreateRunRequest:
+      oneOf:
+        - $ref: '#/components/schemas/MapImageRunRequest'
+        - $ref: '#/components/schemas/ZoomVideoRunRequest'
+        - $ref: '#/components/schemas/HsMeshRunRequest'
+        - $ref: '#/components/schemas/TransitionMeshRunRequest'
+      description: |
+        Platform worker currently emits `map_image`, `zoom_video`, `hs_mesh` and
+        `transition_mesh`. Payload shape is selected by `kind`; generated clients
+        must preserve `schemaVersion`, `kind`, `payload` and `idempotencyKey`.
+    MapImageRunRequest:
       allOf:
         - $ref: '#/components/schemas/ComputeEnvelope'
+        - $ref: '#/components/schemas/IdempotentRequest'
         - type: object
-          required: [idempotencyKey]
           properties:
-            idempotencyKey:
-              type: string
-              minLength: 1
-              maxLength: 200
-              description: Stable platform-job UUID key; same kind/payload returns same run.
+            kind: { const: map_image }
+            payload: { $ref: '#/components/schemas/MapPayload' }
+    ZoomVideoRunRequest:
+      allOf:
+        - $ref: '#/components/schemas/ComputeEnvelope'
+        - $ref: '#/components/schemas/IdempotentRequest'
+        - type: object
+          properties:
+            kind: { const: zoom_video }
+            payload: { $ref: '#/components/schemas/VideoPayload' }
+    HsMeshRunRequest:
+      allOf:
+        - $ref: '#/components/schemas/ComputeEnvelope'
+        - $ref: '#/components/schemas/IdempotentRequest'
+        - type: object
+          properties:
+            kind: { const: hs_mesh }
+            payload: { $ref: '#/components/schemas/HsMeshPayload' }
+    TransitionMeshRunRequest:
+      allOf:
+        - $ref: '#/components/schemas/ComputeEnvelope'
+        - $ref: '#/components/schemas/IdempotentRequest'
+        - type: object
+          properties:
+            kind: { const: transition_mesh }
+            payload: { $ref: '#/components/schemas/TransitionMeshPayload' }
+    IdempotentRequest:
+      type: object
+      required: [idempotencyKey]
+      properties:
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Stable platform-job UUID key; same kind/payload returns same run.
+    MapPayload:
+      type: object
+      required: [width, height, iterations, variant, centerRe, centerIm, scale, julia, bailout, engine, scalarType]
+      properties:
+        width: { type: integer, minimum: 64, maximum: 4096 }
+        height: { type: integer, minimum: 64, maximum: 4096 }
+        iterations: { type: integer, minimum: 1, maximum: 1000000 }
+        variant: { type: string, minLength: 1, maxLength: 64 }
+        centerRe: { type: number }
+        centerIm: { type: number }
+        scale: { type: number, exclusiveMinimum: 0 }
+        julia: { type: boolean }
+        juliaRe: { type: number }
+        juliaIm: { type: number }
+        bailout: { type: number, exclusiveMinimum: 0 }
+        colorMap: { type: string, minLength: 1, maxLength: 64 }
+        engine: { type: string, enum: [auto, openmp, cuda] }
+        scalarType: { type: string, enum: [auto, fp32, fp64, fp80] }
+    VideoPayload:
+      allOf:
+        - $ref: '#/components/schemas/MapPayload'
+        - type: object
+          required: [fps, durationSec, depthOctaves]
+          properties:
+            width: { type: integer, minimum: 128, maximum: 1920 }
+            height: { type: integer, minimum: 128, maximum: 1080 }
+            fps: { type: integer, minimum: 1, maximum: 60 }
+            durationSec: { type: number, exclusiveMinimum: 0, maximum: 30 }
+            depthOctaves: { type: number, exclusiveMinimum: 0 }
+    HsMeshPayload:
+      type: object
+      required: [centerRe, centerIm, scale, resolution, iterations, variant, bailout]
+      properties:
+        centerRe: { type: number }
+        centerIm: { type: number }
+        scale: { type: number, exclusiveMinimum: 0 }
+        resolution: { type: integer, minimum: 8, maximum: 1024 }
+        iterations: { type: integer, minimum: 1, maximum: 1000000 }
+        variant: { type: string, minLength: 1, maxLength: 64 }
+        bailout: { type: number, exclusiveMinimum: 0 }
+        heightScale: { type: number }
+        heightClamp: { type: number, exclusiveMinimum: 0 }
+    TransitionMeshPayload:
+      type: object
+      required: [resolution, iterations, centerX, centerY, centerZ, extent, transitionFrom, transitionTo]
+      properties:
+        resolution: { type: integer, minimum: 8, maximum: 1024 }
+        iterations: { type: integer, minimum: 1, maximum: 10000 }
+        centerX: { type: number }
+        centerY: { type: number }
+        centerZ: { type: number }
+        extent: { type: number, exclusiveMinimum: 0 }
+        transitionFrom: { type: string, minLength: 1, maxLength: 64 }
+        transitionTo: { type: string, minLength: 1, maxLength: 64 }
+        bailout: { type: number, exclusiveMinimum: 0 }
+        iso: { type: number }
+        engine: { type: string, enum: [auto, cpu, cuda] }
+        scalarType: { type: string, enum: [fp32, fp64] }
     RunEnvelope:
       type: object
       required: [schemaVersion, data]

@@ -60,7 +60,7 @@ def test_preview_mapper_is_pure_and_versioned() -> None:
     canonical = canonicalize_spec(FractalSpec.model_validate({"version": 1, "seed": 42}))
     request_id = UUID("12345678-1234-5678-1234-567812345678")
 
-    request = map_preview_v1(canonical.spec, width=64, height=32, request_id=request_id)
+    request = map_preview_v1(canonical.spec, width=64, height=64, request_id=request_id)
 
     assert PREVIEW_MAPPING_VERSION == "compute-v1-preview-v1"
     assert request == {
@@ -68,7 +68,7 @@ def test_preview_mapper_is_pure_and_versioned() -> None:
         "kind": "map_image",
         "payload": {
             "width": 64,
-            "height": 32,
+            "height": 64,
             "iterations": 256,
             "variant": "mandelbrot",
             "centerRe": 0.0,
@@ -83,17 +83,24 @@ def test_preview_mapper_is_pure_and_versioned() -> None:
     assert canonical.spec["seed"] == 42
 
 
+def test_mapper_preserves_optional_color_map() -> None:
+    canonical = canonicalize_spec(FractalSpec.model_validate({"version": 1, "colorMap": "viridis"}))
+    request = map_preview_v1(canonical.spec, width=64, height=64, request_id=UUID(int=1))
+
+    assert request["payload"]["colorMap"] == "viridis"
+
+
 @pytest.mark.asyncio
 async def test_preview_encodes_compute_rgba_to_png_without_durable_dependency() -> None:
-    client = InlineFrameClient(InlineComputeFrame(rgba=bytes([255, 0, 0, 255]) * 4, width=2, height=2))
+    client = InlineFrameClient(InlineComputeFrame(rgba=bytes([255, 0, 0, 255]) * 4096, width=64, height=64))
     service = PreviewService(settings=_settings(), rate_limiter=AllowedLimiter(), compute_client=client)  # type: ignore[arg-type]
     canonical = canonicalize_spec(FractalSpec.model_validate({"version": 1, "seed": 42}))
 
-    png = await service.render(owner_id=UUID(int=1), canonical=canonical, width=2, height=2)
+    png = await service.render(owner_id=UUID(int=1), canonical=canonical, width=64, height=64)
 
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
-    assert Image.open(io.BytesIO(png)).size == (2, 2)
-    assert client.requests[0]["payload"]["width"] == 2
+    assert Image.open(io.BytesIO(png)).size == (64, 64)
+    assert client.requests[0]["payload"]["width"] == 64
 
 
 @pytest.mark.asyncio
@@ -111,12 +118,12 @@ async def test_preview_rejects_oversized_request_before_redis_or_compute() -> No
 
 @pytest.mark.asyncio
 async def test_preview_fails_closed_when_redis_is_unavailable() -> None:
-    client = InlineFrameClient(InlineComputeFrame(rgba=bytes([0, 0, 0, 255]), width=1, height=1))
+    client = InlineFrameClient(InlineComputeFrame(rgba=bytes([0, 0, 0, 255]) * 4096, width=64, height=64))
     service = PreviewService(settings=_settings(), rate_limiter=UnavailableLimiter(), compute_client=client)  # type: ignore[arg-type]
     canonical = canonicalize_spec(FractalSpec.model_validate({"version": 1}))
 
     with pytest.raises(Exception) as error:
-        await service.render(owner_id=UUID(int=1), canonical=canonical, width=1, height=1)
+        await service.render(owner_id=UUID(int=1), canonical=canonical, width=64, height=64)
 
     assert getattr(error.value, "status_code", None) == 503
     assert client.requests == []

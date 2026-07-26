@@ -75,7 +75,13 @@ async def create_ready_asset(client: httpx.AsyncClient, *, label: str) -> str:
         lambda value: value["data"]["status"] in {"completed", "failed", "cancelled"},
     )
     assert job["data"]["status"] == "completed", job
-    return str(job["data"]["assetId"])
+    asset_id = str(job["data"]["assetId"])
+    asset = await wait_for(
+        lambda: get_json(client, f"/v1/me/assets/{asset_id}"),
+        lambda value: value["data"]["derivativeStatus"] in {"ready", "failed"},
+    )
+    assert asset["data"]["derivativeStatus"] == "ready", asset
+    return asset_id
 
 
 async def create_published_listing(client: httpx.AsyncClient, *, label: str, price: str = "19.90") -> dict[str, Any]:

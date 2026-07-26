@@ -22,12 +22,12 @@ async def test_public_contract_matrix_and_baseline_errors() -> None:
         assert_error(missing, status=404, code="not_found")
         await register(client, label="contract")
         preview = await client.post(
-            "/v1/studio/preview", json={"canonicalSpec": CANONICAL_SPEC, "width": 8, "height": 8}
+            "/v1/studio/preview", json={"canonicalSpec": CANONICAL_SPEC, "width": 64, "height": 64}
         )
         assert preview.status_code == 200 and preview.headers["content-type"].startswith("image/png")
         rejected = await client.post(
             "/v1/studio/preview",
-            json={"canonicalSpec": {**CANONICAL_SPEC, "variant": "compute_rejected"}, "width": 8, "height": 8},
+            json={"canonicalSpec": {**CANONICAL_SPEC, "variant": "compute_rejected"}, "width": 64, "height": 64},
         )
         assert_error(rejected, status=502, code="compute_error")
         invalid_webhook = await client.post(

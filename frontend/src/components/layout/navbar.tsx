@@ -12,32 +12,7 @@ interface NavbarProps {
 }
 
 export function Navbar({ title = "Fractal Studio", onToggleSidebar }: NavbarProps) {
-  const [backendStatus, setBackendStatus] = React.useState<"connected" | "disconnected" | "checking">("checking");
   const { user, logout } = useAuth();
-
-  React.useEffect(() => {
-    let mounted = true;
-
-    const checkBackend = async () => {
-      try {
-        const res = await fetch("/api/system/check");
-        if (mounted) {
-          setBackendStatus(res.ok ? "connected" : "disconnected");
-        }
-      } catch {
-        if (mounted) {
-          setBackendStatus("disconnected");
-        }
-      }
-    };
-
-    checkBackend();
-    const interval = setInterval(checkBackend, 30000);
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
-  }, []);
 
   return (
     <header className="flex h-14 shrink-0 items-center gap-4 border-b border-white/5 bg-deep-void/80 backdrop-blur-xl px-4">
@@ -64,32 +39,24 @@ export function Navbar({ title = "Fractal Studio", onToggleSidebar }: NavbarProp
           <span
             className={cn(
               "relative flex h-2 w-2",
-              backendStatus === "connected" && "text-emerald-400",
-              backendStatus === "disconnected" && "text-red-400",
-              backendStatus === "checking" && "text-amber-400"
+              "text-emerald-400"
             )}
           >
             <span
               className={cn(
                 "absolute inline-flex h-full w-full rounded-full opacity-75",
-                backendStatus === "connected" && "animate-ping bg-emerald-400",
-                backendStatus === "disconnected" && "bg-red-400",
-                backendStatus === "checking" && "animate-ping bg-amber-400"
+                "animate-ping bg-emerald-400"
               )}
             />
             <span
               className={cn(
                 "relative inline-flex h-2 w-2 rounded-full",
-                backendStatus === "connected" && "bg-emerald-400",
-                backendStatus === "disconnected" && "bg-red-400",
-                backendStatus === "checking" && "bg-amber-400"
+                "bg-emerald-400"
               )}
             />
           </span>
           <span className="text-xs text-muted-foreground hidden sm:inline">
-            {backendStatus === "connected" && "Connected"}
-            {backendStatus === "disconnected" && "Disconnected"}
-            {backendStatus === "checking" && "Checking..."}
+            Platform API
           </span>
         </div>
 
@@ -98,7 +65,7 @@ export function Navbar({ title = "Fractal Studio", onToggleSidebar }: NavbarProp
           <div className="flex items-center gap-2 rounded-lg border border-white/5 bg-deep-slate/30 px-3 py-1.5">
             <User className="h-3 w-3 text-fractal-400" />
             <span className="text-xs text-muted-foreground hidden sm:inline">
-              {user.displayName}
+              {user.creatorProfile?.displayName ?? user.email}
             </span>
             <Button
               variant="ghost"

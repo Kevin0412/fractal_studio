@@ -33,6 +33,8 @@ curl --noproxy '*' -fsS "http://127.0.0.1:${PORT}/compute/v1/health" >/dev/null
 cd "$PLATFORM_DIR"
 E2E_COMPUTE_BASE_URL="http://host.docker.internal:${PORT}" \
 E2E_COMPUTE_SERVICE_KEY="$KEY" \
+E2E_REAL_COMPUTE_URL="http://127.0.0.1:${PORT}" \
+E2E_REAL_COMPUTE_SERVICE_KEY="$KEY" \
 E2E_REAL_COMPUTE_PLATFORM=1 \
-E2E_TEST_FILES="tests/e2e/test_real_compute_platform_e2e.py" \
+E2E_TEST_FILES="tests/e2e/test_compute_production_contract.py tests/e2e/test_real_compute_platform_e2e.py" \
   ./scripts/e2e.sh

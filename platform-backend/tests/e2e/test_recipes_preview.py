@@ -74,7 +74,7 @@ def test_preview_returns_png_and_enforces_bounds(e2e_api_url: str) -> None:
         assert registered.status_code == 201
         preview = client.post(
             "/v1/studio/preview",
-            json={"canonicalSpec": {"version": 1, "seed": 42}, "width": 16, "height": 16},
+            json={"canonicalSpec": {"version": 1, "seed": 42}, "width": 64, "height": 64},
         )
         assert preview.status_code == 200
         assert preview.headers["content-type"].startswith("image/png")
@@ -89,13 +89,13 @@ def test_preview_returns_png_and_enforces_bounds(e2e_api_url: str) -> None:
         for _ in range(29):
             limited = client.post(
                 "/v1/studio/preview",
-                json={"canonicalSpec": {"version": 1}, "width": 1, "height": 1},
+                json={"canonicalSpec": {"version": 1}, "width": 64, "height": 64},
             )
             assert limited.status_code == 200
         assert (
             client.post(
                 "/v1/studio/preview",
-                json={"canonicalSpec": {"version": 1}, "width": 1, "height": 1},
+                json={"canonicalSpec": {"version": 1}, "width": 64, "height": 64},
             ).status_code
             == 429
         )

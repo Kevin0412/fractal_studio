@@ -4,12 +4,13 @@ import { cn } from "@/lib/utils/cn";
 import { usePathname, Link } from "@/i18n/navigation";
 import {
   Wand2,
-  Crosshair,
-  Box,
-  Film,
-  ListTodo,
-  FlaskConical,
-  Cpu,
+  Images,
+  Store,
+  ReceiptText,
+  Landmark,
+  List,
+  Heart,
+  ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
 
@@ -21,12 +22,13 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { label: "Studio", href: "/studio", icon: Wand2 },
-  { label: "Points", href: "/studio/points", icon: Crosshair },
-  { label: "3D", href: "/studio/3d", icon: Box },
-  { label: "Video", href: "/studio/video", icon: Film },
-  { label: "Runs", href: "/runs", icon: ListTodo },
-  { label: "Variants", href: "/studio/variants", icon: FlaskConical },
-  { label: "System", href: "/system", icon: Cpu },
+  { label: "Library", href: "/assets", icon: Images },
+  { label: "Marketplace", href: "/explore", icon: Store },
+  { label: "Favorites", href: "/favorites", icon: Heart },
+  { label: "My listings", href: "/listings", icon: List },
+  { label: "Purchases", href: "/purchases", icon: ReceiptText },
+  { label: "Payouts", href: "/payouts", icon: Landmark },
+  { label: "Finance", href: "/finance", icon: ShieldCheck },
 ];
 
 export function Sidebar() {

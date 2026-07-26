@@ -54,7 +54,9 @@ class PreviewService:
 
     def _validate_dimensions(self, width: int, height: int) -> None:
         if (
-            width > self._settings.preview_max_width
+            width < 64
+            or height < 64
+            or width > self._settings.preview_max_width
             or height > self._settings.preview_max_height
             or width * height > self._settings.preview_max_pixels
         ):

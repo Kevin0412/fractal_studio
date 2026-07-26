@@ -1,6 +1,6 @@
-# Fractal Studio — 完整 API 清单
+# Fractal Studio — Compute legacy API inventory
 
-> 自动扫描生成 | 2026-07-25 | 基于源码 `backend/src/api/` + `platform-backend/app/` + `frontend/src/api.ts`
+> Historical Compute `/api/*` inventory. Current browser transport is Next → Platform `/v1/*`; C++ Compute `/compute/v1/*` is private worker-only.
 
 ---
 
@@ -8,8 +8,8 @@
 
 ```
 ┌──────────────┐       ┌──────────────────┐       ┌─────────────────┐
-│   Frontend   │──/api/*──▶  C++ Compute   │◀──/compute/v1/*──│  Platform API   │
-│  (Vue/TS)    │       │  (port 18080)     │       │  (port 8000)     │
+│ Next Browser │──/platform/v1/*──▶ Platform API │──/compute/v1/*──▶ C++ Compute │
+│  (port 3000) │       │  (port 8000)       │       │  (private)       │
 └──────────────┘       └──────────────────┘       └─────────────────┘
                                │                          │
                           SQLite (本地)            PostgreSQL + Redis
@@ -20,7 +20,7 @@
 | 后端 | 语言 | 端口 | 鉴权 | 用途 |
 |------|------|------|------|------|
 | C++ Compute Backend | C++20 | 18080 | Bearer Token（`/compute/v1/*` 路径）；Legacy `/api/*` 通过环境开关控制 | 分形渲染计算 |
-| Platform Backend | Python/FastAPI | 8000 | Foundation Subject（占位，非用户认证） | 业务编排、作业管理 |
+| Platform Backend | Python/FastAPI | 8000 | `fs_session` cookie + CSRF + RBAC | 业务编排、资产、市场、支付 |
 
 ---
 
@@ -40,12 +40,8 @@
 
 ### 1.2 Platform Backend
 
-- **Foundation Subject**（占位模式）
-  - 通过 `foundation_routes_enabled` 开关控制，生产环境关闭
-  - `foundation_subject_id` 作为 `owner_id` 注入所有请求
-  - 资源访问按 `owner_id` + `job_id` 范围限定
-  - 非真正的用户认证系统（文档标记为未实现）
-- **Idempotency-Key** 请求头：幂等键 8-200 字符，防重复提交
+- Opaque `fs_session` HttpOnly cookie, CSRF protection and role checks.
+- `Idempotency-Key` protects replay-safe browser mutations.
 
 ---
 

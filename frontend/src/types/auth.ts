@@ -6,5 +6,7 @@ export interface CredentialsInput {
 export interface UserView {
   id: string;
   email: string;
-  displayName: string;
+  roles: string[];
+  status: "active" | "disabled";
+  creatorProfile?: { handle: string; displayName: string } | null;
 }

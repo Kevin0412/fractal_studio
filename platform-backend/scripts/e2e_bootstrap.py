@@ -22,7 +22,9 @@ async def _register(client: httpx.AsyncClient, *, email: str, password: str) -> 
 
 async def main() -> None:
     api_url = os.environ["E2E_API_URL"]
-    async with httpx.AsyncClient(base_url=api_url, timeout=2, trust_env=False) as client:
+    # A cold API can need several seconds for its first password hash even after
+    # healthz is ready. This fixture is a readiness gate, not a 2-second SLA.
+    async with httpx.AsyncClient(base_url=api_url, timeout=15, trust_env=False) as client:
         for _ in range(60):
             try:
                 if (await client.get("/healthz")).status_code == 200:

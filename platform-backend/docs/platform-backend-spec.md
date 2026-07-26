@@ -2282,6 +2282,7 @@ Baseline error codes: `401 unauthenticated`, `403 forbidden`, `404 not_found`,
 | `POST /v1/auth/login` | public | no | `LoginInput` | `200 UserView`; rotates and sets session cookie |
 | `POST /v1/auth/logout` | user | no | none | `204`; revokes current session and clears cookie |
 | `GET /v1/me` | user | no | none | `200 UserView` |
+| `GET /v1/auth/csrf-token` | user | no | none | `200 { token }`; browser obtains the token before trusted cross-origin mutations |
 | `PATCH /v1/me/creator-profile` | user | yes | `CreatorProfileInput` | `200 UserView`; transaction upserts profile, grants `creator` role and rotates current session |
 
 ### M2. Studio And Render Jobs

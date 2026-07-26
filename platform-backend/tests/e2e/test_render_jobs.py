@@ -154,7 +154,7 @@ async def test_durable_render_job_lifecycle_and_cancel(e2e_api_url: str) -> None
         queued = client.post(
             "/v1/render-jobs",
             headers={"Idempotency-Key": "job-cancel"},
-            json={"recipeId": recipe_id, "output": {"kind": "image", "format": "png", "width": 32, "height": 32}},
+            json={"recipeId": recipe_id, "output": {"kind": "image", "format": "png", "width": 64, "height": 64}},
         )
         assert queued.status_code == 202
         cancel_job_id = queued.json()["data"]["id"]
@@ -186,7 +186,7 @@ async def test_durable_render_job_lifecycle_and_cancel(e2e_api_url: str) -> None
             headers={"Idempotency-Key": "job-transient"},
             json={
                 "recipeId": transient_recipe.json()["data"]["id"],
-                "output": {"kind": "image", "format": "png", "width": 16, "height": 16},
+                "output": {"kind": "image", "format": "png", "width": 64, "height": 64},
             },
         )
         assert transient_job.status_code == 202

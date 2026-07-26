@@ -4,5 +4,6 @@ import { routing } from "@/i18n/routing";
 export default createMiddleware(routing);
 
 export const config = {
-  matcher: "/((?!api|_next|_vercel|.*\\..*).*)",
+  // Platform reverse-proxy routes are transport, never locale pages.
+  matcher: "/((?!api|platform|_next|_vercel|.*\\..*).*)",
 };
