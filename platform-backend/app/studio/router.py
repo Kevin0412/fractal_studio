@@ -9,6 +9,8 @@ from fastapi.responses import JSONResponse
 
 from app.auth.models import AccessPrincipal
 from app.core.access_middleware import enforce_origin_and_csrf, require_principal
+from app.infrastructure.compute.compute_client import ComputeClientError
+from app.studio.capability_service import studio_capabilities
 from app.studio.models import PreviewInput, RecipeInput, RenderJobCreateInput
 from app.studio.preview_service import PreviewService
 from app.studio.recipe_service import canonicalize_spec, create_or_reuse, list_recipes
@@ -18,6 +20,17 @@ from app.studio.render_job_service import request_cancel
 
 
 router = APIRouter(prefix="/v1", tags=["studio"])
+
+
+@router.get("/studio/capabilities")
+async def get_studio_capabilities(
+    principal: AccessPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    del principal
+    try:
+        return {"data": await studio_capabilities()}
+    except ComputeClientError as error:
+        return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content={"error": {"code": error.code, "message": "Compute capabilities unavailable"}})
 
 
 @router.post("/recipes")

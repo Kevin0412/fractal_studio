@@ -14,7 +14,7 @@ COMPUTE_PREVIEWS_ROUTE = "/compute/v1/previews"
 
 def _compute_engine(value: object) -> str:
     """Map public renderer preference to Compute v1 capability names."""
-    return {"auto": "auto", "cpu": "openmp", "cuda": "cuda"}.get(str(value), "auto")
+    return {"cpu": "openmp"}.get(str(value), str(value))
 
 
 def _compute_scalar(value: object) -> str:
@@ -23,7 +23,7 @@ def _compute_scalar(value: object) -> str:
         "float": "fp32",
         "double": "fp64",
         "long_double": "fp80",
-    }.get(str(value), "auto")
+    }.get(str(value), str(value))
 
 
 def _map_2d(canonical_spec: dict[str, object], *, width: int, height: int) -> dict[str, object]:
@@ -39,10 +39,14 @@ def _map_2d(canonical_spec: dict[str, object], *, width: int, height: int) -> di
         "scale": canonical_spec["scale"],
         "julia": canonical_spec["julia"],
         "bailout": canonical_spec["bailout"],
+        "metric": canonical_spec["metric"],
+        "smooth": canonical_spec["smooth"],
+        "rotationDeg": canonical_spec["rotationDeg"],
+        "pairwiseCap": canonical_spec["pairwiseCap"],
         "engine": _compute_engine(canonical_spec["engine"]),
         "scalarType": _compute_scalar(canonical_spec["scalarType"]),
     }
-    for optional in ("juliaRe", "juliaIm", "colorMap"):
+    for optional in ("juliaRe", "juliaIm", "colorMap", "colorProgram"):
         if optional in canonical_spec:
             result[optional] = canonical_spec[optional]
     return result

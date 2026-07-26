@@ -34,12 +34,36 @@ export interface FractalSpec {
   iterations?: number;
   variant?: string;
   colorMap?: string | null;
+  metric?: "escape" | "min_abs" | "max_abs" | "envelope" | "min_pairwise_dist" | "mandel_ship_agree";
+  smooth?: boolean;
+  rotationDeg?: number;
+  pairwiseCap?: number;
+  colorProgram?: {
+    schemaVersion?: 1;
+    type?: "gradient";
+    interpolation?: "rgb";
+    wrap?: "clamp" | "repeat" | "mirror";
+    cycles?: number;
+    phase?: number;
+    interiorColor?: string;
+    invalidColor?: string;
+    stops: Array<{ at: number; color: string }>;
+  } | null;
   julia?: boolean;
   juliaRe?: number;
   juliaIm?: number;
   bailout?: number;
-  engine?: "auto" | "cpu" | "cuda";
-  scalarType?: "auto" | "float" | "double" | "long_double";
+  engine?: "auto" | "cpu" | "cuda" | "openmp" | "avx2" | "avx512" | "hybrid";
+  scalarType?: "auto" | "float" | "double" | "long_double" | "fp32" | "fp64" | "fx64" | "fp80" | "fp128";
+}
+
+export interface StudioCapabilities {
+  rendererVersion?: string;
+  metrics: string[];
+  engines: string[];
+  scalars: string[];
+  colorMaps: string[];
+  customGradient: { enabled: boolean; maxStops: number };
 }
 
 export interface RenderJob {
@@ -219,10 +243,11 @@ export const platform = {
     creatorProfile: (handle: string, displayName: string) => request<PlatformUser>("/v1/me/creator-profile", { method: "PATCH", body: json({ handle, displayName }) }, { csrf: true, idempotency: true }),
   },
   studio: {
-    preview: async (canonicalSpec: FractalSpec, width = 512, height = 512): Promise<Blob> => {
-      const response = await request<Response>("/v1/studio/preview", { method: "POST", body: json({ canonicalSpec, width, height }) }, { csrf: true, raw: true });
+    preview: async (canonicalSpec: FractalSpec, width = 512, height = 512, signal?: AbortSignal): Promise<Blob> => {
+      const response = await request<Response>("/v1/studio/preview", { method: "POST", body: json({ canonicalSpec, width, height }), signal }, { csrf: true, raw: true });
       return response.blob();
     },
+    capabilities: () => request<StudioCapabilities>("/v1/studio/capabilities"),
     createRecipe: (canonicalSpec: FractalSpec) => request<Recipe>("/v1/recipes", { method: "POST", body: json({ canonicalSpec }) }, { csrf: true, idempotency: true }),
     recipes: () => collection<Recipe>("/v1/me/recipes"),
     createRender: (recipeId: string, output: Record<string, unknown>) => request<RenderJob>("/v1/render-jobs", { method: "POST", body: json({ recipeId, output }) }, { csrf: true, idempotency: true }),

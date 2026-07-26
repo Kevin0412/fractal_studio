@@ -69,6 +69,16 @@ class ComputeClient:
             raise ComputeClientError("compute_invalid_frame")
         return InlineComputeFrame(rgba=response.content, width=width, height=height)
 
+    async def capabilities(self) -> dict[str, object]:
+        response = await self._request("GET", "/compute/v1/capabilities")
+        try:
+            body = response.json()
+        except ValueError as error:
+            raise ComputeClientError("compute_invalid_capabilities") from error
+        if not isinstance(body, dict):
+            raise ComputeClientError("compute_invalid_capabilities")
+        return body
+
     async def create_durable_run(
         self, *, route: str, request_body: dict[str, object]
     ) -> ComputeRunStatus:

@@ -76,6 +76,10 @@ def test_preview_mapper_is_pure_and_versioned() -> None:
             "scale": 4.0,
             "julia": False,
             "bailout": 4.0,
+            "metric": "escape",
+            "smooth": False,
+            "rotationDeg": 0.0,
+            "pairwiseCap": 64,
             "engine": "auto",
             "scalarType": "auto",
         },
@@ -88,6 +92,23 @@ def test_mapper_preserves_optional_color_map() -> None:
     request = map_preview_v1(canonical.spec, width=64, height=64, request_id=UUID(int=1))
 
     assert request["payload"]["colorMap"] == "viridis"
+
+
+def test_mapper_preserves_advanced_2d_controls_and_gradient() -> None:
+    canonical = canonicalize_spec(FractalSpec.model_validate({
+        "version": 1, "metric": "min_pairwise_dist", "smooth": True,
+        "rotationDeg": 15, "pairwiseCap": 128, "colorMap": None,
+        "colorProgram": {"stops": [{"at": 0, "color": "#000000"}, {"at": 1, "color": "#ffffff"}]},
+        "engine": "avx2", "scalarType": "fp64",
+    }))
+    request = map_preview_v1(canonical.spec, width=64, height=64, request_id=UUID(int=1))
+
+    assert request["payload"]["metric"] == "min_pairwise_dist"
+    assert request["payload"]["smooth"] is True
+    assert request["payload"]["rotationDeg"] == 15.0
+    assert request["payload"]["pairwiseCap"] == 128
+    assert request["payload"]["colorProgram"]["stops"][1]["color"] == "#ffffff"
+    assert request["payload"]["engine"] == "avx2"
 
 
 @pytest.mark.asyncio
