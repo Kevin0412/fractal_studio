@@ -2,8 +2,11 @@ import { expect, test } from "@playwright/test";
 
 test("browser registers through Platform and renders a real Compute preview", async ({ page }) => {
   const forbiddenApiRequests: string[] = [];
+  const favoriteRequests: string[] = [];
   page.on("request", (request) => {
-    if (new URL(request.url()).pathname.startsWith("/api/")) forbiddenApiRequests.push(request.url());
+    const { pathname } = new URL(request.url());
+    if (pathname.startsWith("/api/")) forbiddenApiRequests.push(request.url());
+    if (pathname === "/platform/v1/me/favorites") favoriteRequests.push(request.url());
   });
 
   await page.goto("/register");
@@ -22,8 +25,18 @@ test("browser registers through Platform and renders a real Compute preview", as
     await route.continue();
   });
   await page.getByRole("link", { name: "Library" }).click();
-  await expect(page).toHaveURL(/\/assets$/);
+  await page.waitForURL(/\/assets$/, { timeout: 30_000 });
   await expect(page.getByRole("status")).toHaveText("Loading data…");
+
+  await page.getByRole("link", { name: "Favorites" }).click();
+  await page.waitForURL(/\/favorites$/, { timeout: 30_000 });
+  await expect.poll(() => favoriteRequests).toHaveLength(1);
+  await page.getByRole("link", { name: "Studio" }).click();
+  await page.waitForURL(/\/studio$/, { timeout: 30_000 });
+  await page.getByRole("link", { name: "Favorites" }).click();
+  await page.waitForURL(/\/favorites$/, { timeout: 30_000 });
+  await expect(page.getByRole("heading", { name: "Favorites" })).toBeVisible();
+  expect(favoriteRequests).toHaveLength(1);
 
   expect(forbiddenApiRequests).toEqual([]);
 });
