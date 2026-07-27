@@ -29,6 +29,8 @@ test("browser registers through Platform and explores an interactive real Comput
   await page.getByRole("button", { name: "Save creator profile" }).click();
   await expect(page.getByText("Available to withdraw")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("0.00 CNY")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Payout history" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Clear filters" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Request payout" })).toBeDisabled();
   await page.getByRole("link", { name: "Studio" }).click();
   await page.waitForURL(/\/studio$/, { timeout: 30_000 });
