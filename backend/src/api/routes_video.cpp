@@ -36,6 +36,7 @@
 #include "../compute/variants.hpp"
 #include "../compute/colormap.hpp"
 #include "../compute/colorize.hpp"
+#include "../compute/orbit_program_json.hpp"
 
 #if defined(HAS_CUDA_KERNEL)
 #  include "../compute/cuda/video_warp.cuh"
@@ -1964,7 +1965,7 @@ void setVideoProgress(
         {"errorMessage", errorMessage},
         {"details", details},
     };
-    for (const char* key : {"engine", "scalar", "finalFrameEngine", "finalFrameScalar", "lnMapEngine", "lnMapScalar", "lnMapMode", "lnMapColorMode", "lnMapPass", "lnMapStatsSource", "lnMapStatsReused", "lnMapLayerSummary", "lnMapValidationSummary", "currentLnMapSegment", "lnMapSegmentCount", "lnMapSegmentHeight", "warpMethod", "encoder", "currentFrame", "totalFrames", "currentLnMapRow", "totalLnMapRows", "warpTotalMs", "copyTotalMs", "writeTotalMs", "encodeCloseMs", "avgWarpMs", "avgCopyMs", "avgWriteMs", "rawVideoBytes", "stripWidth", "stripHeight", "opencvRemapSafe"}) {
+    for (const char* key : {"engine", "scalar", "kernelReported", "finalFrameEngine", "finalFrameScalar", "lnMapEngine", "lnMapScalar", "lnMapMode", "lnMapColorMode", "lnMapPass", "lnMapStatsSource", "lnMapStatsReused", "lnMapLayerSummary", "lnMapValidationSummary", "currentLnMapSegment", "lnMapSegmentCount", "lnMapSegmentHeight", "warpMethod", "encoder", "currentFrame", "totalFrames", "currentLnMapRow", "totalLnMapRows", "warpTotalMs", "copyTotalMs", "writeTotalMs", "encodeCloseMs", "avgWarpMs", "avgCopyMs", "avgWriteMs", "rawVideoBytes", "stripWidth", "stripHeight", "opencvRemapSafe"}) {
         if (details.contains(key)) j[key] = details[key];
     }
     if (terminalStage) runner.setCancelable(runId, false);
@@ -1998,6 +1999,16 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
         }.dump());
     }
     cv::Mat strip  = compute::read_png(lk.pngPath.string());
+    std::shared_ptr<const compute::OrbitProgram> orbitProgram;
+    if (lk.sidecar.contains("orbitProgram") && !lk.sidecar["orbitProgram"].is_null()) {
+        orbitProgram = compute::parse_orbit_program_json(lk.sidecar["orbitProgram"]);
+        const std::string savedHash = lk.sidecar.value("orbitProgramHash", std::string());
+        if (savedHash.empty() || savedHash != orbitProgram->hash()) {
+            throw std::runtime_error("ln-map Orbit Program hash is missing or invalid");
+        }
+    } else if (!lk.sidecar.value("orbitProgramHash", std::string()).empty()) {
+        throw std::runtime_error("ln-map Orbit Program payload is missing");
+    }
 
     const double sidecarDepth = lk.sidecar.value("depthOctaves", 40.0);
     const std::string crStr   = lk.sidecar.value("centerReStr", std::string());
@@ -2062,8 +2073,14 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
     mp.engine     = "auto";
     mp.scalar_type = "auto";
     mp.rotation_deg = std::isfinite(rotationDeg) ? rotationDeg : 0.0;
+    mp.orbit_program = orbitProgram;
 
-    auto run = runner.createRun("zoom-video", body);
+    Json runSnapshot = j;
+    if (orbitProgram) {
+        runSnapshot["orbitProgram"] = lk.sidecar["orbitProgram"];
+        runSnapshot["orbitProgramHash"] = orbitProgram->hash();
+    }
+    auto run = runner.createRun("zoom-video", runSnapshot.dump());
     const auto cancelToken = runner.cancelToken(run.id);
     mp.should_cancel = [cancelToken]() {
         return cancelToken->load(std::memory_order_relaxed);
@@ -2080,23 +2097,22 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
         }.dump());
     }
     auto videoLease = std::make_shared<ResourceManager::Lease>(std::move(videoLeaseRaw));
-    (void)videoLease;
-    runner.setStatus(run.id, "running");
     runner.setCancelable(run.id, true);
 
-    // ── Video writer ──────────────────────────────────────────────────────────
-    cv::Mat finalImg(H, W, CV_8UC3);
-    std::string mp4Path;
-    std::string ffmpegStderr;
-    std::string encoderUsed;
-    std::string warpMethod;
-    VideoWarpStats warpStats;
-    double elapsed = 0.0;
-
+    auto execute = [=, &runner]() mutable -> Json {
+    (void)videoLease;
+    runner.setStatus(run.id, "running");
     try {
+        // ── Video writer ──────────────────────────────────────────────────────
+        cv::Mat finalImg(H, W, CV_8UC3);
+        std::string mp4Path;
+        std::string ffmpegStderr;
+        std::string encoderUsed;
+        std::string warpMethod;
+        VideoWarpStats warpStats;
         const auto t0 = std::chrono::steady_clock::now();
         throwIfCancelled(runner, run.id);
-        compute::render_map(mp, finalImg);
+        const compute::MapStats finalStats = compute::render_map(mp, finalImg);
         throwIfCancelled(runner, run.id);
         setVideoProgress(runner, run.id, "video_warp_encode", 0, frameCount, depthOctaves, depthOctaves,
                          "", "", Json{{"currentFrame", 0}, {"totalFrames", frameCount}});
@@ -2118,14 +2134,45 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
         );
         if (cancelToken->load(std::memory_order_relaxed)) throw std::runtime_error("cancelled");
         const auto t1 = std::chrono::steady_clock::now();
-        elapsed = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        Json doneDetails = {{"currentFrame", frameCount}, {"totalFrames", frameCount}, {"warpMethod", warpMethod}, {"encoder", encoderUsed}};
+        const double elapsed = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        Json doneDetails = {{"currentFrame", frameCount}, {"totalFrames", frameCount},
+                            {"engine", finalStats.engine_used}, {"scalar", finalStats.scalar_used},
+                            {"kernelReported", true}, {"warpMethod", warpMethod},
+                            {"encoder", encoderUsed}};
         mergeVideoWarpStats(doneDetails, warpStats);
         setVideoProgress(runner, run.id, "video_warp_encode", frameCount, frameCount, depthOctaves, depthOctaves,
                          "", "", doneDetails);
 
         runner.addArtifact(run.id, Artifact{"zoom-video", mp4Path, "video"});
         runner.setStatus(run.id, "completed");
+
+        const std::string fname = std::filesystem::path(mp4Path).filename().string();
+        const std::string artifactId = run.id + ":" + fname;
+        Json resp = {
+            {"runId",       run.id},
+            {"status",      "completed"},
+            {"artifactId",  artifactId},
+            {"videoUrl",    "/api/artifacts/content?artifactId=" + artifactId},
+            {"downloadUrl", "/api/artifacts/download?artifactId=" + artifactId},
+            {"localPath",   mp4Path},
+            {"localExport", localExport},
+            {"frameCount",  frameCount},
+            {"fps",         fps},
+            {"durationSec", durationSec},
+            {"secondsPerOctave", secondsPerOctave},
+            {"width",       W},
+            {"height",      H},
+            {"kTopStart",   kTop_start},
+            {"kTopEnd",     kTop_end},
+            {"depthOctaves",depthOctaves},
+            {"rotationDeg", mp.rotation_deg},
+            {"warpMethod",  warpMethod},
+            {"encoder",     encoderUsed},
+            {"ffmpegStderr",ffmpegStderr},
+            {"generatedMs", elapsed},
+        };
+        mergeVideoWarpStats(resp, warpStats);
+        return resp;
     } catch (const std::exception& e) {
         if (runner.isCancelRequested(run.id) || std::string(e.what()) == "cancelled") {
             setVideoProgress(runner, run.id, "cancelled", 0, frameCount, 0.0, depthOctaves, "video_export", "cancelled");
@@ -2135,34 +2182,28 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
         }
         throw;
     }
-
-    const std::string fname = std::filesystem::path(mp4Path).filename().string();
-    const std::string artifactId = run.id + ":" + fname;
-    Json resp = {
-        {"runId",       run.id},
-        {"status",      "completed"},
-        {"artifactId",  artifactId},
-        {"videoUrl",    "/api/artifacts/content?artifactId=" + artifactId},
-        {"downloadUrl", "/api/artifacts/download?artifactId=" + artifactId},
-        {"localPath",   mp4Path},
-        {"localExport", localExport},
-        {"frameCount",  frameCount},
-        {"fps",         fps},
-        {"durationSec", durationSec},
-        {"secondsPerOctave", secondsPerOctave},
-        {"width",       W},
-        {"height",      H},
-        {"kTopStart",   kTop_start},
-        {"kTopEnd",     kTop_end},
-        {"depthOctaves",depthOctaves},
-        {"rotationDeg", mp.rotation_deg},
-        {"warpMethod",  warpMethod},
-        {"encoder",     encoderUsed},
-        {"ffmpegStderr",ffmpegStderr},
-        {"generatedMs", elapsed},
     };
-    mergeVideoWarpStats(resp, warpStats);
-    return resp.dump();
+
+    const bool background = j.value("background", false);
+    if (background) {
+        setVideoProgress(runner, run.id, "queued", 0, frameCount, 0.0, depthOctaves);
+        auto backgroundToken = runner.backgroundTaskToken();
+        std::thread([execute, backgroundToken]() mutable {
+            (void)backgroundToken;
+            try {
+                (void)execute();
+            } catch (...) {}
+        }).detach();
+        return Json{
+            {"runId", run.id}, {"status", "queued"},
+            {"localExport", localExport}, {"frameCount", frameCount},
+            {"fps", fps}, {"durationSec", durationSec},
+            {"secondsPerOctave", secondsPerOctave},
+            {"depthOctaves", depthOctaves}, {"width", W}, {"height", H},
+        }.dump();
+    }
+
+    return execute().dump();
 }
 
 // ─── Fast preview: direct-render start/end frames before video export ─────────
@@ -2174,6 +2215,9 @@ std::string zoomVideoRoute(const std::filesystem::path& repoRoot, JobRunner& run
 std::string videoPreviewRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body) {
     (void)repoRoot;
     const Json j = parseJsonBody(body);
+    const auto orbitProgram = j.contains("orbitProgram") && !j["orbitProgram"].is_null()
+        ? compute::parse_orbit_program_json(j["orbitProgram"])
+        : std::shared_ptr<const compute::OrbitProgram>{};
 
     const std::string crStr = (j.contains("centerReStr") && j["centerReStr"].is_string())
                               ? j["centerReStr"].get<std::string>() : std::string();
@@ -2295,15 +2339,20 @@ std::string videoPreviewRoute(const std::filesystem::path& repoRoot, JobRunner& 
         mp.engine     = "auto";
         mp.scalar_type = "auto";
         mp.rotation_deg = rotationDeg;
+        mp.orbit_program = orbitProgram;
 
         cv::Mat finalImg(previewH, previewW, CV_8UC3);
         compute::MapStats finalStats;
         compute::FieldOutput finalField;
-        if (lnMapColorMode == "escape") {
+        if (lnMapColorMode == "escape" && !orbitProgram) {
             finalStats = compute::render_map(mp, finalImg);
         } else {
             finalStats = compute::render_map_field(mp, finalField);
-            finalStats.engine_used += "_ln_" + lnMapColorMode;
+            if (lnMapColorMode == "escape") {
+                finalImg = compute::colorize_direct(mp, finalField);
+            } else {
+                finalStats.engine_used += "_ln_" + lnMapColorMode;
+            }
         }
 
         cv::Mat strip(t, s, CV_8UC3);
@@ -2321,6 +2370,7 @@ std::string videoPreviewRoute(const std::filesystem::path& repoRoot, JobRunner& 
         lp.bailout = bailout;
         lp.bailout_sq = bailoutSq;
         lp.variant = v;
+        lp.orbit_program = orbitProgram;
         lp.colormap = cm;
         lp.color_mode = lnMapColorMode;
         lp.color_cycles_per_octave = lnMapCyclesPerOctave;
@@ -2386,6 +2436,12 @@ std::string videoPreviewRoute(const std::filesystem::path& repoRoot, JobRunner& 
             {"layerSummary", lnStats.layer_summary},
             {"validationSummary", lnStats.validation_summary},
         };
+        if (orbitProgram) {
+            sidecar["orbitProgram"] = j["orbitProgram"];
+            sidecar["orbitProgramHash"] = orbitProgram->hash();
+            sidecar["escapeAnalysis"] = compute::escape_analysis_json(
+                orbitProgram->escape_analysis());
+        }
         detail::writeLnMapGenerationIdentity(sidecar, generationIdentity);
         if (lnStats.equalization.valid) {
             sidecar["eqCountMin"]      = lnStats.equalization.count_min;
@@ -2465,8 +2521,10 @@ std::string videoPreviewRoute(const std::filesystem::path& repoRoot, JobRunner& 
 
 std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& runner, const std::string& body) {
     const Json j = parseJsonBody(body);
+    const auto orbitProgram = j.contains("orbitProgram") && !j["orbitProgram"].is_null()
+        ? compute::parse_orbit_program_json(j["orbitProgram"])
+        : std::shared_ptr<const compute::OrbitProgram>{};
     const std::string lnMapRunId = j.value("lnMapRunId", std::string(""));
-
     const std::string crStr = (j.contains("centerReStr") && j["centerReStr"].is_string())
                               ? j["centerReStr"].get<std::string>() : std::string();
     const std::string ciStr = (j.contains("centerImStr") && j["centerImStr"].is_string())
@@ -2645,6 +2703,7 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
         mp.engine     = "auto";
         mp.scalar_type = "auto";
         mp.rotation_deg = rotationDeg;
+        mp.orbit_program = orbitProgram;
         mp.should_cancel = [cancelToken]() {
             return cancelToken->load(std::memory_order_relaxed);
         };
@@ -2660,14 +2719,18 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
         compute::MapStats finalStats;
         compute::FieldOutput finalField;   // held for deferred coloring (non-escape modes)
         bool finalFrameDeferred = false;
-        if (lnMapColorMode == "escape") {
+        if (lnMapColorMode == "escape" && !orbitProgram) {
             finalStats = compute::render_map(mp, finalImg);
         } else {
             // Compute the iteration field now, but defer coloring until after the strip:
             // Global color modes reuse strip-wide stats for a seamless warp blend.
             finalStats = compute::render_map_field(mp, finalField);
-            finalStats.engine_used += "_ln_" + lnMapColorMode;
-            finalFrameDeferred = true;
+            if (lnMapColorMode == "escape") {
+                finalImg = compute::colorize_direct(mp, finalField);
+            } else {
+                finalStats.engine_used += "_ln_" + lnMapColorMode;
+                finalFrameDeferred = true;
+            }
         }
         throwIfCancelled(runner, run.id);
 
@@ -2739,6 +2802,7 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
                 lp.bailout = bailout;
                 lp.bailout_sq = bailoutSq;
                 lp.variant = v;
+                lp.orbit_program = orbitProgram;
                 lp.colormap = cm;
                 lp.color_mode = lnMapColorMode;
                 lp.color_cycles_per_octave = lnMapCyclesPerOctave;
@@ -3033,6 +3097,12 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
                 {"validationSummary", lnStats.validation_summary},
                 {"segments", segJson},
             };
+            if (orbitProgram) {
+                sc["orbitProgram"] = j["orbitProgram"];
+                sc["orbitProgramHash"] = orbitProgram->hash();
+                sc["escapeAnalysis"] = compute::escape_analysis_json(
+                    orbitProgram->escape_analysis());
+            }
             detail::writeLnMapGenerationIdentity(sc, generationIdentity);
             if (lnStats.equalization.valid) {
                 sc["eqCountMin"]      = lnStats.equalization.count_min;
@@ -3099,7 +3169,7 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
                 resolveVideoEncodeOptions(j, finalImg));
             throwIfCancelled(runner, run.id);
 
-            Json doneDetails = {{"currentFrame", frameCount}, {"totalFrames", frameCount}, {"lnMapEngine", lnStats.engine_used}, {"lnMapScalar", lnStats.scalar_used}, {"lnMapMode", lnStats.precision_mode}, {"lnMapColorMode", lnMapColorMode}, {"lnMapStatsSource", lnMapStatsSource}, {"lnMapStatsReused", lnMapStatsReused}, {"lnMapLayerSummary", lnStats.layer_summary}, {"lnMapValidationSummary", lnStats.validation_summary}, {"finalFrameEngine", finalStats.engine_used}, {"finalFrameScalar", finalStats.scalar_used}, {"warpMethod", warpMethod}, {"encoder", encoderUsed}};
+            Json doneDetails = {{"currentFrame", frameCount}, {"totalFrames", frameCount}, {"kernelReported", true}, {"lnMapEngine", lnStats.engine_used}, {"lnMapScalar", lnStats.scalar_used}, {"lnMapMode", lnStats.precision_mode}, {"lnMapColorMode", lnMapColorMode}, {"lnMapStatsSource", lnMapStatsSource}, {"lnMapStatsReused", lnMapStatsReused}, {"lnMapLayerSummary", lnStats.layer_summary}, {"lnMapValidationSummary", lnStats.validation_summary}, {"finalFrameEngine", finalStats.engine_used}, {"finalFrameScalar", finalStats.scalar_used}, {"warpMethod", warpMethod}, {"encoder", encoderUsed}};
             mergeVideoWarpStats(doneDetails, warpStats);
             setVideoProgress(runner, run.id, "video_warp_encode", frameCount, frameCount, reportedDepth, reportedDepth,
                              "", "", doneDetails);
@@ -3236,6 +3306,19 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
             if (savedSc.value("segmented", false)) {
                 throw std::runtime_error("reusing segmented ln-map runs is not supported yet");
             }
+            const std::string savedOrbitHash =
+                savedSc.value("orbitProgramHash", std::string());
+            if (orbitProgram) {
+                if (savedOrbitHash.empty() || savedOrbitHash != orbitProgram->hash()) {
+                    throw std::runtime_error(
+                        "ln-map reuse mismatch for orbitProgramHash "
+                        "(re-render the ln-map for the current Orbit Program)");
+                }
+            } else if (!savedOrbitHash.empty()) {
+                throw std::runtime_error(
+                    "ln-map reuse mismatch for orbitProgramHash "
+                    "(the saved ln-map uses an Orbit Program)");
+            }
 
             const std::string identityMismatch = detail::lnMapIdentityMismatch(
                 savedSc, crStr, ciStr, cr, ci, julia, jre, jim,
@@ -3309,6 +3392,7 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
             lp.bailout = bailout;
             lp.bailout_sq = bailoutSq;
             lp.variant = v;
+            lp.orbit_program = orbitProgram;
             lp.colormap = cm;
             lp.color_mode = lnMapColorMode;
             lp.color_cycles_per_octave = lnMapCyclesPerOctave;
@@ -3391,6 +3475,12 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
                 {"layerSummary", lnStats.layer_summary},
                 {"validationSummary", lnStats.validation_summary},
             };
+            if (orbitProgram) {
+                sc["orbitProgram"] = j["orbitProgram"];
+                sc["orbitProgramHash"] = orbitProgram->hash();
+                sc["escapeAnalysis"] = compute::escape_analysis_json(
+                    orbitProgram->escape_analysis());
+            }
             detail::writeLnMapGenerationIdentity(sc, generationIdentity);
             if (lnStats.equalization.valid) {
                 sc["eqCountMin"]      = lnStats.equalization.count_min;
@@ -3438,7 +3528,7 @@ std::string videoExportRoute(const std::filesystem::path& repoRoot, JobRunner& r
             resolveVideoEncodeOptions(j, finalImg)
         );
         throwIfCancelled(runner, run.id);
-        Json doneDetails = {{"currentFrame", frameCount}, {"totalFrames", frameCount}, {"lnMapEngine", lnStats.engine_used}, {"lnMapScalar", lnStats.scalar_used}, {"lnMapMode", lnStats.precision_mode}, {"lnMapColorMode", lnMapColorMode}, {"lnMapStatsSource", lnMapStatsSource}, {"lnMapStatsReused", lnMapStatsReused}, {"lnMapLayerSummary", lnStats.layer_summary}, {"lnMapValidationSummary", lnStats.validation_summary}, {"finalFrameEngine", finalStats.engine_used}, {"finalFrameScalar", finalStats.scalar_used}, {"warpMethod", warpMethod}, {"encoder", encoderUsed}};
+        Json doneDetails = {{"currentFrame", frameCount}, {"totalFrames", frameCount}, {"kernelReported", true}, {"lnMapEngine", lnStats.engine_used}, {"lnMapScalar", lnStats.scalar_used}, {"lnMapMode", lnStats.precision_mode}, {"lnMapColorMode", lnMapColorMode}, {"lnMapStatsSource", lnMapStatsSource}, {"lnMapStatsReused", lnMapStatsReused}, {"lnMapLayerSummary", lnStats.layer_summary}, {"lnMapValidationSummary", lnStats.validation_summary}, {"finalFrameEngine", finalStats.engine_used}, {"finalFrameScalar", finalStats.scalar_used}, {"warpMethod", warpMethod}, {"encoder", encoderUsed}};
         mergeVideoWarpStats(doneDetails, warpStats);
         setVideoProgress(runner, run.id, "video_warp_encode", frameCount, frameCount, depth, depth,
                          "", "", doneDetails);
@@ -3937,21 +4027,22 @@ std::string transitionVideoExportRoute(const std::filesystem::path& repoRoot, Jo
 
         const double progressStart = animationMode == "zoom" ? 0.0 : thetaStartDeg;
         const double progressEnd = animationMode == "zoom" ? zoomDepth : thetaEndDeg;
+        compute::MapStats transitionStats;
 
         setVideoProgress(runner, run.id, "transition_preview", 0, 2, progressStart, progressEnd,
                          "", "", Json{{"animationMode", animationMode}, {"thetaDeg", thetaFixedDeg}});
 
         cv::Mat startImg, endImg;
         if (animationMode == "zoom") {
-            compute::render_transition(buildTp(thetaFixedDeg, zoomStartScale), startImg);
+            transitionStats = compute::render_transition(buildTp(thetaFixedDeg, zoomStartScale), startImg);
         } else {
-            compute::render_transition(buildTp(thetaStartDeg, scale), startImg);
+            transitionStats = compute::render_transition(buildTp(thetaStartDeg, scale), startImg);
         }
         throwIfCancelled(runner, run.id);
         if (animationMode == "zoom") {
-            compute::render_transition(buildTp(thetaFixedDeg, zoomEndScale), endImg);
+            transitionStats = compute::render_transition(buildTp(thetaFixedDeg, zoomEndScale), endImg);
         } else {
-            compute::render_transition(buildTp(thetaEndDeg, scale), endImg);
+            transitionStats = compute::render_transition(buildTp(thetaEndDeg, scale), endImg);
         }
         throwIfCancelled(runner, run.id);
 
@@ -4022,7 +4113,7 @@ std::string transitionVideoExportRoute(const std::filesystem::path& repoRoot, Jo
 
                     auto tp = buildTp(thetaDeg, frameScale);
                     cv::Mat frame;
-                    compute::render_transition(tp, frame);
+                    transitionStats = compute::render_transition(tp, frame);
 
                     const size_t bytes = static_cast<size_t>(frame.rows) * frame.step;
                     if (!pipe.writeAll(
@@ -4112,6 +4203,9 @@ std::string transitionVideoExportRoute(const std::filesystem::path& repoRoot, Jo
         setVideoProgress(runner, run.id, "transition_render", frameCount, frameCount,
                          progressEnd, progressEnd, "", "",
                          Json{{"currentFrame", frameCount}, {"totalFrames", frameCount},
+                              {"engine", transitionStats.engine_used},
+                              {"scalar", transitionStats.scalar_used},
+                              {"kernelReported", true},
                               {"animationMode", animationMode}, {"thetaDeg", thetaFixedDeg},
                               {"depthOctaves", zoomDepth}, {"targetScale", zoomEndScale},
                               {"secondsPerOctave", zoomSecondsPerOctave}, {"encoder", encoderUsed}});
@@ -4134,8 +4228,10 @@ std::string transitionVideoExportRoute(const std::filesystem::path& repoRoot, Jo
             {"rotationDeg", rotationDeg},
             {"transitionFrom", fromStr},
             {"transitionTo", toStr},
-            {"engine", engineStr},
-            {"scalarType", scalarStr},
+            {"requestedEngine", engineStr},
+            {"requestedScalarType", scalarStr},
+            {"engine", transitionStats.engine_used},
+            {"scalarType", transitionStats.scalar_used},
         };
         const std::filesystem::path reportPath = std::filesystem::path(run.outputDir) / "transition_export.json";
         atomicWriteText(reportPath, renderLog.dump(2));

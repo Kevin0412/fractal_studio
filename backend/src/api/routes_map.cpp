@@ -10,7 +10,9 @@
 #include "resource_manager.hpp"
 
 #include "../compute/map_kernel.hpp"
+#include "../compute/orbit_program_json.hpp"
 #include "../compute/colorize.hpp"
+#include "../compute/color_program_json.hpp"
 #include "../compute/ln_map.hpp"
 #include "../compute/tile_scheduler.hpp"
 #include "../compute/transition_kernel.hpp"
@@ -93,6 +95,23 @@ bool isCancelledException(const std::exception& ex) {
     return std::string(ex.what()) == "cancelled";
 }
 
+std::shared_ptr<const compute::OrbitProgram> parseOrbitProgramRequest(const Json& j) {
+    if (!j.contains("orbitProgram") || j["orbitProgram"].is_null()) return {};
+    try {
+        return compute::parse_orbit_program_json(j["orbitProgram"]);
+    } catch (const compute::FormulaCompileError& error) {
+        throw HttpError(400, Json{{"error", {
+            {"code", error.code()}, {"message", error.what()},
+            {"details", {{"position", error.position()}}},
+        }}}.dump());
+    } catch (const std::exception& error) {
+        throw HttpError(400, Json{{"error", {
+            {"code", "INVALID_ORBIT_PROGRAM"}, {"message", error.what()},
+            {"details", Json::object()},
+        }}}.dump());
+    }
+}
+
 // Resolve a variant string into (Variant enum, optional custom step fn).
 // Custom variants use the "custom:HASH" prefix and look up the dlopen registry.
 struct VariantResolved {
@@ -161,7 +180,9 @@ compute::Metric parseMetric(const std::string& s) {
 compute::Colormap parseColormap(const std::string& s) {
     compute::Colormap c;
     if (compute::colormap_from_name(s.c_str(), c)) return c;
-    return compute::Colormap::ClassicCos;
+    throw HttpError(400, Json{
+        {"error", "unknown colorMap"}, {"colorMap", s},
+    }.dump());
 }
 
 compute::Variant parseBuiltinVariant(const std::string& s, compute::Variant fallback) {
@@ -259,6 +280,7 @@ struct MapRenderInput {
     std::string scalarType = "auto";
     std::string engine = "openmp";
     bool smooth = false;
+    std::shared_ptr<const compute::ColorProgram> colorProgram;
     bool stillExport = false;
     bool localExport = false;
     std::string colorMode = "direct";   // direct | eq_full | eq_center (equalized preview)
@@ -334,6 +356,24 @@ MapRenderInput parseMapRenderInput(const std::string& body) {
     if (!(in.cyclesPerOctave > 0.0) || in.cyclesPerOctave > 64.0 || !std::isfinite(in.cyclesPerOctave))
         throw std::runtime_error("invalid cyclesPerOctave (0..64)");
 
+    if (j.contains("colorProgram") && !j["colorProgram"].is_null()) {
+        if (j.contains("colorMap") && !j["colorMap"].is_null()) {
+            throw HttpError(400, Json{{"error", "colorMap and colorProgram are mutually exclusive"}}.dump());
+        }
+        if (in.colorMode != "direct") {
+            throw HttpError(400, Json{{"error", "colorProgram v1 requires colorMode=direct"}}.dump());
+        }
+        try {
+            in.colorProgram = compute::parse_color_program_json(j["colorProgram"]);
+        } catch (const std::exception& error) {
+            throw HttpError(400, Json{
+                {"error", "invalid colorProgram"}, {"message", error.what()},
+            }.dump());
+        }
+    } else {
+        (void)parseColormap(in.colormapStr);
+    }
+
     return in;
 }
 
@@ -377,6 +417,10 @@ Json mapRenderEffectiveJson(const MapRenderInput& in, const MapRenderImage& rend
         {"transitionTo", in.hasTheta ? in.j.value("transitionTo", std::string("burning_ship")) : std::string("")},
         {"rotationDeg", in.rotationDeg},
     };
+    if (in.colorProgram) {
+        resp.erase("colorMap");
+        resp["colorProgram"] = in.j["colorProgram"];
+    }
     if (in.hasTheta && in.j.contains("transitionVariants")) {
         resp["transitionVariants"] = in.j["transitionVariants"];
     }
@@ -413,6 +457,7 @@ compute::MapParams buildMapParams(const MapRenderInput& in, const Json& j,
     p.metric = parseMetric(in.metricStr);
     p.colormap = parseColormap(in.colormapStr);
     p.smooth = in.smooth;
+    p.color_program = in.colorProgram;
     p.pairwise_cap = j.value("pairwiseCap", 64);
     if (p.pairwise_cap < 1 || p.pairwise_cap > 1000000)
         throw std::runtime_error("invalid pairwiseCap");
@@ -420,6 +465,7 @@ compute::MapParams buildMapParams(const MapRenderInput& in, const Json& j,
     p.engine = in.engine;
     p.rotation_deg = in.rotationDeg;
     p.should_cancel = shouldCancel;
+    p.orbit_program = parseOrbitProgramRequest(j);
     return p;
 }
 
@@ -1008,6 +1054,7 @@ InteractiveFieldStartInput parseInteractiveFieldStartInput(
     p.bailout_sq = bailoutSq;
     p.variant = vr.var;
     p.custom_step_fn = vr.fn;
+    p.orbit_program = parseOrbitProgramRequest(j);
     in.customVariantLease = vr.custom_lease;
     p.metric = compute::Metric::Escape;
     p.pairwise_cap = j.value("pairwiseCap", 64);
@@ -1055,6 +1102,7 @@ InteractiveFieldStartInput parseInteractiveFieldStartInput(
         {"colorMap", static_cast<int>(in.previewColorMap)},
         {"smooth", in.previewSmooth},
         {"slowAfterMs", in.slowAfterMs},
+        {"orbitProgramHash", p.orbit_program ? p.orbit_program->hash() : std::string()},
     }.dump();
     return in;
 }
@@ -1070,6 +1118,10 @@ MapRenderImage renderMapImage(const std::filesystem::path& repoRoot,
     const Json& j = in.j;
 
     if (in.hasTheta) {
+        if (j.contains("orbitProgram") && !j["orbitProgram"].is_null()) {
+            throw std::runtime_error(
+                "orbitProgram cannot be combined with axis transition; axis math is a separate top-level program");
+        }
         throwIfMapRenderCancelled(shouldCancel);
         double bailout = j.contains("bailout") && !j["bailout"].is_null()
             ? j.value("bailout", 2.0)
@@ -1279,6 +1331,7 @@ std::string mapRenderRoute(const std::filesystem::path& repoRoot, JobRunner& run
                     {"percent", 100.0},
                     {"engine", rendered.engineUsed},
                     {"scalar", rendered.scalarUsed},
+                    {"kernelReported", true},
                     {"elapsedMs", runner.runElapsedMs(run.id)},
                     {"cancelable", false},
                     {"resourceLocks", Json::array({"cuda_heavy", "cpu_heavy"})},
@@ -1521,6 +1574,7 @@ std::string mapFieldRoute(const std::filesystem::path& repoRoot, const std::stri
     p.bailout_sq = bailoutSq;
     p.variant    = vr2.var;
     p.custom_step_fn = vr2.fn;
+    p.orbit_program = parseOrbitProgramRequest(j);
     p.metric     = parseMetric(metricStr);
     p.pairwise_cap = j.value("pairwiseCap", 64);
     if (p.pairwise_cap < 1 || p.pairwise_cap > 1000000) throw std::runtime_error("invalid pairwiseCap");
@@ -1565,6 +1619,13 @@ std::string mapFieldRoute(const std::filesystem::path& repoRoot, const std::stri
         resp["finalMagB64"] = base64Encode(
             reinterpret_cast<const uint8_t*>(fo.norm_f32.data()),
             fo.norm_f32.size() * sizeof(float));
+        if (!fo.orbit_class_u8.empty()) {
+            resp["orbitClassB64"] = base64Encode(
+                fo.orbit_class_u8.data(), fo.orbit_class_u8.size());
+            resp["escapeAnalysis"] = compute::escape_analysis_json(
+                p.orbit_program->escape_analysis());
+            resp["orbitProgramHash"] = p.orbit_program->hash();
+        }
     } else {
         resp["fieldB64"]  = base64Encode(
             reinterpret_cast<const uint8_t*>(fo.field_f64.data()),

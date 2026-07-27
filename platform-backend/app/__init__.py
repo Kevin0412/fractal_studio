@@ -1,0 +1,2 @@
+"""Platform backend application package."""
+

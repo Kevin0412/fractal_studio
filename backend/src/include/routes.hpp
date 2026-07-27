@@ -88,6 +88,7 @@ std::string benchmarkRoute(JobRunner& runner, const std::string& body);
 
 // Custom variants (dynamic formula compile via g++ + dlopen)
 std::string variantCompileRoute(const std::filesystem::path& repoRoot, const std::string& body);
+bool legacyFormulaCompilerEnabled();
 std::string variantListRoute(const std::filesystem::path& repoRoot);
 std::string variantDeleteRoute(const std::filesystem::path& repoRoot, const std::string& body);
 
@@ -127,5 +128,54 @@ struct ArtifactFile {
 
 std::string artifactsListRoute(const std::filesystem::path& repoRoot, const std::string& query);
 ArtifactFile artifactFileRoute(const std::filesystem::path& repoRoot, const std::string& query);
+
+// Private /api contract consumed by platform-backend. These routes deliberately
+// return the flat DTOs from platform-backend/docs/compute-openapi.yaml while
+// reusing the versioned Compute implementation below.
+struct PlatformComputeResponse {
+    int status = 200;
+    std::string body;
+    std::string contentType = "application/json";
+    std::string extraHeaders;
+};
+
+bool isPlatformComputeApiPath(const std::string& path);
+bool platformComputeRequestUsesProductionContract(
+    const std::filesystem::path& repoRoot,
+    const std::string& path,
+    const std::string& query,
+    const std::string& body);
+std::string platformComputeRequestId(const std::string& candidate = {});
+std::string platformComputeProblemBody(const std::string& code,
+                                       const std::string& message,
+                                       const std::string& requestId);
+PlatformComputeResponse platformComputeApiRoute(
+    const std::filesystem::path& repoRoot,
+    JobRunner& runner,
+    const std::string& method,
+    const std::string& path,
+    const std::string& query,
+    const std::string& body,
+    const std::string& requestId);
+
+// Private, versioned Compute API used by the Platform backend.
+std::string computeV1HealthRoute();
+std::string computeV1CapabilitiesRoute();
+void computeV1ValidateOrbitRequest(const std::string& body, bool persistent);
+std::string computeV1PreviewJsonRoute(const std::filesystem::path& repoRoot,
+                                      JobRunner& runner,
+                                      const std::string& body);
+std::string computeV1CreateRunRoute(const std::filesystem::path& repoRoot,
+                                    JobRunner& runner,
+                                    const std::string& body);
+std::string computeV1RunStatusRoute(const std::filesystem::path& repoRoot,
+                                    JobRunner& runner,
+                                    const std::string& runId);
+std::string computeV1CancelRunRoute(JobRunner& runner,
+                                   const std::string& runId,
+                                   const std::string& body);
+std::string computeV1ManifestRoute(const std::filesystem::path& repoRoot,
+                                   JobRunner& runner,
+                                   const std::string& runId);
 
 } // namespace fsd

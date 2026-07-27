@@ -15,6 +15,7 @@
 #include "../compute/mesh_io.hpp"
 #include "../compute/variants.hpp"
 #include "../compute/escape_time.hpp"
+#include "../compute/orbit_program_json.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -23,6 +24,7 @@
 #include <limits>
 #include <stdexcept>
 #include <system_error>
+#include <thread>
 #include <cstring>
 #include <vector>
 
@@ -134,7 +136,8 @@ void setTransitionProgress(
     int total,
     const std::string& engine,
     const std::string& scalar,
-    bool cancelable = false
+    bool cancelable = false,
+    bool kernelReported = false
 ) {
     const double percent = total > 0
         ? (100.0 * static_cast<double>(current) / static_cast<double>(total))
@@ -147,6 +150,7 @@ void setTransitionProgress(
         {"percent", percent},
         {"engine", engine},
         {"scalar", scalar},
+        {"kernelReported", kernelReported},
         {"elapsedMs", runner.runElapsedMs(runId)},
         {"estimatedRemainingMs", nullptr},
         {"cancelable", cancelable},
@@ -195,6 +199,9 @@ std::string hsMeshRoute(const std::filesystem::path&, JobRunner& runner, const s
         p.bailout = std::sqrt(p.bailout_sq);
     }
     p.metric  = parseMetric (j.value("metric",  std::string("min_abs")));
+    if (j.contains("orbitProgram") && !j["orbitProgram"].is_null()) {
+        p.orbit_program = compute::parse_orbit_program_json(j["orbitProgram"]);
+    }
 
     if (p.resolution < 8 || p.resolution > 4096) throw std::runtime_error("invalid resolution");
     if (p.iterations < 1 || p.iterations > 1000000) throw std::runtime_error("invalid iterations");
@@ -203,18 +210,44 @@ std::string hsMeshRoute(const std::filesystem::path&, JobRunner& runner, const s
     if (!(p.bailout_sq > 0.0) || !std::isfinite(p.bailout_sq)) throw std::runtime_error("invalid bailoutSq");
 
     auto run = runner.createRun("hs-mesh", body);
-    runner.setStatus(run.id, "running");
+    const bool background = j.value("background", false);
+    const auto cancelToken = runner.cancelToken(run.id);
+    p.should_cancel = [cancelToken]() {
+        return cancelToken->load(std::memory_order_relaxed);
+    };
+    runner.setCancelable(run.id, true);
+    const std::string actualEngine = p.orbit_program ? "openmp_orbit" : "openmp";
+    auto setProgress = [&runner, run, actualEngine](const char* stage, int current,
+                                                    bool kernelReported) {
+        runner.setProgress(run.id, Json{
+            {"taskType", "hs_mesh"}, {"stage", stage},
+            {"current", current}, {"total", 1}, {"percent", 100.0 * current},
+            {"engine", actualEngine}, {"scalar", "fp64"},
+            {"kernelReported", kernelReported},
+            {"elapsedMs", runner.runElapsedMs(run.id)},
+            {"cancelable", !kernelReported},
+            {"resourceLocks", Json::array({"cpu_heavy"})},
+            {"details", Json::object()},
+        }.dump());
+    };
+    setProgress("queued", 0, false);
 
-    double elapsed = 0.0;
-    size_t vc = 0, tc = 0;
-
-    try {
+    struct HsMeshResult {
+        double elapsed = 0.0;
+        size_t vertexCount = 0;
+        size_t triangleCount = 0;
+    };
+    auto execute = [=, &runner]() mutable -> HsMeshResult {
+        runner.setStatus(run.id, "running");
+        setProgress("field_and_mesh", 0, false);
+        HsMeshResult result;
+        try {
         const auto t0 = std::chrono::steady_clock::now();
         compute::Mesh mesh = compute::hs::buildHsMesh(p);
         const auto t1 = std::chrono::steady_clock::now();
-        elapsed = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        vc = mesh.vertices.size();
-        tc = mesh.triangleCount();
+        result.elapsed = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        result.vertexCount = mesh.vertices.size();
+        result.triangleCount = mesh.triangleCount();
 
         const std::filesystem::path glbPath =
             std::filesystem::path(run.outputDir) / "hs_mesh.glb";
@@ -225,11 +258,35 @@ std::string hsMeshRoute(const std::filesystem::path&, JobRunner& runner, const s
 
         runner.addArtifact(run.id, Artifact{"hs-mesh", glbPath.string(), "mesh"});
         runner.addArtifact(run.id, Artifact{"hs-mesh", stlPath.string(), "stl"});
+        setProgress("completed", 1, true);
+        runner.setCancelable(run.id, false);
         runner.setStatus(run.id, "completed");
-    } catch (const std::exception&) {
-        runner.setStatus(run.id, "failed");
-        throw;
+        return result;
+        } catch (const std::exception& error) {
+            runner.setCancelable(run.id, false);
+            if (std::string(error.what()) == "cancelled") {
+                setProgress("cancelled", 0, false);
+                runner.setStatus(run.id, "cancelled");
+            } else {
+                setProgress("failed", 0, false);
+                runner.setStatus(run.id, "failed");
+            }
+            throw;
+        }
+    };
+
+    if (background) {
+        auto backgroundToken = runner.backgroundTaskToken();
+        std::thread([execute, backgroundToken]() mutable {
+            (void)backgroundToken;
+            try {
+                (void)execute();
+            } catch (...) {}
+        }).detach();
+        return Json{{"runId", run.id}, {"status", "queued"}}.dump();
     }
+
+    const HsMeshResult result = execute();
 
     const std::string glbId = run.id + ":hs_mesh.glb";
     const std::string stlId = run.id + ":hs_mesh.stl";
@@ -240,9 +297,9 @@ std::string hsMeshRoute(const std::filesystem::path&, JobRunner& runner, const s
         {"stlArtifactId", stlId},
         {"glbUrl",     "/api/artifacts/content?artifactId=" + glbId},
         {"stlUrl",     "/api/artifacts/download?artifactId=" + stlId},
-        {"vertexCount", vc},
-        {"triangleCount", tc},
-        {"generatedMs", elapsed},
+        {"vertexCount", result.vertexCount},
+        {"triangleCount", result.triangleCount},
+        {"generatedMs", result.elapsed},
     };
     return resp.dump();
 }
@@ -273,6 +330,9 @@ std::string hsFieldRoute(const std::filesystem::path&, JobRunner& runner, const 
         p.bailout = std::sqrt(p.bailout_sq);
     }
     p.metric  = parseMetric (j.value("metric",  std::string("min_abs")));
+    if (j.contains("orbitProgram") && !j["orbitProgram"].is_null()) {
+        p.orbit_program = compute::parse_orbit_program_json(j["orbitProgram"]);
+    }
 
     if (p.resolution < 8 || p.resolution > 4096) throw std::runtime_error("invalid resolution");
     if (p.iterations < 1 || p.iterations > 1000000) throw std::runtime_error("invalid iterations");
@@ -281,54 +341,119 @@ std::string hsFieldRoute(const std::filesystem::path&, JobRunner& runner, const 
     if (!(p.bailout_sq > 0.0) || !std::isfinite(p.bailout_sq)) throw std::runtime_error("invalid bailoutSq");
 
     auto run = runner.createRun("hs-field", body);
-    runner.setStatus(run.id, "running");
+    const bool background = j.value("background", false);
+    const auto cancelToken = runner.cancelToken(run.id);
+    p.should_cancel = [cancelToken]() {
+        return cancelToken->load(std::memory_order_relaxed);
+    };
+    runner.setCancelable(run.id, true);
+    const std::string actualEngine = p.orbit_program ? "openmp_orbit" : "openmp";
+    auto setProgress = [&runner, run, actualEngine](const char* stage, int current,
+                                                    bool kernelReported) {
+        runner.setProgress(run.id, Json{
+            {"taskType", "hs_field"}, {"stage", stage},
+            {"current", current}, {"total", 1}, {"percent", 100.0 * current},
+            {"engine", actualEngine}, {"scalar", "fp64"},
+            {"kernelReported", kernelReported},
+            {"elapsedMs", runner.runElapsedMs(run.id)},
+            {"cancelable", !kernelReported},
+            {"resourceLocks", Json::array({"cpu_heavy"})},
+            {"details", Json::object()},
+        }.dump());
+    };
+    setProgress("queued", 0, false);
 
-    double elapsed = 0.0;
-
-    try {
+    struct HsFieldResult {
+        std::vector<double> values;
+        double minimum = 0.0;
+        double maximum = 0.0;
+        double elapsed = 0.0;
+    };
+    auto execute = [=, &runner]() mutable -> HsFieldResult {
+        runner.setStatus(run.id, "running");
+        setProgress("field", 0, false);
+        HsFieldResult result;
+        try {
         const auto t0 = std::chrono::steady_clock::now();
 
         // Reuse the existing field compute from buildHsMesh, which computes
         // raw metric values. We replicate the field computation here to return
         // the raw (un-normalized, un-meshed) float64 values. The frontend does
         // normalization and meshing.
-        std::vector<double> rawField;
-        compute::hs::computeHsField(p, rawField);
+        compute::hs::computeHsField(p, result.values);
 
         const auto t1 = std::chrono::steady_clock::now();
-        elapsed = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        result.elapsed = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
         // Compute min/max for the frontend (it normalizes for colorization).
-        double fmin =  std::numeric_limits<double>::infinity();
-        double fmax = -std::numeric_limits<double>::infinity();
-        for (double v : rawField) {
-            if (v < fmin) fmin = v;
-            if (v > fmax) fmax = v;
+        result.minimum =  std::numeric_limits<double>::infinity();
+        result.maximum = -std::numeric_limits<double>::infinity();
+        for (double value : result.values) {
+            if (value < result.minimum) result.minimum = value;
+            if (value > result.maximum) result.maximum = value;
         }
 
-        // Base64-encode as little-endian float64 array.
-        const auto* bytes = reinterpret_cast<const uint8_t*>(rawField.data());
-        const std::string fieldB64 = base64Encode(bytes, rawField.size() * sizeof(double));
-
+        const std::filesystem::path fieldPath =
+            std::filesystem::path(run.outputDir) / "hs_field.f64";
+        {
+            std::ofstream output(fieldPath, std::ios::binary);
+            if (!output) throw std::runtime_error("failed to open HS field artifact");
+            output.write(reinterpret_cast<const char*>(result.values.data()),
+                         static_cast<std::streamsize>(result.values.size() * sizeof(double)));
+            if (!output) throw std::runtime_error("failed to write HS field artifact");
+        }
+        const std::filesystem::path metadataPath =
+            std::filesystem::path(run.outputDir) / "hs_field.json";
+        {
+            std::ofstream output(metadataPath);
+            output << Json{
+                {"schemaVersion", 1}, {"dataType", "float64"},
+                {"byteOrder", "little_endian"},
+                {"shape", Json::array({p.resolution, p.resolution})},
+                {"fieldMin", result.minimum}, {"fieldMax", result.maximum},
+                {"engine", actualEngine}, {"scalar", "fp64"},
+            }.dump(2);
+            if (!output) throw std::runtime_error("failed to write HS field metadata");
+        }
+        runner.addArtifact(run.id, Artifact{"hs-field", fieldPath.string(), "field"});
+        runner.addArtifact(run.id, Artifact{"hs-field", metadataPath.string(), "report"});
+        setProgress("completed", 1, true);
+        runner.setCancelable(run.id, false);
         runner.setStatus(run.id, "completed");
+        return result;
+        } catch (const std::exception& error) {
+            runner.setCancelable(run.id, false);
+            if (std::string(error.what()) == "cancelled") {
+                setProgress("cancelled", 0, false);
+                runner.setStatus(run.id, "cancelled");
+            } else {
+                setProgress("failed", 0, false);
+                runner.setStatus(run.id, "failed");
+            }
+            throw;
+        }
+    };
 
-        const int N = p.resolution;
-        Json resp = {
-            {"runId",       run.id},
-            {"status",      "completed"},
-            {"width",       N},
-            {"height",      N},
-            {"fieldMin",    fmin},
-            {"fieldMax",    fmax},
-            {"fieldB64",    fieldB64},
-            {"generatedMs", elapsed},
-        };
-        return resp.dump();
-
-    } catch (const std::exception&) {
-        runner.setStatus(run.id, "failed");
-        throw;
+    if (background) {
+        auto backgroundToken = runner.backgroundTaskToken();
+        std::thread([execute, backgroundToken]() mutable {
+            (void)backgroundToken;
+            try {
+                (void)execute();
+            } catch (...) {}
+        }).detach();
+        return Json{{"runId", run.id}, {"status", "queued"}}.dump();
     }
+
+    const HsFieldResult result = execute();
+    const auto* bytes = reinterpret_cast<const uint8_t*>(result.values.data());
+    return Json{
+        {"runId", run.id}, {"status", "completed"},
+        {"width", p.resolution}, {"height", p.resolution},
+        {"fieldMin", result.minimum}, {"fieldMax", result.maximum},
+        {"fieldB64", base64Encode(bytes, result.values.size() * sizeof(double))},
+        {"generatedMs", result.elapsed},
+    }.dump();
 }
 
 // Transition 3D volume mesh (Mandelbrot ↔ Burning Ship bridge as a 3D object).
@@ -362,32 +487,51 @@ std::string transitionMeshRoute(const std::filesystem::path&, JobRunner& runner,
     if (!(p.bailout_sq > 0.0) || !std::isfinite(p.bailout_sq)) throw std::runtime_error("invalid bailoutSq");
 
     auto run = runner.createRun("transition-mesh", body);
-    auto transitionLease = acquireTransitionLease(runner, run.id);
-    (void)transitionLease;
-    runner.setStatus(run.id, "running");
-    runner.setCancelable(run.id, false);
-    setTransitionProgress(runner, run.id, "volume", 0, 2, p.engine, p.scalar_type);
+    const bool background = j.value("background", false);
+    auto transitionLease = std::make_shared<ResourceManager::Lease>(
+        acquireTransitionLease(runner, run.id));
+    const auto cancelToken = runner.cancelToken(run.id);
+    p.should_cancel = [cancelToken]() {
+        return cancelToken->load(std::memory_order_relaxed);
+    };
+    runner.setCancelable(run.id, true);
+    setTransitionProgress(runner, run.id, "queued", 0, 2,
+                          p.engine, p.scalar_type, true);
 
-    double fieldMs = 0.0, mcMs = 0.0;
-    size_t vc = 0, tc = 0;
-    std::string fieldEngineUsed = "openmp_fp32";
-    std::string fieldScalarUsed = "fp32";
-
-    try {
+    struct TransitionMeshResult {
+        double fieldMs = 0.0;
+        double marchingCubesMs = 0.0;
+        size_t vertexCount = 0;
+        size_t triangleCount = 0;
+        std::string engine = "openmp_fp32";
+        std::string scalar = "fp32";
+    };
+    auto execute = [=, &runner]() mutable -> TransitionMeshResult {
+        (void)transitionLease;
+        runner.setStatus(run.id, "running");
+        setTransitionProgress(runner, run.id, "volume", 0, 2,
+                              p.engine, p.scalar_type, true);
+        TransitionMeshResult result;
+        try {
         const auto t0 = std::chrono::steady_clock::now();
         compute::McField field = compute::buildTransitionVolume(p);
-        fieldEngineUsed = field.engine_used;
-        fieldScalarUsed = field.scalar_used;
+        result.engine = field.engine_used;
+        result.scalar = field.scalar_used;
         const auto t1 = std::chrono::steady_clock::now();
-        setTransitionProgress(runner, run.id, "marching_cubes", 1, 2, fieldEngineUsed, fieldScalarUsed);
+        setTransitionProgress(runner, run.id, "marching_cubes", 1, 2,
+                              result.engine, result.scalar, true);
+        if (p.should_cancel()) throw std::runtime_error("cancelled");
         compute::Mesh mesh = compute::marchingCubes(field, static_cast<float>(iso));
+        if (p.should_cancel()) throw std::runtime_error("cancelled");
         const auto t2 = std::chrono::steady_clock::now();
-        fieldMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        mcMs    = std::chrono::duration<double, std::milli>(t2 - t1).count();
-        vc = mesh.vertices.size();
-        tc = mesh.triangleCount();
+        result.fieldMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        result.marchingCubesMs = std::chrono::duration<double, std::milli>(t2 - t1).count();
+        result.vertexCount = mesh.vertices.size();
+        result.triangleCount = mesh.triangleCount();
 
-        if (vc == 0) throw std::runtime_error("empty mesh (iso value gives no surface)");
+        if (result.vertexCount == 0) {
+            throw std::runtime_error("empty mesh (iso value gives no surface)");
+        }
 
         const std::filesystem::path glbPath =
             std::filesystem::path(run.outputDir) / "transition_mesh.glb";
@@ -398,13 +542,38 @@ std::string transitionMeshRoute(const std::filesystem::path&, JobRunner& runner,
 
         runner.addArtifact(run.id, Artifact{"transition-mesh", glbPath.string(), "mesh"});
         runner.addArtifact(run.id, Artifact{"transition-mesh", stlPath.string(), "stl"});
-        setTransitionProgress(runner, run.id, "completed", 2, 2, fieldEngineUsed, fieldScalarUsed);
+        setTransitionProgress(runner, run.id, "completed", 2, 2,
+                              result.engine, result.scalar, false, true);
+        runner.setCancelable(run.id, false);
         runner.setStatus(run.id, "completed");
-    } catch (const std::exception&) {
-        setTransitionProgress(runner, run.id, "failed", 0, 2, fieldEngineUsed, fieldScalarUsed);
-        runner.setStatus(run.id, "failed");
-        throw;
+        return result;
+        } catch (const std::exception& error) {
+            runner.setCancelable(run.id, false);
+            if (std::string(error.what()) == "cancelled") {
+                setTransitionProgress(runner, run.id, "cancelled", 0, 2,
+                                      result.engine, result.scalar);
+                runner.setStatus(run.id, "cancelled");
+            } else {
+                setTransitionProgress(runner, run.id, "failed", 0, 2,
+                                      result.engine, result.scalar);
+                runner.setStatus(run.id, "failed");
+            }
+            throw;
+        }
+    };
+
+    if (background) {
+        auto backgroundToken = runner.backgroundTaskToken();
+        std::thread([execute, backgroundToken]() mutable {
+            (void)backgroundToken;
+            try {
+                (void)execute();
+            } catch (...) {}
+        }).detach();
+        return Json{{"runId", run.id}, {"status", "queued"}}.dump();
     }
+
+    const TransitionMeshResult result = execute();
 
     const std::string glbId = run.id + ":transition_mesh.glb";
     const std::string stlId = run.id + ":transition_mesh.stl";
@@ -415,12 +584,12 @@ std::string transitionMeshRoute(const std::filesystem::path&, JobRunner& runner,
         {"stlArtifactId", stlId},
         {"glbUrl",     "/api/artifacts/content?artifactId=" + glbId},
         {"stlUrl",     "/api/artifacts/download?artifactId=" + stlId},
-        {"vertexCount", vc},
-        {"triangleCount", tc},
-        {"fieldMs",  fieldMs},
-        {"mcMs",     mcMs},
-        {"fieldEngineUsed", fieldEngineUsed},
-        {"fieldScalarUsed", fieldScalarUsed},
+        {"vertexCount", result.vertexCount},
+        {"triangleCount", result.triangleCount},
+        {"fieldMs",  result.fieldMs},
+        {"mcMs",     result.marchingCubesMs},
+        {"fieldEngineUsed", result.engine},
+        {"fieldScalarUsed", result.scalar},
     };
     return resp.dump();
 }
@@ -466,24 +635,30 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
     if (!(p.bailout_sq > 0.0) || !std::isfinite(p.bailout_sq)) throw std::runtime_error("invalid bailoutSq");
 
     auto run = runner.createRun("transition-voxels", body);
-    auto transitionLease = acquireTransitionLease(runner, run.id);
-    (void)transitionLease;
-    runner.setStatus(run.id, "running");
-    runner.setCancelable(run.id, false);
-    setTransitionProgress(runner, run.id, "volume", 0, 2, p.engine, p.scalar_type);
+    const bool background = j.value("background", false);
+    auto transitionLease = std::make_shared<ResourceManager::Lease>(
+        acquireTransitionLease(runner, run.id));
+    const auto cancelToken = runner.cancelToken(run.id);
+    p.should_cancel = [cancelToken]() {
+        return cancelToken->load(std::memory_order_relaxed);
+    };
+    runner.setCancelable(run.id, true);
+    setTransitionProgress(runner, run.id, "queued", 0, 2,
+                          p.engine, p.scalar_type, true);
 
-    const auto t0 = std::chrono::steady_clock::now();
-    compute::McField field;
-    try {
+    auto execute = [=, &runner]() mutable -> Json {
+        (void)transitionLease;
+        runner.setStatus(run.id, "running");
+        setTransitionProgress(runner, run.id, "volume", 0, 2,
+                              p.engine, p.scalar_type, true);
+        compute::McField field;
+        try {
+        const auto t0 = std::chrono::steady_clock::now();
         field = compute::buildTransitionVolume(p);
-        setTransitionProgress(runner, run.id, "voxel_mesh", 1, 2, field.engine_used, field.scalar_used);
-    } catch (const std::exception&) {
-        setTransitionProgress(runner, run.id, "failed", 0, 2, p.engine, p.scalar_type);
-        runner.setStatus(run.id, "failed");
-        throw;
-    }
-    const auto t1 = std::chrono::steady_clock::now();
-    const double elapsed = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        setTransitionProgress(runner, run.id, "voxel_mesh", 1, 2,
+                              field.engine_used, field.scalar_used, true);
+        const auto t1 = std::chrono::steady_clock::now();
+        const double elapsed = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
     const int N = field.Nx;
 
@@ -492,6 +667,9 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
     std::vector<uint8_t> dep(static_cast<size_t>(N) * N * N, 0);
     size_t voxelCount = 0;
     for (int i = 0; i < N * N * N; ++i) {
+        if ((i & 65535) == 0 && p.should_cancel()) {
+            throw std::runtime_error("cancelled");
+        }
         const float v = field.data[i];
         if (v < iso) {
             vol[i] = 1;
@@ -527,6 +705,7 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
     std::vector<uint8_t> depU8;
 
     for (int zi = 0; zi < N; ++zi) {
+        if (p.should_cancel()) throw std::runtime_error("cancelled");
         for (int yi = 0; yi < N; ++yi) {
             for (int xi = 0; xi < N; ++xi) {
                 if (!getVol(xi, yi, zi)) continue;  // outside — skip
@@ -571,6 +750,9 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
         stlOut.write(reinterpret_cast<const char*>(&triCount), 4);
         const uint16_t attr = 0;
         for (size_t fi = 0; fi < faceCount; ++fi) {
+            if ((fi & 4095U) == 0U && p.should_cancel()) {
+                throw std::runtime_error("cancelled");
+            }
             // Normal (float32 × 3)
             const float nx = static_cast<float>(normI8[fi * 3 + 0]);
             const float ny = static_cast<float>(normI8[fi * 3 + 1]);
@@ -609,7 +791,9 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
         }
     }
     runner.addArtifact(run.id, Artifact{"transition-voxels", stlPath.string(), "stl"});
-    setTransitionProgress(runner, run.id, "completed", 2, 2, field.engine_used, field.scalar_used);
+    setTransitionProgress(runner, run.id, "completed", 2, 2,
+                          field.engine_used, field.scalar_used, false, true);
+    runner.setCancelable(run.id, false);
     runner.setStatus(run.id, "completed");
 
     const std::string stlId = run.id + ":transition_voxels.stl";
@@ -629,7 +813,38 @@ std::string transitionVoxelsRoute(const std::filesystem::path&, JobRunner& runne
         {"normB64",  base64Encode(reinterpret_cast<const uint8_t*>(normI8.data()), normI8.size())},
         {"depthB64", base64Encode(depU8.data(), depU8.size())},
     };
-    return resp.dump();
+    return resp;
+        } catch (const std::exception& error) {
+            std::error_code cleanupError;
+            std::filesystem::remove(
+                std::filesystem::path(run.outputDir) / "transition_voxels.stl.tmp",
+                cleanupError);
+            runner.setCancelable(run.id, false);
+            const std::string engine = field.engine_used.empty() ? p.engine : field.engine_used;
+            const std::string scalar = field.scalar_used.empty() ? p.scalar_type : field.scalar_used;
+            if (std::string(error.what()) == "cancelled") {
+                setTransitionProgress(runner, run.id, "cancelled", 0, 2, engine, scalar);
+                runner.setStatus(run.id, "cancelled");
+            } else {
+                setTransitionProgress(runner, run.id, "failed", 0, 2, engine, scalar);
+                runner.setStatus(run.id, "failed");
+            }
+            throw;
+        }
+    };
+
+    if (background) {
+        auto backgroundToken = runner.backgroundTaskToken();
+        std::thread([execute, backgroundToken]() mutable {
+            (void)backgroundToken;
+            try {
+                (void)execute();
+            } catch (...) {}
+        }).detach();
+        return Json{{"runId", run.id}, {"status", "queued"}}.dump();
+    }
+
+    return execute().dump();
 }
 
 } // namespace fsd

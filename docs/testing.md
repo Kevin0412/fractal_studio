@@ -29,7 +29,11 @@ ctest --test-dir runtime/build --output-on-failure
 - `artifact_routes_smoke`
 - `ln_map_reuse_smoke`
 - `http_range_smoke`
+- `job_runner_reconcile_smoke`
+- `orbit_program_smoke`
+- `hs_orbit_smoke`
 - `compute_path_diff`
+- `compute_v1_http_contract`（环境中的 Python 可导入 pytest 时）
 
 测试源文件：
 
@@ -37,7 +41,11 @@ ctest --test-dir runtime/build --output-on-failure
 - `backend/src/tests/artifact_routes_smoke.cpp`
 - `backend/src/tests/ln_map_reuse_smoke.cpp`
 - `backend/src/tests/http_range_smoke.cpp`
+- `backend/src/tests/job_runner_reconcile_smoke.cpp`
+- `backend/src/tests/orbit_program_smoke.cpp`
+- `backend/src/tests/hs_orbit_smoke.cpp`
 - `backend/src/tests/compute_path_diff.cpp`
+- `backend/src/tests/compute_v1/`（fixture 启动真实进程并发送 HTTP）
 
 覆盖重点：
 
@@ -49,6 +57,22 @@ ctest --test-dir runtime/build --output-on-failure
 - 嵌套 artifact 的 run-relative ID、URL 编码和目录穿越拒绝
 - ln-map preview/full-strip 复用的精确 center 与生成参数身份校验
 - artifact 单 Range、开放尾端、suffix、multi-range 忽略与 If-Range 全量回退
+- Compute v1 鉴权、capabilities、预览、异步 run、轮询、取消、manifest、SHA-256 和 Range
+- 每类持久产物的实际 HTTP 生命周期与 kernel hardware telemetry
+- 安全 DSL/Orbit sequence、严格逃逸、ln-map/zoom Orbit hash 复用一致性
+- 能力注册表的每个 kind 都必须在 `compute_v1_jobs.md` 恰好有一个任务章节；公共端点和 Worker 安全不变量也有文档覆盖检查
+- 从零调用手册必须覆盖 Key、workload、DSL/sequence、transition 和硬件证明；参数化 DSL 示例通过真实 HTTP 执行，完整 JSON 示例在文档提交前做语法解析
+
+Compute v1 HTTP 合同可以独立运行：
+
+```bash
+python -m pip install -r backend/requirements-test.txt
+python -m pytest -q backend/src/tests/compute_v1 \
+  --backend-binary=backend/build/fractal_studio_backend \
+  --studio-root=.
+```
+
+这些测试不是只调用 `.hpp` 的单元样例：fixture 会为测试会话启动实际后端，等待 health，然后通过 Bearer HTTP 验证路由、响应、文件流和取消竞态。每个 `test_*` 独立创建自己的 run/artifact，单个测试只验证一个可命名行为。
 
 ## Compute Path Differential Tester / 计算路径对拍器
 
@@ -148,6 +172,7 @@ ctest --test-dir runtime/build -R compute_path_diff --output-on-failure
 
 ```bash
 cd frontend
+npm ci
 npm run build
 ```
 
@@ -241,6 +266,7 @@ ctest --test-dir runtime/build --output-on-failure
 
 ```bash
 cd frontend
+npm ci
 npm run build
 ```
 

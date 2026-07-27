@@ -71,6 +71,15 @@ std::string safeText(sqlite3_stmt* stmt, int col) {
     return p ? std::string(reinterpret_cast<const char*>(p)) : std::string();
 }
 
+bool tableHasColumn(sqlite3* db, const char* table, const char* column) {
+    const std::string sql = std::string("PRAGMA table_info(") + table + ");";
+    Statement stmt(db, sql.c_str());
+    while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+        if (safeText(stmt.get(), 1) == column) return true;
+    }
+    return false;
+}
+
 } // namespace
 
 Db::Db(std::filesystem::path dbPath) : dbPath_(std::move(dbPath)) {}
@@ -122,6 +131,18 @@ void Db::ensureSchema() const {
         "so_path TEXT NOT NULL,"
         "created_at TEXT NOT NULL"
         ");");
+
+    execSql(h.db,
+        "CREATE TABLE IF NOT EXISTS compute_requests ("
+        "idempotency_key TEXT PRIMARY KEY,"
+        "request_hash TEXT NOT NULL DEFAULT '',"
+        "response_json TEXT NOT NULL,"
+        "completed_at INTEGER NOT NULL"
+        ");");
+    if (!tableHasColumn(h.db, "compute_requests", "request_hash")) {
+        execSql(h.db,
+            "ALTER TABLE compute_requests ADD COLUMN request_hash TEXT NOT NULL DEFAULT '';");
+    }
 }
 
 void Db::insertSpecialPoint(const SpecialPointRecord& record) const {
@@ -417,6 +438,40 @@ ArtifactRow Db::getArtifactById(long long rowId) const {
     a.path     = safeText(stmt.get(), 3);
     a.metaJson = safeText(stmt.get(), 4);
     return a;
+}
+
+bool Db::getComputeRequestResponse(const std::string& idempotencyKey,
+                                   std::string& requestHash,
+                                   std::string& responseJson) const {
+    DbHandle h(dbPath_);
+    Statement stmt(h.db,
+        "SELECT request_hash, response_json FROM compute_requests WHERE idempotency_key = ?;");
+    checkSqlite(sqlite3_bind_text(
+        stmt.get(), 1, idempotencyKey.c_str(), -1, SQLITE_TRANSIENT), h.db);
+    const int rc = sqlite3_step(stmt.get());
+    if (rc == SQLITE_DONE) return false;
+    checkSqlite(rc, h.db);
+    requestHash = safeText(stmt.get(), 0);
+    responseJson = safeText(stmt.get(), 1);
+    return true;
+}
+
+void Db::upsertComputeRequestResponse(const std::string& idempotencyKey,
+                                      const std::string& requestHash,
+                                      const std::string& responseJson,
+                                      long long completedAt) const {
+    DbHandle h(dbPath_);
+    Statement stmt(h.db,
+        "INSERT OR REPLACE INTO compute_requests "
+        "(idempotency_key, request_hash, response_json, completed_at) VALUES (?, ?, ?, ?);");
+    checkSqlite(sqlite3_bind_text(
+        stmt.get(), 1, idempotencyKey.c_str(), -1, SQLITE_TRANSIENT), h.db);
+    checkSqlite(sqlite3_bind_text(
+        stmt.get(), 2, requestHash.c_str(), -1, SQLITE_TRANSIENT), h.db);
+    checkSqlite(sqlite3_bind_text(
+        stmt.get(), 3, responseJson.c_str(), -1, SQLITE_TRANSIENT), h.db);
+    checkSqlite(sqlite3_bind_int64(stmt.get(), 4, completedAt), h.db);
+    checkSqlite(sqlite3_step(stmt.get()), h.db);
 }
 
 void Db::insertCustomVariant(const CustomVariantRecord& r) const {

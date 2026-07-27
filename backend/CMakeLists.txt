@@ -38,6 +38,8 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 find_package(OpenMP QUIET)
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_package(OpenCV REQUIRED COMPONENTS core imgcodecs imgproc videoio)
 
 add_executable(fractal_studio_backend
@@ -62,14 +64,20 @@ add_executable(fractal_studio_backend
     src/api/routes_artifacts.cpp
     src/api/routes_benchmark.cpp
     src/api/routes_variants.cpp
+    src/api/routes_compute_v1.cpp
+    src/api/routes_platform_compute.cpp
 
     # Native compute
     src/compute/colorize.cpp
+    src/compute/color_program.cpp
+    src/compute/color_program_json.cpp
     src/compute/cpu_features.cpp
     src/compute/ln_map.cpp
     src/compute/ln_map_avx2.cpp
     src/compute/ln_map_avx512.cpp
     src/compute/map_kernel.cpp
+    src/compute/orbit_program.cpp
+    src/compute/orbit_program_json.cpp
     src/compute/engine_select.cpp
     src/compute/map_kernel_avx2.cpp
     src/compute/map_kernel_avx512.cpp
@@ -137,6 +145,7 @@ target_link_libraries(fractal_studio_backend PRIVATE
     sqlite3
     ${OpenCV_LIBS}
     dl          # dlopen/dlsym for custom variant shared libraries
+    OpenSSL::Crypto
 )
 
 target_compile_options(fractal_studio_backend PRIVATE
@@ -215,11 +224,13 @@ add_test(NAME http_range_smoke COMMAND http_range_smoke)
 add_executable(compute_path_diff
     src/tests/compute_path_diff.cpp
     src/compute/colorize.cpp
+    src/compute/color_program.cpp
     src/compute/cpu_features.cpp
     src/compute/ln_map.cpp
     src/compute/ln_map_avx2.cpp
     src/compute/ln_map_avx512.cpp
     src/compute/map_kernel.cpp
+    src/compute/orbit_program.cpp
     src/compute/engine_select.cpp
     src/compute/map_kernel_avx2.cpp
     src/compute/map_kernel_avx512.cpp
@@ -242,7 +253,41 @@ target_compile_options(compute_path_diff PRIVATE
 )
 target_link_libraries(compute_path_diff PRIVATE
     ${OpenCV_LIBS}
+    OpenSSL::Crypto
 )
+
+add_executable(orbit_program_smoke
+    src/tests/orbit_program_smoke.cpp
+    src/compute/orbit_program.cpp
+    src/compute/orbit_program_json.cpp
+)
+target_include_directories(orbit_program_smoke PRIVATE src src/include)
+target_compile_options(orbit_program_smoke PRIVATE -Wall -Wextra -Wno-unused-parameter -O3)
+target_link_libraries(orbit_program_smoke PRIVATE OpenSSL::Crypto)
+add_test(NAME orbit_program_smoke COMMAND orbit_program_smoke)
+
+add_executable(hs_orbit_smoke
+    src/tests/hs_orbit_smoke.cpp
+    src/compute/hs/heightfield_mesh.cpp
+    src/compute/orbit_program.cpp
+)
+target_include_directories(hs_orbit_smoke PRIVATE src src/include)
+target_compile_options(hs_orbit_smoke PRIVATE -Wall -Wextra -Wno-unused-parameter -O3)
+target_link_libraries(hs_orbit_smoke PRIVATE OpenSSL::Crypto)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(hs_orbit_smoke PRIVATE OpenMP::OpenMP_CXX)
+endif()
+add_test(NAME hs_orbit_smoke COMMAND hs_orbit_smoke)
+
+add_executable(color_program_smoke
+    src/tests/color_program_smoke.cpp
+    src/compute/color_program.cpp
+    src/compute/color_program_json.cpp
+)
+target_include_directories(color_program_smoke PRIVATE src src/include)
+target_compile_options(color_program_smoke PRIVATE -Wall -Wextra -Wno-unused-parameter -O3)
+add_test(NAME color_program_smoke COMMAND color_program_smoke)
+
 if(OpenMP_CXX_FOUND)
     target_link_libraries(compute_path_diff PRIVATE OpenMP::OpenMP_CXX)
 endif()
@@ -251,6 +296,35 @@ if(HAS_CUDA)
     target_compile_definitions(compute_path_diff PRIVATE HAS_CUDA_KERNEL=1)
 endif()
 add_test(NAME compute_path_diff COMMAND compute_path_diff)
+
+set(FSD_PYTEST_PYTHON "" CACHE FILEPATH "Python interpreter with pytest installed")
+if(FSD_PYTEST_PYTHON)
+    set(_FSD_PYTEST_PYTHON "${FSD_PYTEST_PYTHON}")
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/platform-venv/bin/python")
+    set(_FSD_PYTEST_PYTHON
+        "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/platform-venv/bin/python")
+else()
+    set(_FSD_PYTEST_PYTHON "${Python3_EXECUTABLE}")
+endif()
+execute_process(
+    COMMAND "${_FSD_PYTEST_PYTHON}" -c "import pytest"
+    RESULT_VARIABLE _FSD_PYTEST_IMPORT_RESULT
+    OUTPUT_QUIET ERROR_QUIET
+)
+if(_FSD_PYTEST_IMPORT_RESULT EQUAL 0)
+    add_test(
+        NAME compute_v1_http_contract
+        COMMAND "${_FSD_PYTEST_PYTHON}" -m pytest -q
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/tests/compute_v1
+                --backend-binary=$<TARGET_FILE:fractal_studio_backend>
+                --studio-root=${CMAKE_CURRENT_SOURCE_DIR}/..
+    )
+    set_tests_properties(compute_v1_http_contract PROPERTIES TIMEOUT 60)
+else()
+    message(WARNING
+        "pytest not found; Compute v1 HTTP contract tests are disabled. "
+        "Install backend/requirements-test.txt or set FSD_PYTEST_PYTHON.")
+endif()
 
 include(CheckCXXSourceCompiles)
 set(CMAKE_REQUIRED_LIBRARIES quadmath)
