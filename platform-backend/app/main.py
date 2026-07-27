@@ -104,6 +104,8 @@ _PUBLIC_DETAIL_CODES = {
     "email_already_registered",
     "handle_already_registered",
     "idempotency_conflict",
+    "insufficient_creator_balance",
+    "payout_request_pending",
 }
 
 

@@ -23,6 +23,9 @@ test("browser registers through Platform and explores an interactive real Comput
   await page.getByRole("button", { name: "Create account" }).click();
   await page.waitForURL(/\/studio$/, { timeout: 30_000 });
   await expect(page.locator("main").getByRole("heading", { name: "Explore, don’t configure." })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Finance" })).toHaveCount(0);
+  await page.goto("/finance");
+  await page.waitForURL(/\/studio$/, { timeout: 30_000 });
   await expect(page.getByText("Scroll, double-click or press +/−.")).toBeVisible();
   await expect(page.getByAltText("Fractal preview")).toBeVisible({ timeout: 30_000 });
 

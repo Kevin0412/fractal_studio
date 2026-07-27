@@ -2,6 +2,7 @@
 import * as React from "react";
 import { cn } from "@/lib/utils/cn";
 import { usePathname, useRouter, Link } from "@/i18n/navigation";
+import { useAuth } from "@/providers/auth-provider";
 import {
   Wand2,
   Images,
@@ -19,6 +20,7 @@ interface NavItem {
   label: string;
   href: string;
   icon: LucideIcon;
+  requiredRole?: string;
 }
 
 const navItems: NavItem[] = [
@@ -29,12 +31,13 @@ const navItems: NavItem[] = [
   { label: "My listings", href: "/listings", icon: List },
   { label: "Purchases", href: "/purchases", icon: ReceiptText },
   { label: "Payouts", href: "/payouts", icon: Landmark },
-  { label: "Finance", href: "/finance", icon: ShieldCheck },
+  { label: "Finance", href: "/finance", icon: ShieldCheck, requiredRole: "finance_operator" },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
+  const { user } = useAuth();
   const [pendingHref, setPendingHref] = React.useState<string | null>(null);
 
   React.useEffect(() => {
@@ -83,7 +86,7 @@ export function Sidebar() {
 
       {/* Navigation — soft hover, no harsh highlights */}
       <nav className="flex-1 space-y-0.5 p-3" aria-label="Workspace navigation">
-        {navItems.map((item) => {
+        {navItems.filter((item) => !item.requiredRole || user?.roles.includes(item.requiredRole)).map((item) => {
           const isActive = pathname.startsWith(item.href);
           const Icon = item.icon;
           return (

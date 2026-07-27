@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/toaster";
 import { authKeys } from "@/lib/hooks/use-auth";
-import { platform, type PayoutRequest } from "@/lib/api/platform";
+import { platform, PlatformApiError, type PayoutRequest } from "@/lib/api/platform";
 
 function text(error: unknown): string {
   return error instanceof Error ? error.message : "Request failed";
@@ -20,6 +20,7 @@ export default function PayoutsPage() {
   const [handle, setHandle] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
+  const [requestingPayout, setRequestingPayout] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = () =>
@@ -29,6 +30,7 @@ export default function PayoutsPage() {
       .catch((reason: unknown) => setError(text(reason)));
 
   useEffect(refresh, []);
+  const pendingRequest = rows.find((row) => row.status === "pending");
 
   const saveCreatorProfile = async () => {
     const normalizedHandle = handle.trim();
@@ -59,15 +61,30 @@ export default function PayoutsPage() {
   };
 
   const request = async () => {
+    if (pendingRequest) {
+      setError("You already have a payout request pending. Cancel it before creating another one.");
+      return;
+    }
     if (!file) {
       setError("Choose payout QR code");
       return;
     }
+    setRequestingPayout(true);
+    setError(null);
     try {
       await platform.payouts.create(amount, file);
       refresh();
     } catch (reason) {
-      setError(text(reason));
+      if (reason instanceof PlatformApiError && reason.code === "payout_request_pending") {
+        setError("You already have a payout request pending. Cancel it before creating another one.");
+      } else if (reason instanceof PlatformApiError && reason.code === "insufficient_creator_balance") {
+        setError("Payout amount exceeds your available creator balance.");
+      } else {
+        setError(text(reason));
+      }
+      refresh();
+    } finally {
+      setRequestingPayout(false);
     }
   };
 
@@ -93,7 +110,8 @@ export default function PayoutsPage() {
       <section className="max-w-lg space-y-3 rounded-xl border border-white/10 p-4">
         <Input value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="Amount CNY" />
         <input type="file" accept="image/png,image/jpeg" onChange={(event: ChangeEvent<HTMLInputElement>) => setFile(event.target.files?.[0] ?? null)} />
-        <Button onClick={() => void request()}>Request payout</Button>
+        {pendingRequest && <p className="rounded-lg border border-amber-400/25 bg-amber-400/10 p-3 text-sm text-amber-200">A payout request is already pending. Cancel it below if you need to submit a new one.</p>}
+        <Button loading={requestingPayout} disabled={!file || Boolean(pendingRequest)} onClick={() => void request()}>{pendingRequest ? "Payout pending" : "Request payout"}</Button>
       </section>
       {error && <p className="text-red-400">{error}</p>}
       <div className="space-y-2">
