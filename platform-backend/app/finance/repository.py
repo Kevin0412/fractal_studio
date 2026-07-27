@@ -101,6 +101,28 @@ async def lock_creator_balance(connection: AsyncConnection, *, creator_id: UUID)
     )
 
 
+async def get_creator_balance(connection: AsyncConnection, *, creator_id: UUID) -> CreatorBalance:
+    row = await connection.execute(
+        text(
+            """
+            SELECT creator_id, available_amount, reserved_amount, currency
+            FROM creator_balances WHERE creator_id = :creator_id
+            """
+        ),
+        {"creator_id": creator_id},
+    )
+    value = row.mappings().one_or_none()
+    if value is None:
+        return CreatorBalance(
+            creator_id=creator_id, available_amount=Decimal("0.00"),
+            reserved_amount=Decimal("0.00"), currency="CNY",
+        )
+    return CreatorBalance(
+        creator_id=value["creator_id"], available_amount=Decimal(value["available_amount"]),
+        reserved_amount=Decimal(value["reserved_amount"]), currency=str(value["currency"]),
+    )
+
+
 async def apply_available_delta(
     connection: AsyncConnection, *, creator_id: UUID, delta: Decimal, require_nonnegative: bool
 ) -> CreatorBalance | None:

@@ -83,6 +83,14 @@ class PayoutRequestView(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class CreatorBalanceView(BaseModel):
+    available_amount: Decimal = Field(alias="availableAmount")
+    reserved_amount: Decimal = Field(alias="reservedAmount")
+    currency: str
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class InternalPayoutRequestView(PayoutRequestView):
     creator: dict[str, str | None]
     qr_url: str | None = Field(default=None, alias="qrUrl")

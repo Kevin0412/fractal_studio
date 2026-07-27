@@ -123,6 +123,12 @@ export interface PayoutRequest {
   rejectionReason?: string | null;
 }
 
+export interface CreatorBalance {
+  availableAmount: string;
+  reservedAmount: string;
+  currency: "CNY";
+}
+
 export interface InternalPayoutRequest extends PayoutRequest {
   creator: { email?: string | null; handle?: string | null; displayName?: string | null };
   qrUrl?: string | null;
@@ -280,6 +286,7 @@ export const platform = {
   },
   payouts: {
     list: () => collection<PayoutRequest>("/v1/me/payout-requests?limit=48"),
+    balance: () => request<CreatorBalance>("/v1/me/payout-requests/balance"),
     create: (amount: string, qrCode: File) => {
       const body = new FormData();
       body.set("amount", amount);

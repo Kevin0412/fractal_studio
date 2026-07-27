@@ -5,8 +5,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/toaster";
+import { useAuth } from "@/providers/auth-provider";
 import { authKeys } from "@/lib/hooks/use-auth";
-import { platform, PlatformApiError, type PayoutRequest } from "@/lib/api/platform";
+import { platform, PlatformApiError, type CreatorBalance, type PayoutRequest } from "@/lib/api/platform";
 
 function text(error: unknown): string {
   return error instanceof Error ? error.message : "Request failed";
@@ -14,7 +15,9 @@ function text(error: unknown): string {
 
 export default function PayoutsPage() {
   const queryClient = useQueryClient();
+  const { user } = useAuth();
   const [rows, setRows] = useState<PayoutRequest[]>([]);
+  const [balance, setBalance] = useState<CreatorBalance | null>(null);
   const [amount, setAmount] = useState("10.00");
   const [file, setFile] = useState<File | null>(null);
   const [handle, setHandle] = useState("");
@@ -24,13 +27,16 @@ export default function PayoutsPage() {
   const [error, setError] = useState<string | null>(null);
 
   const refresh = () =>
-    void platform.payouts
-      .list()
-      .then((value) => setRows(value.data))
+    void Promise.all([platform.payouts.list(), platform.payouts.balance()])
+      .then(([requests, creatorBalance]) => { setRows(requests.data); setBalance(creatorBalance); })
       .catch((reason: unknown) => setError(text(reason)));
 
-  useEffect(refresh, []);
+  const isCreator = user?.roles.includes("creator") ?? false;
+  useEffect(() => { if (isCreator) refresh(); }, [isCreator]);
   const pendingRequest = rows.find((row) => row.status === "pending");
+  const availableBalance = Number(balance?.availableAmount ?? 0);
+  const requestedAmount = Number(amount);
+  const insufficientBalance = !Number.isFinite(requestedAmount) || requestedAmount <= 0 || requestedAmount > availableBalance;
 
   const saveCreatorProfile = async () => {
     const normalizedHandle = handle.trim();
@@ -53,6 +59,7 @@ export default function PayoutsPage() {
         description: `You can now publish listings as @${user.creatorProfile?.handle ?? normalizedHandle}.`,
         variant: "success",
       });
+      refresh();
     } catch (reason) {
       setError(text(reason));
     } finally {
@@ -94,7 +101,7 @@ export default function PayoutsPage() {
         <h1 className="text-2xl font-semibold">Creator payouts</h1>
         <p className="text-muted-foreground">Upload Alipay receiving QR. Finance operator sends manual transfer.</p>
       </div>
-      <section className="max-w-lg space-y-3 rounded-xl border border-white/10 p-4">
+      {!isCreator && <section className="max-w-lg space-y-3 rounded-xl border border-white/10 p-4">
         <h2 className="font-medium">Become creator</h2>
         <Input
           value={handle}
@@ -106,13 +113,15 @@ export default function PayoutsPage() {
         <Button variant="outline" loading={savingProfile} disabled={!handle || !displayName} onClick={() => void saveCreatorProfile()}>
           Save creator profile
         </Button>
-      </section>
-      <section className="max-w-lg space-y-3 rounded-xl border border-white/10 p-4">
-        <Input value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="Amount CNY" />
+      </section>}
+      {isCreator && <section className="max-w-lg space-y-3 rounded-xl border border-white/10 p-4">
+        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3 text-sm"><span className="text-muted-foreground">Available to withdraw</span><p className="mt-1 text-lg font-medium">{balance ? `${balance.availableAmount} ${balance.currency}` : "Loading balance…"}</p>{balance && availableBalance <= 0 && <p className="mt-1 text-xs text-muted-foreground">Funds appear here after a buyer pays for one of your listings.</p>}</div>
+        <Input value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="Amount CNY" disabled={!balance || availableBalance <= 0} />
         <input type="file" accept="image/png,image/jpeg" onChange={(event: ChangeEvent<HTMLInputElement>) => setFile(event.target.files?.[0] ?? null)} />
         {pendingRequest && <p className="rounded-lg border border-amber-400/25 bg-amber-400/10 p-3 text-sm text-amber-200">A payout request is already pending. Cancel it below if you need to submit a new one.</p>}
-        <Button loading={requestingPayout} disabled={!file || Boolean(pendingRequest)} onClick={() => void request()}>{pendingRequest ? "Payout pending" : "Request payout"}</Button>
-      </section>
+        {balance && insufficientBalance && !pendingRequest && <p className="text-sm text-amber-200">Enter an amount no greater than your available balance.</p>}
+        <Button loading={requestingPayout} disabled={!file || Boolean(pendingRequest) || !balance || insufficientBalance} onClick={() => void request()}>{pendingRequest ? "Payout pending" : "Request payout"}</Button>
+      </section>}
       {error && <p className="text-red-400">{error}</p>}
       <div className="space-y-2">
         {rows.map((row) => (

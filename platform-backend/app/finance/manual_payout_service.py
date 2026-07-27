@@ -22,6 +22,7 @@ from app.core.db import get_engine
 from app.finance import repository
 from app.finance.cleanup_service import queue_terminal_qr_cleanup
 from app.finance.models import (
+    CreatorBalanceView,
     InternalPayoutRequestView,
     PayoutRejectInput,
     PayoutRequestRecord,
@@ -158,6 +159,15 @@ class ManualPayoutService:
                 connection, creator_id=principal.user_id, limit=limit,
                 before_created_at=before[0] if before else None, before_id=before[1] if before else None,
             )
+
+    async def creator_balance(self, *, principal: AccessPrincipal) -> CreatorBalanceView:
+        async with get_engine().connect() as connection:
+            balance = await repository.get_creator_balance(connection, creator_id=principal.user_id)
+        return CreatorBalanceView(
+            availableAmount=balance.available_amount,
+            reservedAmount=balance.reserved_amount,
+            currency=balance.currency,
+        )
 
     async def cancel_request(
         self, *, principal: AccessPrincipal, payout_request_id: UUID, idempotency_key: str, request_id_value: str,

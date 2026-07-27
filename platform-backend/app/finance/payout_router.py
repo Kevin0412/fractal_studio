@@ -77,6 +77,14 @@ async def create_payout_request(
     return response
 
 
+@router.get("/balance")
+async def get_creator_balance(
+    principal: AccessPrincipal = Depends(require_role("creator")),
+) -> dict[str, object]:
+    view = await ManualPayoutService().creator_balance(principal=principal)
+    return {"data": view.model_dump(mode="json", by_alias=True)}
+
+
 @router.get("")
 async def list_payout_requests(
     cursor: str | None = Query(default=None, max_length=2048), limit: int = Query(default=24, ge=1, le=100),

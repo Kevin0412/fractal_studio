@@ -22,6 +22,16 @@ test("browser registers through Platform and explores an interactive real Comput
   await page.getByPlaceholder("Confirm password").fill("browser-test-password");
   await page.getByRole("button", { name: "Create account" }).click();
   await page.waitForURL(/\/studio$/, { timeout: 30_000 });
+  await page.goto("/payouts");
+  const creatorHandle = `e2e${Date.now()}`;
+  await page.getByPlaceholder("handle (lowercase, e.g. fractal_artist)").fill(creatorHandle);
+  await page.getByPlaceholder("display name").fill("E2E Creator");
+  await page.getByRole("button", { name: "Save creator profile" }).click();
+  await expect(page.getByText("Available to withdraw")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("0.00 CNY")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Request payout" })).toBeDisabled();
+  await page.getByRole("link", { name: "Studio" }).click();
+  await page.waitForURL(/\/studio$/, { timeout: 30_000 });
   await expect(page.locator("main").getByRole("heading", { name: "Explore, don’t configure." })).toBeVisible();
   await expect(page.getByRole("link", { name: "Finance" })).toHaveCount(0);
   await page.goto("/finance");
