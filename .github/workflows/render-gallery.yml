@@ -1,10 +1,13 @@
-name: Render real project gallery
+name: Render gallery
 on:
   workflow_dispatch:
   push:
     branches: [master]
     paths:
+      - 'frontend/**'
       - 'backend/**'
+      - 'client-weapp-h5/**'
+      - 'scripts/render_gallery.py'
       - '.github/workflows/render-gallery.yml'
 permissions:
   contents: write
@@ -13,84 +16,40 @@ concurrency:
   cancel-in-progress: true
 jobs:
   render:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    env:
-      OMP_NUM_THREADS: '4'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - name: Install CPU build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libopencv-dev libsqlite3-dev libmpfr-dev python3-pil
-      - name: Build the original C++ renderer
-        run: |
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libopencv-dev libsqlite3-dev libboost-dev ffmpeg
+          npm --prefix frontend ci
+          pip install playwright Pillow
+          python -m playwright install --with-deps chromium
           cmake -S backend -B runtime/build -DCMAKE_BUILD_TYPE=Release
-          cmake --build runtime/build --target fractal_studio_backend -j 2
-      - name: Run actual map exports
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import json, pathlib, subprocess, shutil
-          from PIL import Image, ImageDraw, ImageFont, ImageStat
-
-          root = pathlib.Path.cwd()
-          out = root / "render-output"
-          out.mkdir(exist_ok=True)
-          cases = [
-              ("Mandelbrot", dict(variant="mandelbrot", centerRe=-0.5, centerIm=0.0, scale=2.5)),
-              ("Seahorse Valley", dict(variant="mandelbrot", centerRe=-0.743643887037151, centerIm=0.13182590420533, scale=0.003, iterations=1800)),
-              ("Burning Ship", dict(variant="burning_ship", centerRe=-0.45, centerIm=-0.5, scale=3.0)),
-              ("Julia", dict(variant="mandelbrot", centerRe=0.0, centerIm=0.0, scale=2.8, julia=True, juliaRe=-0.8, juliaIm=0.156)),
-          ]
-          tiles = []
-          manifest = []
-          for i, (name, overrides) in enumerate(cases):
-              request = dict(width=800, height=480, iterations=600, metric="escape",
-                             colorMap="classic_cos", smooth=True, engine="openmp", scalarType="fp64")
-              request.update(overrides)
-              result = subprocess.run([str(root / "runtime/build/fractal_studio_backend"), "export-map",
-                                       "--json", json.dumps(request)], check=True, text=True,
-                                      stdout=subprocess.PIPE)
-              response = json.loads(result.stdout.strip().splitlines()[-1])
-              assert response.get("status") == "completed", response
-              source = pathlib.Path(response["localPath"])
-              target = out / f"{i+1:02d}.png"
-              shutil.copyfile(source, target)
-              with Image.open(target) as image:
-                  tile = image.convert("RGB")
-                  assert tile.size == (800, 480) and max(ImageStat.Stat(tile).stddev) > 2, name
-                  tile.thumbnail((540, 324), Image.Resampling.LANCZOS)
-                  tiles.append((name, tile.copy()))
-              manifest.append(dict(name=name, request=request, engine=response.get("engineUsed"),
-                                   scalar=response.get("scalarUsed"), image=target.name))
-          (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
-          gallery = Image.new("RGB", (1104, 740), "#111820")
-          draw = ImageDraw.Draw(gallery)
-          font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 18)
-          for i, (name, tile) in enumerate(tiles):
-              x = 8 + (i % 2) * 548
-              y = 8 + (i // 2) * 366
-              gallery.paste(tile, (x, y))
-              draw.text((x+4, y+330), name, font=font, fill="#e6edf3")
-          dest = root / "docs/generated"
-          dest.mkdir(parents=True, exist_ok=True)
-          gallery.save(dest / "gallery.webp", quality=85, method=6)
-          PY
+          cmake --build runtime/build -j2
+          FSD_STARTUP_BENCHMARK=off ./runtime/build/fractal_studio_backend 18080 > /tmp/fractal-backend.log 2>&1 &
+          npm --prefix frontend run dev -- --host 127.0.0.1 --port 5174 > /tmp/fractal-web.log 2>&1 &
+          python scripts/render_gallery.py
       - uses: actions/upload-artifact@v4
         with:
-          name: fractal-studio-gallery
+          name: render-gallery
           path: |
             render-output/
-            docs/generated/gallery.webp
+            docs/generated/
           if-no-files-found: error
           retention-days: 14
-      - name: Publish compact preview only when changed
-        run: |
+      - run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add docs/generated/gallery.webp
+          git add docs/generated/preview.webp
           if ! git diff --cached --quiet; then
-            git commit -m 'docs: refresh native fractal render gallery'
+            git commit -m 'docs: refresh rendered gallery'
             git push origin HEAD
           fi

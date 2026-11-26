@@ -75,3 +75,13 @@ scripts/   System and legacy integrity checks
 ## License / 许可
 
 MIT License.
+
+## Automatic rendering / 自动渲染
+
+[![Render gallery](https://github.com/Kevin0412/fractal_studio/actions/workflows/render-gallery.yml/badge.svg)](https://github.com/Kevin0412/fractal_studio/actions/workflows/render-gallery.yml)
+
+![Generated preview](docs/generated/preview.webp)
+
+Actual Chromium capture of the CPU-only native backend and Vue frontend. No GPU is required.
+
+[Download workflow artifacts](https://github.com/Kevin0412/fractal_studio/actions).
