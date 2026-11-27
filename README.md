@@ -80,8 +80,8 @@ MIT License.
 
 [![Render gallery](https://github.com/Kevin0412/fractal_studio/actions/workflows/render-gallery.yml/badge.svg)](https://github.com/Kevin0412/fractal_studio/actions/workflows/render-gallery.yml)
 
-![Generated preview](docs/generated/preview.webp)
+![Generated preview](docs/generated/gallery.webp)
 
-Actual Chromium capture of the CPU-only native backend and Vue frontend. No GPU is required.
+Real CPU-rendered project preview. The workflow captures the running native C++ backend and Vue frontend in Chromium, without a physical GPU.
 
 [Download workflow artifacts](https://github.com/Kevin0412/fractal_studio/actions).
