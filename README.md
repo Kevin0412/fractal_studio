@@ -4,6 +4,16 @@ Fractal Studio is a local fractal exploration app with a native C++ compute back
 
 Fractal Studio 是一个本地运行的交互式分形实验室：后端负责原生 C++ 计算、产物管理和 HTTP API，前端提供地图探索、Julia、3D、视频导出和系统诊断界面。
 
+## Automatic rendering / 自动渲染
+
+[![Render gallery](https://github.com/Kevin0412/fractal_studio/actions/workflows/render-gallery.yml/badge.svg)](https://github.com/Kevin0412/fractal_studio/actions/workflows/render-gallery.yml)
+
+![Generated preview](docs/generated/gallery.webp)
+
+Real CPU-rendered project preview. The workflow captures the running native C++ backend and Vue frontend in Chromium, without a physical GPU.
+
+[Download workflow artifacts](https://github.com/Kevin0412/fractal_studio/actions).
+
 ## Quick Start / 快速启动
 
 Recommended local development start:
@@ -75,13 +85,3 @@ scripts/   System and legacy integrity checks
 ## License / 许可
 
 MIT License.
-
-## Automatic rendering / 自动渲染
-
-[![Render gallery](https://github.com/Kevin0412/fractal_studio/actions/workflows/render-gallery.yml/badge.svg)](https://github.com/Kevin0412/fractal_studio/actions/workflows/render-gallery.yml)
-
-![Generated preview](docs/generated/gallery.webp)
-
-Real CPU-rendered project preview. The workflow captures the running native C++ backend and Vue frontend in Chromium, without a physical GPU.
-
-[Download workflow artifacts](https://github.com/Kevin0412/fractal_studio/actions).
